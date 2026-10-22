@@ -96,25 +96,32 @@ abstract final class StickerLedger {
           // 선물 교환: 가격만큼 맨 위 스티커가 빠진다. 교환은 되돌릴 수 없다.
           _pop(stack, -event.amount);
           balance += event.amount;
+        case 'bonus':
+          // 올클리어 보너스: 받은 것과 같다. 되돌릴 수 없다.
+          final category = event.categoryId ?? 0;
+          stack.addAll(List.filled(event.amount, category));
+          balance += event.amount;
+          totalEarned += event.amount;
         default:
-          // warn·bonus·adjust 는 이 단계에서 잔액을 바꾸지 않는다.
+          // warn·adjust 는 이 단계에서 잔액을 바꾸지 않는다.
           balance += event.amount;
       }
     }
 
-    // 가장 최근의 되돌릴 수 있는 기록. 그 뒤에 교환이 있으면 되돌릴 수 없다.
+    // 가장 최근의 되돌릴 수 있는 기록. 그 뒤에 교환·보너스가 있으면 되돌릴 수 없다.
     int? lastEffective;
     String? lastEffectiveType;
     for (final event in sorted) {
-      if ((event.type == 'earn' ||
-              event.type == 'remove' ||
-              event.type == 'redeem') &&
-          !undone.contains(event.id)) {
+      const effectiveTypes = {'earn', 'remove', 'redeem', 'bonus'};
+      if (effectiveTypes.contains(event.type) && !undone.contains(event.id)) {
         lastEffective = event.id;
         lastEffectiveType = event.type;
       }
     }
-    final lastUndoable = lastEffectiveType == 'redeem' ? null : lastEffective;
+    final lastUndoable =
+        lastEffectiveType == 'earn' || lastEffectiveType == 'remove'
+        ? lastEffective
+        : null;
 
     return LedgerView(
       balance: balance,

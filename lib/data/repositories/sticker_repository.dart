@@ -162,6 +162,28 @@ class StickerRepository {
     });
   }
 
+  /// 올클리어 보너스 스티커. 가득 차 있으면 들어갈 만큼만 주고, 한 개도 못 들어가면 막는다.
+  Future<int> grantBonus({
+    required int childId,
+    required int amount,
+    String memo = '올클리어 보너스',
+  }) {
+    return _db.transaction(() async {
+      final balance = (await view(childId)).balance;
+      final room = StickerRules.maxStickers - balance;
+      final grant = amount < room ? amount : room;
+      if (grant <= 0) {
+        throw const StickerRuleException('스티커가 가득 차서 보너스는 기다려요.');
+      }
+      return _insert(
+        childId: childId,
+        type: 'bonus',
+        amount: grant,
+        memo: memo,
+      );
+    });
+  }
+
   /// 가장 최근 받기·빼기를 되돌린다. 기록 후 [undoSeconds] 안에만 된다.
   /// 되돌리기도 새 행으로 남는다.
   Future<void> undoLast({required int childId, required int undoSeconds}) {

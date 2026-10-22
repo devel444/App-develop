@@ -122,4 +122,16 @@ void main() {
     expect(view.lastUndoableId, isNull);
     expect(view.totalEarned, 5);
   });
+
+  test('보너스는 스티커 목록에 들어가고 누적에도 더해진다', () {
+    final view = StickerLedger.replay([
+      _event(1, 'earn', 2, category: 10),
+      _event(2, 'bonus', 1, category: 0),
+    ]);
+
+    expect(view.balance, 3);
+    expect(view.stack, [10, 10, 0]);
+    expect(view.totalEarned, 3);
+    expect(view.lastUndoableId, isNull);
+  });
 }

@@ -1,9 +1,10 @@
 import 'package:go_router/go_router.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
-import 'package:sticker_world/core/widgets/pattern_background.dart';
 import 'package:sticker_world/features/home/home_screen.dart';
 import 'package:sticker_world/features/stamp/remove_screen.dart';
+import 'package:sticker_world/features/today/routine_admin_screen.dart';
+import 'package:sticker_world/features/today/today_screen.dart';
 import 'package:sticker_world/features/shop/reward_admin_screen.dart';
 import 'package:sticker_world/features/shop/shop_screen.dart';
 import 'package:sticker_world/features/stamp/stamp_screen.dart';
@@ -41,12 +42,7 @@ GoRouter buildRouter({required String initialLocation}) {
             routes: [
               GoRoute(
                 path: Routes.today,
-                builder: (_, _) => const PlaceholderScreen(
-                  title: '오늘의 할 일',
-                  color: AppColors.green,
-                  pattern: BgPattern.stripes,
-                  note: 'P4 단계에서 만들어요.\n루틴 체크, 듀오링고 자동 체크, 올클리어 축하',
-                ),
+                builder: (_, _) => const TodayScreen(),
               ),
             ],
           ),
@@ -88,6 +84,10 @@ GoRouter buildRouter({required String initialLocation}) {
       GoRoute(
         path: Routes.rewards,
         builder: (_, _) => const RewardAdminScreen(),
+      ),
+      GoRoute(
+        path: Routes.routines,
+        builder: (_, _) => const RoutineAdminScreen(),
       ),
       GoRoute(
         path: Routes.badges,

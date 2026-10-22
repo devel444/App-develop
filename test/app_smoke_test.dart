@@ -24,6 +24,10 @@ Widget _homeApp() => ProviderScope(
     ),
     categoryColorsProvider.overrideWith((ref) async => <int, int>{}),
     activeRewardsProvider.overrideWith((ref) => Stream.value(const [])),
+    routinesProvider.overrideWith((ref) => Stream.value(const [])),
+    routineLogsProvider.overrideWith((ref, date) => Stream.value(const [])),
+    pendingBonusesProvider.overrideWith((ref) => Stream.value(const [])),
+    clearDatesProvider.overrideWith((ref) => Stream.value(const <String>{})),
     ledgerProvider.overrideWith((ref) => Stream.value(LedgerView.empty)),
     initialLocationProvider.overrideWithValue(Routes.home),
   ],
@@ -72,6 +76,22 @@ void main() {
 
     expect(find.text('W1 · 풀밭'), findsWidgets);
     expect(find.text('스티커 붙이기'), findsWidgets);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('할 일 탭에 루틴이 없으면 안내가 보인다', (tester) async {
+    tester.view.physicalSize = const Size(800, 1280);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_homeApp());
+    await tester.pump();
+
+    await tester.tap(find.text('할 일'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('오늘 할 일이 없어요'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 }

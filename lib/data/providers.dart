@@ -3,6 +3,7 @@ import 'package:sticker_world/data/db/app_database.dart';
 import 'package:sticker_world/data/repositories/catalog_repository.dart';
 import 'package:sticker_world/data/repositories/child_repository.dart';
 import 'package:sticker_world/data/repositories/reward_repository.dart';
+import 'package:sticker_world/data/repositories/routine_repository.dart';
 import 'package:sticker_world/data/repositories/settings_repository.dart';
 import 'package:sticker_world/data/repositories/sticker_repository.dart';
 import 'package:sticker_world/domain/pin_service.dart';
@@ -104,4 +105,43 @@ final redemptionsProvider = StreamProvider<List<Redemption>>((ref) {
     return Stream.value(const []);
   }
   return ref.watch(rewardRepositoryProvider).watchRedemptions(child.id);
+});
+
+final routineRepositoryProvider = Provider<RoutineRepository>(
+  (ref) => RoutineRepository(
+    ref.watch(databaseProvider),
+    stickers: ref.watch(stickerRepositoryProvider),
+    settings: ref.watch(settingsRepositoryProvider),
+  ),
+);
+
+/// 루틴 전체 (숨긴 것 포함), 보이는 순서대로.
+final routinesProvider = StreamProvider<List<Routine>>(
+  (ref) => ref.watch(routineRepositoryProvider).watchAll(),
+);
+
+/// 특정 날짜(YYYY-MM-DD)에 체크된 루틴 기록.
+final routineLogsProvider = StreamProvider.family<List<RoutineLog>, String>(
+  (ref, date) => ref.watch(routineRepositoryProvider).watchLogs(date),
+);
+
+/// 엄마·아빠 확인을 기다리는 올클리어 보너스.
+final pendingBonusesProvider = StreamProvider<List<DailyClear>>((ref) {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return Stream.value(const []);
+  }
+  return ref.watch(routineRepositoryProvider).watchPendingBonuses(child.id);
+});
+
+/// 올클리어한 날짜들 (연속 일수용).
+final clearDatesProvider = StreamProvider<Set<String>>((ref) {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return Stream.value(const <String>{});
+  }
+  return ref
+      .watch(routineRepositoryProvider)
+      .watchClearDates(child.id)
+      .map((dates) => dates.toSet());
 });
