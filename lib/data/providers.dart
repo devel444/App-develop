@@ -7,10 +7,12 @@ import 'package:sticker_world/data/duolingo/usage_source.dart';
 import 'package:sticker_world/data/repositories/child_repository.dart';
 import 'package:sticker_world/data/repositories/diary_repository.dart';
 import 'package:sticker_world/data/repositories/duolingo_repository.dart';
+import 'package:sticker_world/data/repositories/report_comment_repository.dart';
 import 'package:sticker_world/data/repositories/reward_repository.dart';
 import 'package:sticker_world/data/repositories/routine_repository.dart';
 import 'package:sticker_world/data/repositories/settings_repository.dart';
 import 'package:sticker_world/data/repositories/sticker_repository.dart';
+import 'package:sticker_world/domain/growth_report.dart';
 import 'package:sticker_world/domain/pin_service.dart';
 import 'package:sticker_world/domain/sticker_ledger.dart';
 
@@ -202,4 +204,38 @@ final categoryNamesProvider = FutureProvider<Map<int, String>>((ref) async {
   return {
     for (final c in [...praise, ...misdeed]) c.id: c.name,
   };
+});
+
+/// 아이의 스티커 장부 전체 (달력·리포트용, 날짜 오름차순).
+final stickerHistoryProvider = StreamProvider<List<GrowthEvent>>((ref) {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return Stream.value(const []);
+  }
+  return ref.watch(stickerRepositoryProvider).watchHistory(child.id);
+});
+
+final reportCommentRepositoryProvider = Provider<ReportCommentRepository>(
+  (ref) => ReportCommentRepository(ref.watch(databaseProvider)),
+);
+
+/// 부모 한마디. 키는 (periodType, periodKey) — 예: ('week', '2026-10-19').
+final reportCommentProvider =
+    StreamProvider.family<ReportComment?, (String, String)>((ref, key) {
+      final child = ref.watch(currentChildProvider).value;
+      if (child == null) {
+        return Stream.value(null);
+      }
+      return ref
+          .watch(reportCommentRepositoryProvider)
+          .watch(child.id, key.$1, key.$2);
+    });
+
+/// 가장 최근 듀오링고 확인 기록 (리포트의 연속 일수에 쓴다).
+final duolingoLatestProvider = FutureProvider<DuolingoSnapshot?>((ref) async {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return null;
+  }
+  return ref.watch(duolingoRepositoryProvider).latest(child.id);
 });

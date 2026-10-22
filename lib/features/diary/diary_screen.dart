@@ -11,6 +11,7 @@ import 'package:sticker_world/data/db/app_database.dart';
 import 'package:sticker_world/data/providers.dart';
 import 'package:sticker_world/features/diary/diary_options.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
+import 'package:sticker_world/features/records/record_labels.dart';
 import 'package:sticker_world/features/stamp/stamp_widgets.dart';
 import 'package:sticker_world/features/today/clear_celebration.dart';
 import 'package:speech_to_text/speech_to_text.dart';
@@ -369,17 +370,12 @@ class _DiaryScreenState extends ConsumerState<DiaryScreen> {
   }
 
   String _chipLabel(StickerEvent event, Map<int, String> names) {
-    final name = event.categoryId == null
-        ? '올클리어'
-        : (names[event.categoryId] ?? '');
-    return switch (event.eventType) {
-      'earn' => '$name +${event.amount}',
-      'bonus' => '보너스 +${event.amount}',
-      'remove' => '$name −${-event.amount}',
-      'warn' => '$name 경고',
-      'redeem' => '선물 교환',
-      _ => name,
-    };
+    return stickerRecordLabel(
+      type: event.eventType,
+      amount: event.amount,
+      categoryId: event.categoryId,
+      names: names,
+    );
   }
 
   Future<void> _showDetail(DiaryEntry entry) {

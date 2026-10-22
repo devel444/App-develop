@@ -15,6 +15,7 @@ import 'package:sticker_world/features/onboarding/onboarding_screen.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
 import 'package:sticker_world/features/pin/recovery_screen.dart';
 import 'package:sticker_world/features/placeholder/placeholder_screen.dart';
+import 'package:sticker_world/features/records/records_screen.dart';
 import 'package:sticker_world/features/shell/main_shell.dart';
 
 GoRouter buildRouter({required String initialLocation}) {
@@ -65,11 +66,7 @@ GoRouter buildRouter({required String initialLocation}) {
             routes: [
               GoRoute(
                 path: Routes.records,
-                builder: (_, _) => const PlaceholderScreen(
-                  title: '기록',
-                  color: AppColors.pink,
-                  note: 'P7 단계에서 만들어요.\n달력과 성장 리포트',
-                ),
+                builder: (_, _) => const RecordsScreen(),
               ),
             ],
           ),

@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 import 'package:sticker_world/core/time/local_date.dart';
 import 'package:sticker_world/data/db/app_database.dart';
+import 'package:sticker_world/domain/growth_report.dart';
 import 'package:sticker_world/domain/sticker_ledger.dart';
 import 'package:sticker_world/domain/sticker_rules.dart';
 
@@ -35,6 +36,26 @@ class StickerRepository {
 
   final AppDatabase _db;
   final DateTime Function() _clock;
+
+  /// 장부 전체를 리포트·달력용 값으로 준다. 날짜 오름차순.
+  Stream<List<GrowthEvent>> watchHistory(int childId) {
+    return _eventsOf(childId).watch().map(
+      (rows) => [
+        for (final row in rows)
+          GrowthEvent(
+            id: row.id,
+            type: row.eventType,
+            amount: row.amount,
+            localDate: row.localDate,
+            createdAt: row.createdAt,
+            categoryId: row.categoryId,
+            memo: row.memo,
+            nextPromise: row.nextPromise,
+            relatedEventId: row.relatedEventId,
+          ),
+      ],
+    );
+  }
 
   /// 특정 날짜(YYYY-MM-DD)에 생긴 스티커 기록. 일기에 오늘의 스티커를 붙일 때 쓴다.
   Stream<List<StickerEvent>> watchEventsOn(int childId, String localDate) {
