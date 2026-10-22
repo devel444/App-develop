@@ -14,6 +14,7 @@ import 'package:sticker_world/data/providers.dart';
 import 'package:sticker_world/data/repositories/sticker_repository.dart';
 import 'package:sticker_world/domain/sticker_rules.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
+import 'package:sticker_world/features/shop/gift_picture.dart';
 import 'package:sticker_world/features/shop/redeem_celebration.dart';
 import 'package:sticker_world/features/stamp/stamp_widgets.dart';
 
@@ -238,20 +239,7 @@ class _RewardCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Container(
-                width: 96,
-                height: 96,
-                alignment: Alignment.center,
-                decoration: const BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Color(0xFFE9EEF8),
-                ),
-                child: const Icon(
-                  Icons.card_giftcard_rounded,
-                  size: 56,
-                  color: AppColors.pink,
-                ),
-              ),
+              GiftPicture(imagePath: reward.imagePath),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(

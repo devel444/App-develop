@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sticker_world/core/audio/sound_player.dart';
 import 'package:sticker_world/core/assets/asset_resolver.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
@@ -306,16 +309,38 @@ class _Hero extends StatelessWidget {
   }
 }
 
-class _Character extends StatelessWidget {
+/// 캐릭터: 부모가 고른 사진 → 개인용 파일 → 기본 그림 순. 누르면 점프 소리가 난다.
+class _Character extends ConsumerWidget {
   const _Character();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final photo = ref.watch(characterPhotoProvider).value;
     final custom = AssetResolver.custom('character.png');
-    if (custom != null) {
-      return Image.asset(custom, height: 260, fit: BoxFit.contain);
+    const fallback = FittedBox(
+      fit: BoxFit.scaleDown,
+      child: DefaultCharacter(),
+    );
+
+    final Widget picture;
+    if (photo != null) {
+      picture = Image.file(
+        File(photo),
+        height: 260,
+        fit: BoxFit.contain,
+        errorBuilder: (_, _, _) => fallback,
+      );
+    } else if (custom != null) {
+      picture = Image.asset(custom, height: 260, fit: BoxFit.contain);
+    } else {
+      picture = fallback;
     }
-    return const FittedBox(fit: BoxFit.scaleDown, child: DefaultCharacter());
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => ref.read(soundPlayerProvider).play(Sfx.jump),
+      child: picture,
+    );
   }
 }
 

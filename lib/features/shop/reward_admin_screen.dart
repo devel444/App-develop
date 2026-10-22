@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/widgets/jelly_button.dart';
 import 'package:sticker_world/core/widgets/outlined_text.dart';
@@ -7,6 +8,7 @@ import 'package:sticker_world/core/widgets/pattern_background.dart';
 import 'package:sticker_world/core/widgets/screen_frame.dart';
 import 'package:sticker_world/data/db/app_database.dart';
 import 'package:sticker_world/data/providers.dart';
+import 'package:sticker_world/features/shop/gift_picture.dart';
 import 'package:sticker_world/features/stamp/stamp_widgets.dart';
 
 /// 선물 가격으로 고를 수 있는 값.
@@ -114,7 +116,25 @@ class _RewardDialogState extends State<_RewardDialog> {
   );
   late int _cost = widget.reward?.cost ?? 30;
   late bool _active = widget.reward?.isActive ?? true;
+  late String? _imagePath = widget.reward?.imagePath;
   String? _error;
+
+  /// 사진첩에서 고르고, 앱 안으로 복사해 둔다.
+  Future<void> _pickPhoto() async {
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 1080,
+      imageQuality: 85,
+    );
+    if (picked == null) {
+      return;
+    }
+    final store = await widget.ref.read(mediaStoreProvider.future);
+    final saved = await store.saveCopy(picked.path, prefix: 'gift');
+    if (mounted) {
+      setState(() => _imagePath = saved);
+    }
+  }
 
   @override
   void dispose() {
@@ -130,15 +150,22 @@ class _RewardDialogState extends State<_RewardDialog> {
     }
     final repo = widget.ref.read(rewardRepositoryProvider);
     final reward = widget.reward;
+    final int id;
     if (reward == null) {
-      await repo.create(name: name, cost: _cost);
+      id = await repo.create(name: name, cost: _cost);
     } else {
+      id = reward.id;
       await repo.update(
         id: reward.id,
         name: name,
         cost: _cost,
         isActive: _active,
       );
+    }
+    if (_imagePath != reward?.imagePath) {
+      await repo.setImagePath(id, _imagePath);
+      final store = await widget.ref.read(mediaStoreProvider.future);
+      await store.deleteCopy(reward?.imagePath);
     }
     if (mounted) {
       Navigator.of(context).pop();
@@ -179,6 +206,24 @@ class _RewardDialogState extends State<_RewardDialog> {
                 labelText: '선물 이름',
                 border: OutlineInputBorder(),
               ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                GiftPicture(imagePath: _imagePath, size: 72),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: FilledButton.tonal(
+                    onPressed: _pickPhoto,
+                    child: Text(_imagePath == null ? '사진 고르기' : '사진 바꾸기'),
+                  ),
+                ),
+                if (_imagePath != null)
+                  TextButton(
+                    onPressed: () => setState(() => _imagePath = null),
+                    child: const Text('사진 빼기'),
+                  ),
+              ],
             ),
             const SizedBox(height: 16),
             const Text('몇 개로 살 수 있을까요?'),

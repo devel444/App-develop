@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart' hide Badge;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sticker_world/core/audio/sound_player.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/widgets/gold_medal.dart';
 import 'package:sticker_world/core/widgets/jelly_button.dart';
@@ -45,6 +46,7 @@ class _BadgeWatcherState extends ConsumerState<BadgeWatcher> {
         }
         final badge = queue.first;
         ref.read(badgePopupQueueProvider.notifier).removeFirst();
+        ref.read(soundPlayerProvider).play(Sfx.coin);
         await showDialog<void>(
           context: context,
           barrierDismissible: false,

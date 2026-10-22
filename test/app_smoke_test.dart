@@ -32,6 +32,7 @@ Widget _homeApp() => ProviderScope(
     badgeAwardsProvider.overrideWith((ref) => Stream.value(const [])),
     badgeCheckProvider.overrideWithValue(false),
     dailyBackupProvider.overrideWith((ref) async => null),
+    characterPhotoProvider.overrideWith((ref) async => null),
     initialLocationProvider.overrideWithValue(Routes.home),
   ],
   child: const StickerWorldApp(),

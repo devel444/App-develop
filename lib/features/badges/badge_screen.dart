@@ -2,6 +2,7 @@ import 'package:flutter/material.dart' hide Badge;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/time/local_date.dart';
+import 'package:sticker_world/core/audio/sound_player.dart';
 import 'package:sticker_world/core/widgets/gold_medal.dart';
 import 'package:sticker_world/core/widgets/pattern_background.dart';
 import 'package:sticker_world/core/widgets/screen_frame.dart';
@@ -95,10 +96,18 @@ class _BadgeScreenState extends ConsumerState<BadgeScreen> {
                   childAspectRatio: 0.6,
                   children: [
                     for (final badge in shown)
-                      _BadgeTile(
-                        badge: badge,
-                        awardedAt: awardedAt[badge.code],
-                        hint: _hintOf(badge, stats),
+                      GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        // 얻은 배지를 누르면 돈 먹는 소리가 난다.
+                        onTap: awardedAt[badge.code] == null
+                            ? null
+                            : () =>
+                                  ref.read(soundPlayerProvider).play(Sfx.coin),
+                        child: _BadgeTile(
+                          badge: badge,
+                          awardedAt: awardedAt[badge.code],
+                          hint: _hintOf(badge, stats),
+                        ),
                       ),
                   ],
                 ),

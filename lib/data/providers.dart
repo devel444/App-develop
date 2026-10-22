@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:sticker_world/core/audio/sound_player.dart';
+import 'package:sticker_world/core/media/media_store.dart';
 import 'package:sticker_world/core/time/local_date.dart';
 import 'package:sticker_world/data/backup/backup_files.dart';
 import 'package:sticker_world/data/backup/backup_service.dart';
@@ -361,4 +363,32 @@ final dailyBackupProvider = FutureProvider<String?>((ref) async {
   final json = await ref.read(backupServiceProvider).exportJson();
   await files.write(today, json);
   return today;
+});
+
+/// 사진첩에서 고른 사진을 앱 안에 복사해 두는 곳 (앱 문서 폴더 아래 media).
+final mediaStoreProvider = FutureProvider<MediaStore>((_) async {
+  final documents = await getApplicationDocumentsDirectory();
+  return MediaStore(Directory(p.join(documents.path, 'media')));
+});
+
+/// 효과음. 소리 켜기 설정을 매번 확인한다.
+final soundPlayerProvider = Provider<SoundPlayer>((ref) {
+  final output = AudioPlayerOutput();
+  ref.onDispose(output.dispose);
+  return SoundPlayer(
+    output,
+    isOn: () async =>
+        await ref
+            .read(settingsRepositoryProvider)
+            .getInt('sound_on', fallback: 1) ==
+        1,
+  );
+});
+
+/// 부모가 고른 캐릭터 사진 경로. 없으면 null (기본 캐릭터를 그린다).
+final characterPhotoProvider = FutureProvider<String?>((ref) async {
+  final path = await ref
+      .watch(settingsRepositoryProvider)
+      .get('character_photo');
+  return path == null || path.isEmpty ? null : path;
 });

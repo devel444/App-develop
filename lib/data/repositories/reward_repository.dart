@@ -73,6 +73,13 @@ class RewardRepository {
         .watch();
   }
 
+  /// 선물 사진 경로를 넣거나 뺀다 (null이면 사진 없음). 사진 파일 자체는 MediaStore가 관리한다.
+  Future<void> setImagePath(int id, String? path) {
+    return (_db.update(_db.rewards)..where((t) => t.id.equals(id))).write(
+      RewardsCompanion(imagePath: Value(path)),
+    );
+  }
+
   /// 선물을 실제로 받았을 때 (부모가 PIN을 맞춘 뒤 누른다).
   Future<void> markDelivered(int redemptionId, DateTime when) {
     return (_db.update(_db.redemptions)
