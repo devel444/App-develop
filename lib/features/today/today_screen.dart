@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -13,6 +15,7 @@ import 'package:sticker_world/data/db/app_database.dart';
 import 'package:sticker_world/data/providers.dart';
 import 'package:sticker_world/domain/routine_rules.dart';
 import 'package:sticker_world/domain/sticker_rules.dart';
+import 'package:sticker_world/features/duolingo/duolingo_status.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
 import 'package:sticker_world/features/today/clear_celebration.dart';
 import 'package:sticker_world/features/today/routine_icons.dart';
@@ -26,10 +29,53 @@ class TodayScreen extends ConsumerStatefulWidget {
   ConsumerState<TodayScreen> createState() => _TodayScreenState();
 }
 
-class _TodayScreenState extends ConsumerState<TodayScreen> {
+class _TodayScreenState extends ConsumerState<TodayScreen>
+    with WidgetsBindingObserver {
+  static const _duolingoInterval = Duration(minutes: 15);
+
   bool _showClear = false;
+  Timer? _duolingoTimer;
   bool _bonusPending = false;
   String? _message;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _duolingoTimer = Timer.periodic(
+      _duolingoInterval,
+      (_) => _refreshDuolingo(),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshDuolingo());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _duolingoTimer?.cancel();
+    super.dispose();
+  }
+
+  /// 앱으로 돌아오면 듀오링고를 다시 확인한다.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshDuolingo();
+    }
+  }
+
+  /// 듀오링고 확인. 완료로 확인되면 루틴이 자동 체크되고, 올클리어면 축하를 띄운다.
+  Future<void> _refreshDuolingo() async {
+    final outcome = await ref.read(duolingoStatusProvider.notifier).refresh();
+    final completion = outcome?.completion;
+    if (!mounted || completion == null || !completion.cleared) {
+      return;
+    }
+    setState(() {
+      _bonusPending = completion.bonusPending;
+      _showClear = true;
+    });
+  }
 
   Future<void> _complete(Routine routine, {required String source}) async {
     setState(() => _message = null);
@@ -107,6 +153,7 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
     final pending =
         ref.watch(pendingBonusesProvider).value ?? const <DailyClear>[];
     final clearDates = ref.watch(clearDatesProvider).value ?? const <String>{};
+    final duolingo = ref.watch(duolingoStatusProvider);
 
     final dueToday = routines
         .where((r) => r.isActive && RoutineDays.includes(r.daysMask, now))
@@ -122,81 +169,87 @@ class _TodayScreenState extends ConsumerState<TodayScreen> {
           title: '오늘의 할 일',
           color: AppColors.green,
           pattern: BgPattern.stripes,
-          child: ListView(
-            padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-            children: [
-              _Header(
-                date: now,
-                done: doneCount,
-                total: dueToday.length,
-                streak: streak,
-              ),
-              if (_message != null) ...[
-                const SizedBox(height: 12),
-                _Notice(
-                  text: _message!,
-                  onClose: () => setState(() => _message = null),
+          child: RefreshIndicator(
+            onRefresh: _refreshDuolingo,
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+              children: [
+                _Header(
+                  date: now,
+                  done: doneCount,
+                  total: dueToday.length,
+                  streak: streak,
                 ),
-              ],
-              for (final clear in pending)
-                Padding(
-                  padding: const EdgeInsets.only(top: 12),
-                  child: _BonusCard(
-                    count: pending.length,
-                    onConfirm: () => _confirmBonus(clear),
+                if (_message != null) ...[
+                  const SizedBox(height: 12),
+                  _Notice(
+                    text: _message!,
+                    onClose: () => setState(() => _message = null),
                   ),
-                ),
-              const SizedBox(height: 16),
-              if (dueToday.isEmpty)
-                const WhiteFrameCard(
-                  headerTitle: '오늘 할 일이 없어요',
-                  child: Text(
-                    '엄마·아빠가 루틴을 추가하면\n여기에 보여요.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 24, color: AppColors.ink),
-                  ),
-                ),
-              for (final slot in routineSlots) ...[
-                if (dueToday.any((r) => r.timeSlot == slot.$1)) ...[
+                ],
+                for (final clear in pending)
                   Padding(
-                    padding: const EdgeInsets.only(top: 12, bottom: 8),
-                    child: OutlinedText(
-                      slot.$2,
-                      fontSize: 34,
-                      textAlign: TextAlign.left,
+                    padding: const EdgeInsets.only(top: 12),
+                    child: _BonusCard(
+                      count: pending.length,
+                      onConfirm: () => _confirmBonus(clear),
                     ),
                   ),
-                  for (final routine in dueToday.where(
-                    (r) => r.timeSlot == slot.$1,
-                  ))
+                const SizedBox(height: 16),
+                if (dueToday.isEmpty)
+                  const WhiteFrameCard(
+                    headerTitle: '오늘 할 일이 없어요',
+                    child: Text(
+                      '엄마·아빠가 루틴을 추가하면\n여기에 보여요.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 24, color: AppColors.ink),
+                    ),
+                  ),
+                for (final slot in routineSlots) ...[
+                  if (dueToday.any((r) => r.timeSlot == slot.$1)) ...[
                     Padding(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      child: _RoutineTile(
-                        routine: routine,
-                        done: doneIds.contains(routine.id),
-                        onTap: () =>
-                            _onTap(routine, doneIds.contains(routine.id)),
-                        onLongPress: doneIds.contains(routine.id)
-                            ? () => _uncheck(routine)
-                            : null,
+                      padding: const EdgeInsets.only(top: 12, bottom: 8),
+                      child: OutlinedText(
+                        slot.$2,
+                        fontSize: 34,
+                        textAlign: TextAlign.left,
                       ),
                     ),
+                    for (final routine in dueToday.where(
+                      (r) => r.timeSlot == slot.$1,
+                    ))
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: _RoutineTile(
+                          routine: routine,
+                          done: doneIds.contains(routine.id),
+                          statusText: routine.kind == 'duolingo'
+                              ? duolingoStatusText(duolingo)
+                              : null,
+                          onTap: () =>
+                              _onTap(routine, doneIds.contains(routine.id)),
+                          onLongPress: doneIds.contains(routine.id)
+                              ? () => _uncheck(routine)
+                              : null,
+                        ),
+                      ),
+                  ],
                 ],
-              ],
-              const SizedBox(height: 16),
-              JellyButton(
-                color: AppColors.white,
-                height: 80,
-                semanticLabel: '루틴 관리',
-                onTap: () => pinThenPush(context, Routes.routines),
-                child: const Center(
-                  child: Text(
-                    '루틴 관리 (엄마·아빠)',
-                    style: TextStyle(fontSize: 26, color: AppColors.ink),
+                const SizedBox(height: 16),
+                JellyButton(
+                  color: AppColors.white,
+                  height: 80,
+                  semanticLabel: '루틴 관리',
+                  onTap: () => pinThenPush(context, Routes.routines),
+                  child: const Center(
+                    child: Text(
+                      '루틴 관리 (엄마·아빠)',
+                      style: TextStyle(fontSize: 26, color: AppColors.ink),
+                    ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
         if (_showClear)
@@ -293,6 +346,7 @@ class _RoutineTile extends StatelessWidget {
     required this.done,
     required this.onTap,
     this.onLongPress,
+    this.statusText,
   });
 
   final Routine routine;
@@ -300,9 +354,15 @@ class _RoutineTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
 
+  /// 자동 확인 상태 글 (듀오링고 루틴). 없으면 종류별 기본 글.
+  final String? statusText;
+
   String get _subtitle {
     if (done) {
       return '완료! 잘했어요';
+    }
+    if (statusText != null) {
+      return statusText!;
     }
     return switch (routine.kind) {
       'normal' => '눌러서 체크해요',

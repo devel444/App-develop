@@ -17,4 +17,5 @@ abstract final class Routes {
   static const parent = '/parent';
   static const rewards = '/rewards';
   static const routines = '/routines';
+  static const duolingo = '/duolingo';
 }

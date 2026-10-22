@@ -1,4 +1,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 듀오링고 프로필 조회(인터넷), 태블릿 사용 시간 확인(사용 기록 접근) -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
+
     <application
         android:label="지우의 스티커 월드"
         android:name="${applicationName}"

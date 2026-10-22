@@ -1,7 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sticker_world/data/db/app_database.dart';
 import 'package:sticker_world/data/repositories/catalog_repository.dart';
+import 'package:sticker_world/data/duolingo/duolingo_api.dart';
+import 'package:sticker_world/data/duolingo/duolingo_sync.dart';
+import 'package:sticker_world/data/duolingo/usage_source.dart';
 import 'package:sticker_world/data/repositories/child_repository.dart';
+import 'package:sticker_world/data/repositories/duolingo_repository.dart';
 import 'package:sticker_world/data/repositories/reward_repository.dart';
 import 'package:sticker_world/data/repositories/routine_repository.dart';
 import 'package:sticker_world/data/repositories/settings_repository.dart';
@@ -145,3 +149,19 @@ final clearDatesProvider = StreamProvider<Set<String>>((ref) {
       .watchClearDates(child.id)
       .map((dates) => dates.toSet());
 });
+
+final duolingoApiProvider = Provider<DuolingoApi>((_) => DuolingoWebApi());
+
+final usageSourceProvider = Provider<UsageSource>((_) => UsageChannel());
+
+final duolingoRepositoryProvider = Provider<DuolingoRepository>(
+  (ref) => DuolingoRepository(ref.watch(databaseProvider)),
+);
+
+final duolingoSyncProvider = Provider<DuolingoSync>(
+  (ref) => DuolingoSync(
+    api: ref.watch(duolingoApiProvider),
+    usage: ref.watch(usageSourceProvider),
+    repository: ref.watch(duolingoRepositoryProvider),
+  ),
+);

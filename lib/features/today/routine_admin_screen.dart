@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/widgets/jelly_button.dart';
 import 'package:sticker_world/core/widgets/outlined_text.dart';
@@ -55,14 +57,32 @@ class RoutineAdminScreen extends ConsumerWidget {
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 0, 24, 16),
-                child: JellyButton(
-                  color: AppColors.gold,
-                  height: 88,
-                  semanticLabel: '루틴 추가',
-                  onTap: () => _edit(context, ref, null),
-                  child: const Center(
-                    child: OutlinedText('+ 루틴 추가', fontSize: 34),
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    JellyButton(
+                      color: AppColors.gold,
+                      height: 88,
+                      semanticLabel: '루틴 추가',
+                      onTap: () => _edit(context, ref, null),
+                      child: const Center(
+                        child: OutlinedText('+ 루틴 추가', fontSize: 34),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    JellyButton(
+                      color: AppColors.white,
+                      height: 72,
+                      semanticLabel: '듀오링고 설정',
+                      onTap: () => context.push(Routes.duolingo),
+                      child: const Center(
+                        child: Text(
+                          '듀오링고 설정',
+                          style: TextStyle(fontSize: 26, color: AppColors.ink),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],

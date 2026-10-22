@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart';
 import 'package:sticker_world/data/db/app_database.dart';
 
 class ChildRepository {
@@ -16,5 +17,21 @@ class ChildRepository {
 
   Future<int> create({required String name}) {
     return _db.into(_db.children).insert(ChildrenCompanion.insert(name: name));
+  }
+
+  /// 듀오링고 아이디와 앱 패키지를 저장한다. 비밀번호는 저장하지 않는다.
+  Future<void> updateDuolingo({
+    required int childId,
+    required String? username,
+    required String packageName,
+  }) {
+    return (_db.update(_db.children)..where((t) => t.id.equals(childId))).write(
+      ChildrenCompanion(
+        duolingoUsername: Value(
+          username?.trim().isEmpty ?? true ? null : username!.trim(),
+        ),
+        duolingoPackage: Value(packageName.trim()),
+      ),
+    );
   }
 }

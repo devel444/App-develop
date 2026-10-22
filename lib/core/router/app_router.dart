@@ -1,6 +1,7 @@
 import 'package:go_router/go_router.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
+import 'package:sticker_world/features/duolingo/duolingo_settings_screen.dart';
 import 'package:sticker_world/features/home/home_screen.dart';
 import 'package:sticker_world/features/stamp/remove_screen.dart';
 import 'package:sticker_world/features/today/routine_admin_screen.dart';
@@ -88,6 +89,10 @@ GoRouter buildRouter({required String initialLocation}) {
       GoRoute(
         path: Routes.routines,
         builder: (_, _) => const RoutineAdminScreen(),
+      ),
+      GoRoute(
+        path: Routes.duolingo,
+        builder: (_, _) => const DuolingoSettingsScreen(),
       ),
       GoRoute(
         path: Routes.badges,
