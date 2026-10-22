@@ -36,6 +36,16 @@ class StickerRepository {
   final AppDatabase _db;
   final DateTime Function() _clock;
 
+  /// 특정 날짜(YYYY-MM-DD)에 생긴 스티커 기록. 일기에 오늘의 스티커를 붙일 때 쓴다.
+  Stream<List<StickerEvent>> watchEventsOn(int childId, String localDate) {
+    return (_db.select(_db.stickerEvents)
+          ..where(
+            (t) => t.childId.equals(childId) & t.localDate.equals(localDate),
+          )
+          ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+        .watch();
+  }
+
   Future<LedgerView> view(int childId) async {
     return StickerLedger.replay(await _ledger(childId));
   }

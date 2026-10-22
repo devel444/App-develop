@@ -1,6 +1,7 @@
 import 'package:go_router/go_router.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
+import 'package:sticker_world/features/diary/diary_screen.dart';
 import 'package:sticker_world/features/duolingo/duolingo_settings_screen.dart';
 import 'package:sticker_world/features/home/home_screen.dart';
 import 'package:sticker_world/features/stamp/remove_screen.dart';
@@ -56,11 +57,7 @@ GoRouter buildRouter({required String initialLocation}) {
             routes: [
               GoRoute(
                 path: Routes.diary,
-                builder: (_, _) => const PlaceholderScreen(
-                  title: '일기',
-                  color: AppColors.orange,
-                  note: 'P6 단계에서 만들어요.\n날씨·기분 고르기, 말로 쓰기, 엄마·아빠 답장',
-                ),
+                builder: (_, _) => const DiaryScreen(),
               ),
             ],
           ),

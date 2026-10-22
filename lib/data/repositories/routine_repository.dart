@@ -225,6 +225,23 @@ class RoutineRepository {
     });
   }
 
+  /// 오늘 해야 하는 종류(kind)의 루틴 중 첫 번째를 체크한다 (예: 일기를 저장하면 'diary').
+  /// 그런 루틴이 없으면 null.
+  Future<CompleteResult?> completeFirstDue({
+    required int childId,
+    required String kind,
+    required String source,
+  }) async {
+    final due = (await _dueRoutinesOn(
+      childId,
+      _clock(),
+    )).where((r) => r.kind == kind).toList();
+    if (due.isEmpty) {
+      return null;
+    }
+    return complete(routineId: due.first.id, source: source);
+  }
+
   /// 잘못 눌렀을 때 오늘 체크를 지운다 (엄마·아빠 PIN 후 호출).
   Future<void> uncomplete(int routineId) {
     final date = localDateKey(_clock());

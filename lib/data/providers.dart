@@ -5,6 +5,7 @@ import 'package:sticker_world/data/duolingo/duolingo_api.dart';
 import 'package:sticker_world/data/duolingo/duolingo_sync.dart';
 import 'package:sticker_world/data/duolingo/usage_source.dart';
 import 'package:sticker_world/data/repositories/child_repository.dart';
+import 'package:sticker_world/data/repositories/diary_repository.dart';
 import 'package:sticker_world/data/repositories/duolingo_repository.dart';
 import 'package:sticker_world/data/repositories/reward_repository.dart';
 import 'package:sticker_world/data/repositories/routine_repository.dart';
@@ -165,3 +166,40 @@ final duolingoSyncProvider = Provider<DuolingoSync>(
     repository: ref.watch(duolingoRepositoryProvider),
   ),
 );
+
+final diaryRepositoryProvider = Provider<DiaryRepository>(
+  (ref) => DiaryRepository(ref.watch(databaseProvider)),
+);
+
+/// 특정 날짜의 일기 한 편 (없으면 null).
+final diaryOnProvider = StreamProvider.family<DiaryEntry?, String>(
+  (ref, date) => ref.watch(diaryRepositoryProvider).watchOn(date),
+);
+
+/// 아이의 일기 전체 (최신 날짜 위).
+final diaryEntriesProvider = StreamProvider<List<DiaryEntry>>((ref) {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return Stream.value(const []);
+  }
+  return ref.watch(diaryRepositoryProvider).watchAll(child.id);
+});
+
+/// 특정 날짜에 생긴 스티커 기록.
+final stickerEventsOnProvider =
+    StreamProvider.family<List<StickerEvent>, String>((ref, date) {
+      final child = ref.watch(currentChildProvider).value;
+      if (child == null) {
+        return Stream.value(const []);
+      }
+      return ref.watch(stickerRepositoryProvider).watchEventsOn(child.id, date);
+    });
+
+/// 카테고리 id → 이름 (칭찬·잘못 모두).
+final categoryNamesProvider = FutureProvider<Map<int, String>>((ref) async {
+  final praise = await ref.watch(categoriesProvider('praise').future);
+  final misdeed = await ref.watch(categoriesProvider('misdeed').future);
+  return {
+    for (final c in [...praise, ...misdeed]) c.id: c.name,
+  };
+});
