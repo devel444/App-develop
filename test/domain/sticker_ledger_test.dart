@@ -109,4 +109,17 @@ void main() {
     expect(view.balance, 3);
     expect(view.stack.length, view.balance);
   });
+
+  test('교환은 맨 위 스티커를 가격만큼 빼고, 되돌릴 기록이 되지 않는다', () {
+    final view = StickerLedger.replay([
+      _event(1, 'earn', 3, category: 10),
+      _event(2, 'earn', 2, category: 20),
+      _event(3, 'redeem', -4),
+    ]);
+
+    expect(view.balance, 1);
+    expect(view.stack, [10]);
+    expect(view.lastUndoableId, isNull);
+    expect(view.totalEarned, 5);
+  });
 }

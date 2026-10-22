@@ -19,6 +19,7 @@ void main() {
               balance: 37,
               stack: List.filled(37, 1),
               colorOf: (_) => AppColors.categoryStudy,
+              giftCells: const {30, 50, 100},
             ),
           ),
         ),

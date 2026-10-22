@@ -23,6 +23,7 @@ Widget _homeApp() => ProviderScope(
       ),
     ),
     categoryColorsProvider.overrideWith((ref) async => <int, int>{}),
+    activeRewardsProvider.overrideWith((ref) => Stream.value(const [])),
     ledgerProvider.overrideWith((ref) => Stream.value(LedgerView.empty)),
     initialLocationProvider.overrideWithValue(Routes.home),
   ],

@@ -4,6 +4,8 @@ import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/widgets/pattern_background.dart';
 import 'package:sticker_world/features/home/home_screen.dart';
 import 'package:sticker_world/features/stamp/remove_screen.dart';
+import 'package:sticker_world/features/shop/reward_admin_screen.dart';
+import 'package:sticker_world/features/shop/shop_screen.dart';
 import 'package:sticker_world/features/stamp/stamp_screen.dart';
 import 'package:sticker_world/features/world/map_screen.dart';
 import 'package:sticker_world/features/onboarding/onboarding_screen.dart';
@@ -82,13 +84,10 @@ GoRouter buildRouter({required String initialLocation}) {
       // 전체 화면으로 여는 화면들 (하단 탭 바를 가린다).
       GoRoute(path: Routes.stamp, builder: (_, _) => const StampScreen()),
       GoRoute(path: Routes.remove, builder: (_, _) => const RemoveScreen()),
+      GoRoute(path: Routes.shop, builder: (_, _) => const ShopScreen()),
       GoRoute(
-        path: Routes.shop,
-        builder: (_, _) => const PlaceholderScreen(
-          title: '선물가게',
-          color: AppColors.pink,
-          note: 'P3 단계에서 만들어요.\n선물 교환과 교환권',
-        ),
+        path: Routes.rewards,
+        builder: (_, _) => const RewardAdminScreen(),
       ),
       GoRoute(
         path: Routes.badges,

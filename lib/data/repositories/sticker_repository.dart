@@ -6,6 +6,20 @@ import 'package:sticker_world/domain/sticker_rules.dart';
 
 enum MisdeedOutcome { removed, warned }
 
+class RedeemResult {
+  const RedeemResult({
+    required this.redemptionId,
+    required this.voucherNo,
+    required this.rewardName,
+    required this.cost,
+  });
+
+  final int redemptionId;
+  final String voucherNo;
+  final String rewardName;
+  final int cost;
+}
+
 class MisdeedResult {
   const MisdeedResult(this.outcome, this.eventId);
 
@@ -99,6 +113,55 @@ class StickerRepository {
     });
   }
 
+  /// 선물 교환. 가격만큼 스티커가 빠지고 교환권(No.001…)이 생긴다. 되돌릴 수 없다.
+  Future<RedeemResult> redeem({required int childId, required int rewardId}) {
+    return _db.transaction(() async {
+      final reward = await (_db.select(
+        _db.rewards,
+      )..where((t) => t.id.equals(rewardId))).getSingleOrNull();
+      if (reward == null || !reward.isActive) {
+        throw const StickerRuleException('이 선물은 지금 살 수 없어요.');
+      }
+
+      final balance = (await view(childId)).balance;
+      if (balance < reward.cost) {
+        throw StickerRuleException('${reward.cost - balance}개 더 모으면 살 수 있어요.');
+      }
+
+      final eventId = await _insert(
+        childId: childId,
+        type: 'redeem',
+        amount: -reward.cost,
+        rewardId: rewardId,
+        memo: reward.name,
+      );
+
+      final issued = await (_db.select(
+        _db.redemptions,
+      )..where((t) => t.childId.equals(childId))).get();
+      final voucherNo = 'No.${(issued.length + 1).toString().padLeft(3, '0')}';
+
+      final redemptionId = await _db
+          .into(_db.redemptions)
+          .insert(
+            RedemptionsCompanion.insert(
+              childId: childId,
+              rewardId: rewardId,
+              voucherNo: voucherNo,
+              cost: reward.cost,
+              eventId: eventId,
+            ),
+          );
+
+      return RedeemResult(
+        redemptionId: redemptionId,
+        voucherNo: voucherNo,
+        rewardName: reward.name,
+        cost: reward.cost,
+      );
+    });
+  }
+
   /// 가장 최근 받기·빼기를 되돌린다. 기록 후 [undoSeconds] 안에만 된다.
   /// 되돌리기도 새 행으로 남는다.
   Future<void> undoLast({required int childId, required int undoSeconds}) {
@@ -146,6 +209,7 @@ class StickerRepository {
     String? memo,
     String? nextPromise,
     int? relatedEventId,
+    int? rewardId,
   }) {
     final now = _clock();
     return _db
@@ -159,6 +223,7 @@ class StickerRepository {
             memo: Value(memo),
             nextPromise: Value(nextPromise),
             relatedEventId: Value(relatedEventId),
+            rewardId: Value(rewardId),
             createdAt: Value(now),
             localDate: localDateKey(now),
           ),

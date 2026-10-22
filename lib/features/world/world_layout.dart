@@ -8,9 +8,6 @@ abstract final class WorldLayout {
 
   static const worldNames = ['풀밭', '사막', '바다', '얼음', '성'];
 
-  /// 선물 가격 칸. 지금은 임시 값이고 P3에서 선물 DB를 읽도록 바꾼다.
-  static const giftCosts = [30, 50, 100];
-
   /// 잔액에 맞는 월드 번호(0부터). 0개면 첫 월드.
   static int worldFor(int balance) {
     if (balance <= 0) {
@@ -39,6 +36,4 @@ abstract final class WorldLayout {
     final col = row.isEven ? index : columns - 1 - index;
     return (row: row, col: col);
   }
-
-  static bool isGift(int cellNumber) => giftCosts.contains(cellNumber);
 }

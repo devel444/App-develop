@@ -15,4 +15,5 @@ abstract final class Routes {
   static const shop = '/shop';
   static const badges = '/badges';
   static const parent = '/parent';
+  static const rewards = '/rewards';
 }

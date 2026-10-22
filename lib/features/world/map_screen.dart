@@ -37,6 +37,8 @@ class _MapScreenState extends ConsumerState<MapScreen> {
   Widget build(BuildContext context) {
     final ledger = ref.watch(ledgerProvider).value ?? LedgerView.empty;
     final colors = ref.watch(categoryColorsProvider).value ?? const {};
+    final rewards = ref.watch(activeRewardsProvider).value ?? const [];
+    final giftCosts = [for (final reward in rewards) reward.cost];
     final page = _page ?? WorldLayout.worldFor(ledger.balance);
     final worldName = WorldLayout.worldNames[page];
 
@@ -65,6 +67,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                       balance: ledger.balance,
                       stack: ledger.stack,
                       colorOf: (id) => Color(colors[id] ?? 0xFF7A7A8C),
+                      giftCells: giftCosts.toSet(),
                     ),
                   ),
                 ),
@@ -74,7 +77,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
           const SizedBox(height: 8),
           PageDots(count: WorldLayout.worldCount, index: page),
           const SizedBox(height: 12),
-          _StatusLine(balance: ledger.balance),
+          _StatusLine(balance: ledger.balance, giftCosts: giftCosts),
           const SizedBox(height: 12),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -126,9 +129,10 @@ class _MapScreenState extends ConsumerState<MapScreen> {
 
 /// 지금 몇 번 칸인지, 다음 선물까지 몇 개 남았는지.
 class _StatusLine extends StatelessWidget {
-  const _StatusLine({required this.balance});
+  const _StatusLine({required this.balance, required this.giftCosts});
 
   final int balance;
+  final List<int> giftCosts;
 
   @override
   Widget build(BuildContext context) {
@@ -136,7 +140,7 @@ class _StatusLine extends StatelessWidget {
     if (balance >= WorldLayout.worldCount * WorldLayout.worldSize) {
       text = '가득 찼어요! 선물가게에서 선물을 골라 보세요.';
     } else {
-      final next = WorldLayout.giftCosts.where((cost) => cost > balance);
+      final next = (giftCosts.where((cost) => cost > balance).toList()..sort());
       text = next.isEmpty
           ? '지금 $balance개!'
           : '지금 $balance개 · 다음 선물까지 ${next.first - balance}개!';

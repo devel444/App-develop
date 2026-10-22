@@ -16,7 +16,6 @@ import 'package:sticker_world/features/home/default_character.dart';
 import 'package:sticker_world/features/home/home_landscape.dart';
 
 // 열쇠 3칸 = 선물 3개의 가격. 지금 잔액이 가격 이상이면 열쇠가 열린다 (P3에서 선물 DB로 바꾼다).
-const _keyCosts = [30, 50, 100];
 // 배지 칸은 P8에서 배지 DB로 바꾼다. 지금은 임시 값.
 const _medalsEarned = 3;
 const _stickerMax = 100;
@@ -36,9 +35,10 @@ class HomeScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final name = ref.watch(currentChildProvider).value?.name ?? '친구';
     final summary = ref.watch(ledgerProvider).value ?? LedgerView.empty;
-    final keysEarned = _keyCosts
-        .where((cost) => summary.balance >= cost)
-        .length;
+    // 열쇠 3칸 = 가격이 가장 싼 선물 3개. 잔액이 가격 이상이면 열린다.
+    final rewards = ref.watch(activeRewardsProvider).value ?? const [];
+    final keyCosts = [for (final reward in rewards.take(3)) reward.cost];
+    final keysEarned = keyCosts.where((cost) => summary.balance >= cost).length;
 
     return Stack(
       fit: StackFit.expand,

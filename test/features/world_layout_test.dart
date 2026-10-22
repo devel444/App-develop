@@ -40,11 +40,4 @@ void main() {
       );
     }
   });
-
-  test('선물 칸은 30, 50, 100번째다', () {
-    expect(WorldLayout.isGift(30), isTrue);
-    expect(WorldLayout.isGift(50), isTrue);
-    expect(WorldLayout.isGift(100), isTrue);
-    expect(WorldLayout.isGift(31), isFalse);
-  });
 }

@@ -46,7 +46,7 @@ class LedgerView {
   /// 길이는 항상 [balance]와 같다.
   final List<int> stack;
 
-  /// 지금 되돌릴 수 있는 가장 최근 기록 id. 없으면 null.
+  /// 지금 되돌릴 수 있는 가장 최근 받기·빼기 id. 없으면 null.
   final int? lastUndoableId;
 }
 
@@ -92,19 +92,29 @@ abstract final class StickerLedger {
             }
           }
           balance += event.amount;
+        case 'redeem':
+          // 선물 교환: 가격만큼 맨 위 스티커가 빠진다. 교환은 되돌릴 수 없다.
+          _pop(stack, -event.amount);
+          balance += event.amount;
         default:
-          // warn·bonus·redeem·adjust 는 이 단계에서 잔액을 바꾸지 않는다.
+          // warn·bonus·adjust 는 이 단계에서 잔액을 바꾸지 않는다.
           balance += event.amount;
       }
     }
 
-    int? lastUndoable;
+    // 가장 최근의 되돌릴 수 있는 기록. 그 뒤에 교환이 있으면 되돌릴 수 없다.
+    int? lastEffective;
+    String? lastEffectiveType;
     for (final event in sorted) {
-      if ((event.type == 'earn' || event.type == 'remove') &&
+      if ((event.type == 'earn' ||
+              event.type == 'remove' ||
+              event.type == 'redeem') &&
           !undone.contains(event.id)) {
-        lastUndoable = event.id;
+        lastEffective = event.id;
+        lastEffectiveType = event.type;
       }
     }
+    final lastUndoable = lastEffectiveType == 'redeem' ? null : lastEffective;
 
     return LedgerView(
       balance: balance,

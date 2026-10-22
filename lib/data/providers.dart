@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sticker_world/data/db/app_database.dart';
 import 'package:sticker_world/data/repositories/catalog_repository.dart';
 import 'package:sticker_world/data/repositories/child_repository.dart';
+import 'package:sticker_world/data/repositories/reward_repository.dart';
 import 'package:sticker_world/data/repositories/settings_repository.dart';
 import 'package:sticker_world/data/repositories/sticker_repository.dart';
 import 'package:sticker_world/domain/pin_service.dart';
@@ -81,3 +82,26 @@ class StickerSettings {
   final int undoSeconds;
   final bool yellowCardOn;
 }
+
+final rewardRepositoryProvider = Provider<RewardRepository>(
+  (ref) => RewardRepository(ref.watch(databaseProvider)),
+);
+
+/// 지금 살 수 있게 열려 있는 선물. 가격 순서.
+final activeRewardsProvider = StreamProvider<List<Reward>>(
+  (ref) => ref.watch(rewardRepositoryProvider).watchActive(),
+);
+
+/// 부모 화면에서 보는 전체 선물 (숨긴 것 포함).
+final allRewardsProvider = StreamProvider<List<Reward>>(
+  (ref) => ref.watch(rewardRepositoryProvider).watchAll(),
+);
+
+/// 아이의 교환권 목록 (최신 순).
+final redemptionsProvider = StreamProvider<List<Redemption>>((ref) {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return Stream.value(const []);
+  }
+  return ref.watch(rewardRepositoryProvider).watchRedemptions(child.id);
+});

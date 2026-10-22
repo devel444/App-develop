@@ -18,6 +18,7 @@ class WorldBoard extends StatelessWidget {
     required this.balance,
     required this.stack,
     required this.colorOf,
+    this.giftCells = const {},
   });
 
   final int world;
@@ -28,6 +29,9 @@ class WorldBoard extends StatelessWidget {
 
   /// 카테고리 id → 색. 없으면 기본 색을 쓴다.
   final Color Function(int categoryId) colorOf;
+
+  /// 선물 가격 칸 번호들. 선물 목록에서 온다.
+  final Set<int> giftCells;
 
   @override
   Widget build(BuildContext context) {
@@ -45,7 +49,7 @@ class WorldBoard extends StatelessWidget {
               color: number <= balance && number <= stack.length
                   ? colorOf(stack[number - 1])
                   : null,
-              isGift: WorldLayout.isGift(number),
+              isGift: giftCells.contains(number),
               isCurrent: number == balance,
             ),
           ),
