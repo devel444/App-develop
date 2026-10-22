@@ -3,13 +3,25 @@ import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/widgets/pattern_background.dart';
 import 'package:sticker_world/features/home/home_screen.dart';
+import 'package:sticker_world/features/onboarding/onboarding_screen.dart';
+import 'package:sticker_world/features/pin/parent_pin_screen.dart';
+import 'package:sticker_world/features/pin/recovery_screen.dart';
 import 'package:sticker_world/features/placeholder/placeholder_screen.dart';
 import 'package:sticker_world/features/shell/main_shell.dart';
 
-GoRouter buildRouter() {
+GoRouter buildRouter({required String initialLocation}) {
   return GoRouter(
-    initialLocation: Routes.home,
+    initialLocation: initialLocation,
     routes: [
+      GoRoute(
+        path: Routes.onboarding,
+        builder: (_, _) => const OnboardingScreen(),
+      ),
+      GoRoute(path: Routes.pin, builder: (_, _) => const ParentPinScreen()),
+      GoRoute(
+        path: Routes.pinRecovery,
+        builder: (_, _) => const RecoveryScreen(),
+      ),
       // 하단 탭 5개. 탭마다 화면 상태가 따로 남는다.
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) =>
@@ -109,7 +121,7 @@ GoRouter buildRouter() {
         builder: (_, _) => const PlaceholderScreen(
           title: '부모 모드',
           color: AppColors.purple,
-          note: 'P1(PIN)과 P9(캐릭터·꾸미기)에서 만들어요.',
+          note: 'P9 단계에서 만들어요.\n캐릭터 꾸미기, 설정, 백업',
         ),
       ),
     ],

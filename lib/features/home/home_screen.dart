@@ -1,8 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:sticker_world/core/assets/asset_resolver.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
+import 'package:sticker_world/data/providers.dart';
+import 'package:sticker_world/data/repositories/sticker_repository.dart';
+import 'package:sticker_world/features/pin/parent_pin_screen.dart';
 import 'package:sticker_world/core/widgets/coin_icon.dart';
 import 'package:sticker_world/core/widgets/gold_medal.dart';
 import 'package:sticker_world/core/widgets/hold_to_open.dart';
@@ -11,12 +15,11 @@ import 'package:sticker_world/core/widgets/outlined_text.dart';
 import 'package:sticker_world/features/home/default_character.dart';
 import 'package:sticker_world/features/home/home_landscape.dart';
 
-// P0: 화면 구조만 만든다. 아래 값은 임시이며 P1에서 DB 값으로 바꾼다.
-const _totalCoins = 128;
-const _stickerCount = 37;
+// 열쇠 3칸 = 선물 3개의 가격. 지금 잔액이 가격 이상이면 열쇠가 열린다 (P3에서 선물 DB로 바꾼다).
+const _keyCosts = [30, 50, 100];
+// 배지 칸은 P8에서 배지 DB로 바꾼다. 지금은 임시 값.
+const _medalsEarned = 3;
 const _stickerMax = 100;
-const _keysEarned = 1; // 열쇠 3칸(30·50·100개 선물) 중 열린 칸 수
-const _medalsEarned = 3; // 배지 5칸 중 얻은 개수
 const _medalIcons = [
   Icons.star_rounded,
   Icons.flag_rounded,
@@ -26,11 +29,18 @@ const _medalIcons = [
 ];
 
 /// 홈: USJ 앱 메인 화면 구조 (PLAN.md 2-0).
-class HomeScreen extends StatelessWidget {
+class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final name = ref.watch(currentChildProvider).value?.name ?? '친구';
+    final summary =
+        ref.watch(stickerSummaryProvider).value ?? StickerSummary.empty;
+    final keysEarned = _keyCosts
+        .where((cost) => summary.balance >= cost)
+        .length;
+
     return Stack(
       fit: StackFit.expand,
       children: [
@@ -41,10 +51,14 @@ class HomeScreen extends StatelessWidget {
           bottom: false,
           child: Column(
             children: [
-              const _TopBar(),
-              const _ScoreBand(),
-              const Expanded(child: _Hero()),
-              const _GoldPanel(),
+              _TopBar(name: name),
+              _ScoreBand(
+                totalCoins: summary.totalEarned,
+                keysEarned: keysEarned,
+                name: name,
+              ),
+              Expanded(child: _Hero(name: name)),
+              _GoldPanel(balance: summary.balance),
               const SizedBox(height: 16),
               const _ActionRow(),
               const SizedBox(height: 16),
@@ -57,7 +71,9 @@ class HomeScreen extends StatelessWidget {
 }
 
 class _TopBar extends StatelessWidget {
-  const _TopBar();
+  const _TopBar({required this.name});
+
+  final String name;
 
   @override
   Widget build(BuildContext context) {
@@ -66,14 +82,14 @@ class _TopBar extends StatelessWidget {
       child: Row(
         children: [
           const SizedBox(width: 72),
-          const Expanded(
-            child: Center(child: OutlinedText('지우의 스티커 월드', fontSize: 34)),
+          Expanded(
+            child: Center(child: OutlinedText('$name의 스티커 월드', fontSize: 34)),
           ),
           SizedBox(
             width: 72,
             height: 72,
             child: HoldToOpen(
-              onOpen: () => context.push(Routes.parent),
+              onOpen: () => openParentMode(context),
               child: const Icon(
                 Icons.notifications_rounded,
                 color: AppColors.white,
@@ -89,7 +105,15 @@ class _TopBar extends StatelessWidget {
 
 /// 빨간 띠: 코인 수 · 엠블럼 · 선물 열쇠.
 class _ScoreBand extends StatelessWidget {
-  const _ScoreBand();
+  const _ScoreBand({
+    required this.totalCoins,
+    required this.keysEarned,
+    required this.name,
+  });
+
+  final int totalCoins;
+  final int keysEarned;
+  final String name;
 
   @override
   Widget build(BuildContext context) {
@@ -109,8 +133,8 @@ class _ScoreBand extends StatelessWidget {
                     child: FittedBox(
                       fit: BoxFit.scaleDown,
                       alignment: Alignment.centerRight,
-                      child: const OutlinedText(
-                        '$_totalCoins',
+                      child: OutlinedText(
+                        '$totalCoins',
                         fontFamily: 'LilitaOne',
                         fontSize: 44,
                         color: AppColors.ink,
@@ -124,7 +148,7 @@ class _ScoreBand extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          const _Emblem(),
+          _Emblem(initial: name.isEmpty ? '' : name.substring(0, 1)),
           const SizedBox(width: 12),
           Expanded(
             child: _Pill(
@@ -132,7 +156,7 @@ class _ScoreBand extends StatelessWidget {
                 children: [
                   for (var i = 0; i < 3; i++)
                     Expanded(
-                      child: Center(child: _KeySlot(opened: i < _keysEarned)),
+                      child: Center(child: _KeySlot(opened: i < keysEarned)),
                     ),
                 ],
               ),
@@ -192,7 +216,9 @@ class _KeySlot extends StatelessWidget {
 }
 
 class _Emblem extends StatelessWidget {
-  const _Emblem();
+  const _Emblem({required this.initial});
+
+  final String initial;
 
   @override
   Widget build(BuildContext context) {
@@ -213,9 +239,9 @@ class _Emblem extends StatelessWidget {
           shape: BoxShape.circle,
           color: AppColors.white,
         ),
-        child: const Text(
-          '지',
-          style: TextStyle(fontSize: 40, color: AppColors.red),
+        child: Text(
+          initial,
+          style: const TextStyle(fontSize: 40, color: AppColors.red),
         ),
       ),
     );
@@ -224,7 +250,9 @@ class _Emblem extends StatelessWidget {
 
 /// 가운데: 캐릭터(원형 링 위), 이름표.
 class _Hero extends StatelessWidget {
-  const _Hero();
+  const _Hero({required this.name});
+
+  final String name;
 
   @override
   Widget build(BuildContext context) {
@@ -271,7 +299,7 @@ class _Hero extends StatelessWidget {
             color: const Color(0x8C1E5A8C),
             borderRadius: BorderRadius.circular(18),
           ),
-          child: const OutlinedText('지우', fontSize: 40, outlineWidth: 3),
+          child: OutlinedText(name, fontSize: 40, outlineWidth: 3),
         ),
         const SizedBox(height: 12),
       ],
@@ -294,7 +322,9 @@ class _Character extends StatelessWidget {
 
 /// 금색 패널: 보유 스티커 수(누르면 맵) · 배지 5칸(누르면 배지 도감).
 class _GoldPanel extends StatelessWidget {
-  const _GoldPanel();
+  const _GoldPanel({required this.balance});
+
+  final int balance;
 
   @override
   Widget build(BuildContext context) {
@@ -314,7 +344,7 @@ class _GoldPanel extends StatelessWidget {
             GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => context.go(Routes.map),
-              child: const SizedBox(
+              child: SizedBox(
                 height: 104,
                 child: Center(
                   // 좁은 화면에서는 숫자 줄 전체를 줄여서 맞춘다.
@@ -326,7 +356,7 @@ class _GoldPanel extends StatelessWidget {
                         CoinIcon(size: 60),
                         SizedBox(width: 14),
                         OutlinedText(
-                          '$_stickerCount / $_stickerMax',
+                          '$balance / $_stickerMax',
                           fontFamily: 'LilitaOne',
                           fontSize: 56,
                           color: AppColors.ink,

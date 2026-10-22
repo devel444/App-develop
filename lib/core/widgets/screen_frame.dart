@@ -23,16 +23,20 @@ class ScreenFrame extends StatelessWidget {
     return PatternBackground(
       color: color,
       pattern: pattern,
-      child: SafeArea(
-        bottom: false,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
-              child: OutlinedText(title, fontSize: 52),
-            ),
-            Expanded(child: child),
-          ],
+      // TextField가 Material 조상을 요구하므로 투명한 Material로 감싼다.
+      child: Material(
+        type: MaterialType.transparency,
+        child: SafeArea(
+          bottom: false,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
+                child: OutlinedText(title, fontSize: 52),
+              ),
+              Expanded(child: child),
+            ],
+          ),
         ),
       ),
     );
