@@ -152,15 +152,27 @@ class _ScoreBand extends StatelessWidget {
           const SizedBox(width: 12),
           _Emblem(initial: name.isEmpty ? '' : name.substring(0, 1)),
           const SizedBox(width: 12),
+          // 열쇠를 누르면 선물 가게로 간다. 열린 열쇠는 바로 살 수 있다는 뜻이고,
+          // 잠긴 열쇠는 가게에서 다음 선물까지 얼마나 남았는지 보여 준다.
           Expanded(
-            child: _Pill(
-              child: Row(
-                children: [
-                  for (var i = 0; i < 3; i++)
-                    Expanded(
-                      child: Center(child: _KeySlot(opened: i < keysEarned)),
-                    ),
-                ],
+            child: Semantics(
+              button: true,
+              label: '선물 열쇠 $keysEarned개 열림, 선물 가게 열기',
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () => context.push(Routes.shop),
+                child: _Pill(
+                  child: Row(
+                    children: [
+                      for (var i = 0; i < 3; i++)
+                        Expanded(
+                          child: Center(
+                            child: _KeySlot(opened: i < keysEarned),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
