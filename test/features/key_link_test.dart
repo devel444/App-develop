@@ -40,6 +40,8 @@ Widget _homeWithRouter() {
       clearDatesProvider.overrideWith((ref) => Stream.value(const <String>{})),
       badgeAwardsProvider.overrideWith((ref) => Stream.value(const [])),
       characterPhotoProvider.overrideWith((ref) async => null),
+      dailyPraiseProvider.overrideWith((ref) async => null),
+      weeklyReportBannerProvider.overrideWith((ref) async => false),
     ],
     child: MaterialApp.router(theme: buildAppTheme(), routerConfig: router),
   );

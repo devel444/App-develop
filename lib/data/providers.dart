@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
@@ -23,6 +24,9 @@ import 'package:sticker_world/data/repositories/routine_repository.dart';
 import 'package:sticker_world/data/repositories/settings_repository.dart';
 import 'package:sticker_world/data/repositories/sticker_repository.dart';
 import 'package:sticker_world/domain/badge_rules.dart';
+import 'package:sticker_world/domain/daily_progress.dart';
+import 'package:sticker_world/domain/praise_pick.dart';
+import 'package:sticker_world/domain/weekly_report_banner.dart';
 import 'package:sticker_world/domain/growth_report.dart';
 import 'package:sticker_world/domain/pin_service.dart';
 import 'package:sticker_world/domain/sticker_ledger.dart';
@@ -390,5 +394,63 @@ final characterPhotoProvider = FutureProvider<String?>((ref) async {
   final path = await ref
       .watch(settingsRepositoryProvider)
       .get('character_photo');
+  return path == null || path.isEmpty ? null : path;
+});
+
+/// 무작위 값. 테스트에서는 정해진 값으로 바꾼다.
+final randomProvider = Provider<Random>((_) => Random());
+
+/// 오늘 처음 앱을 열었을 때 칭찬 문구 팝업 (하루 한 번, 절반쯤만 띄운다). 없으면 null.
+final dailyPraiseProvider = FutureProvider<String?>((ref) async {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return null;
+  }
+  final settings = ref.read(settingsRepositoryProvider);
+  final today = localDateKey(DateTime.now());
+  if (await settings.get('praise_day') == today) {
+    return null;
+  }
+  await settings.set('praise_day', today);
+  final texts = await ref.read(praiseTextsProvider.future);
+  return pickPraise(texts, ref.read(randomProvider));
+});
+
+/// 오늘 할 일 진행률 (홈 · 할 일 탭).
+final dailyProgressProvider = Provider<DailyProgress>((ref) {
+  final routines = ref.watch(routinesProvider).value ?? const <Routine>[];
+  final logs =
+      ref.watch(routineLogsProvider(localDateKey(DateTime.now()))).value ??
+      const <RoutineLog>[];
+  return DailyProgress.count(
+    routines: [
+      for (final routine in routines)
+        (
+          id: routine.id,
+          daysMask: routine.daysMask,
+          isActive: routine.isActive,
+        ),
+    ],
+    loggedIds: {for (final log in logs) log.routineId},
+    now: DateTime.now(),
+  );
+});
+
+/// 일요일 저녁 이번 주 리포트 안내를 띄울지. 닫으면 그 주에는 다시 안 뜬다.
+final weeklyReportBannerProvider = FutureProvider<bool>((ref) async {
+  final seen = await ref
+      .watch(settingsRepositoryProvider)
+      .get('report_seen_week');
+  return shouldShowWeeklyReport(now: DateTime.now(), seenWeekKey: seen);
+});
+
+/// 월드 배경 사진 경로 (1~5 월드, 0부터). 없으면 null.
+final worldPhotoProvider = FutureProvider.family<String?, int>((
+  ref,
+  world,
+) async {
+  final path = await ref
+      .watch(settingsRepositoryProvider)
+      .get('world_photo_$world');
   return path == null || path.isEmpty ? null : path;
 });

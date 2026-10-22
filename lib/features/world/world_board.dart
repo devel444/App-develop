@@ -9,6 +9,8 @@ const _gapY = 30.0;
 const _boardWidth =
     WorldLayout.columns * _cell + (WorldLayout.columns - 1) * _gapX;
 const _boardHeight = WorldLayout.rows * _cell + (WorldLayout.rows - 1) * _gapY;
+const _tokenSize = 52.0;
+const _tokenLift = 54.0;
 
 /// 한 월드(20칸)의 판. 채운 칸은 받은 칭찬 색으로, 지금 위치에는 캐릭터 토큰이 선다.
 class WorldBoard extends StatelessWidget {
@@ -50,11 +52,26 @@ class WorldBoard extends StatelessWidget {
                   ? colorOf(stack[number - 1])
                   : null,
               isGift: giftCells.contains(number),
-              isCurrent: number == balance,
             ),
           ),
         );
       }
+    }
+
+    // 캐릭터 토큰은 칸마다 따로 두지 않고 판 위에 하나만 둔다. 잔액이 바뀌면 새 칸까지 튀어 간다.
+    final inWorld = balance - world * WorldLayout.worldSize;
+    final onThisWorld = inWorld >= 1 && inWorld <= WorldLayout.worldSize;
+    if (onThisWorld) {
+      final at = WorldLayout.positionOf(inWorld);
+      cells.add(
+        AnimatedPositioned(
+          duration: const Duration(milliseconds: 520),
+          curve: Curves.easeOutBack,
+          left: at.col * (_cell + _gapX) + (_cell - _tokenSize) / 2,
+          top: at.row * (_cell + _gapY) - _tokenLift,
+          child: const IgnorePointer(child: _Token()),
+        ),
+      );
     }
 
     return FittedBox(
@@ -81,14 +98,12 @@ class _CellTile extends StatelessWidget {
     required this.number,
     required this.filled,
     required this.isGift,
-    required this.isCurrent,
     this.color,
   });
 
   final int number;
   final bool filled;
   final bool isGift;
-  final bool isCurrent;
   final Color? color;
 
   @override
@@ -106,7 +121,6 @@ class _CellTile extends StatelessWidget {
             _starBlock()
           else
             _emptyBlock(),
-          if (isCurrent) Positioned(top: -54, child: _token()),
         ],
       ),
     );
@@ -167,11 +181,17 @@ class _CellTile extends StatelessWidget {
       ),
     );
   }
+}
 
-  Widget _token() {
+/// 지금 칸에 선 캐릭터 토큰.
+class _Token extends StatelessWidget {
+  const _Token();
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
-      width: 52,
-      height: 52,
+      width: _tokenSize,
+      height: _tokenSize,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,

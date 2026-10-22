@@ -11,6 +11,7 @@ import 'package:sticker_world/core/widgets/white_frame_card.dart';
 import 'package:sticker_world/data/providers.dart';
 import 'package:sticker_world/domain/sticker_ledger.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
+import 'package:sticker_world/features/world/world_backdrop.dart';
 import 'package:sticker_world/features/world/world_board.dart';
 import 'package:sticker_world/features/world/world_layout.dart';
 
@@ -62,12 +63,16 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                   child: WhiteFrameCard(
                     headerTitle: worldName,
                     headerColor: _worldColors[page],
-                    child: WorldBoard(
+                    child: WorldBackdrop(
                       world: page,
-                      balance: ledger.balance,
-                      stack: ledger.stack,
-                      colorOf: (id) => Color(colors[id] ?? 0xFF7A7A8C),
-                      giftCells: giftCosts.toSet(),
+                      tint: _worldColors[page],
+                      child: WorldBoard(
+                        world: page,
+                        balance: ledger.balance,
+                        stack: ledger.stack,
+                        colorOf: (id) => Color(colors[id] ?? 0xFF7A7A8C),
+                        giftCells: giftCosts.toSet(),
+                      ),
                     ),
                   ),
                 ),

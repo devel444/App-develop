@@ -16,6 +16,7 @@ import 'package:sticker_world/core/widgets/hold_to_open.dart';
 import 'package:sticker_world/core/widgets/jelly_button.dart';
 import 'package:sticker_world/core/widgets/outlined_text.dart';
 import 'package:sticker_world/features/home/default_character.dart';
+import 'package:sticker_world/features/home/home_extras.dart';
 import 'package:sticker_world/features/home/home_landscape.dart';
 
 // 열쇠 3칸 = 선물 3개의 가격. 지금 잔액이 가격 이상이면 열쇠가 열린다.
@@ -49,6 +50,7 @@ class HomeScreen extends ConsumerWidget {
         const Positioned.fill(
           child: CustomPaint(painter: HomeLandscapePainter()),
         ),
+        const PraiseOnce(),
         SafeArea(
           bottom: false,
           child: Column(
@@ -59,6 +61,7 @@ class HomeScreen extends ConsumerWidget {
                 keysEarned: keysEarned,
                 name: name,
               ),
+              const WeeklyReportBanner(),
               Expanded(child: _Hero(name: name)),
               _GoldPanel(balance: summary.balance, medalsEarned: medalsEarned),
               const SizedBox(height: 16),
@@ -315,7 +318,11 @@ class _Hero extends StatelessWidget {
           ),
           child: OutlinedText(name, fontSize: 40, outlineWidth: 3),
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
+        const HomeGreeting(),
+        const SizedBox(height: 8),
+        const TodayProgressBar(),
+        const SizedBox(height: 10),
       ],
     );
   }

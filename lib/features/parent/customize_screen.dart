@@ -11,6 +11,7 @@ import 'package:sticker_world/core/widgets/pill_row.dart';
 import 'package:sticker_world/core/widgets/screen_frame.dart';
 import 'package:sticker_world/core/widgets/white_frame_card.dart';
 import 'package:sticker_world/data/providers.dart';
+import 'package:sticker_world/features/world/world_layout.dart';
 import 'package:sticker_world/features/stamp/stamp_widgets.dart';
 
 /// 한 칸: 파일 이름, 쓰이는 곳, 아직 재생·표시 코드가 없는지, 기본 상태 문구.
@@ -87,8 +88,14 @@ class _CustomizeScreenState extends ConsumerState<CustomizeScreen> {
     await ref.read(settingsRepositoryProvider).set('sound_on', on ? '1' : '0');
   }
 
-  /// 사진첩에서 캐릭터 사진을 고르고, 앱 안 복사본을 설정에 적는다.
-  Future<void> _pickCharacter() async {
+  int _worldPick = 0;
+
+  /// 사진첩에서 사진을 고르고, 앱 안 복사본을 설정 [key]에 적는다. 이전 복사본은 지운다.
+  Future<void> _choosePhoto({
+    required String key,
+    required String prefix,
+    required VoidCallback onSaved,
+  }) async {
     final picked = await ImagePicker().pickImage(
       source: ImageSource.gallery,
       maxWidth: 1200,
@@ -100,31 +107,62 @@ class _CustomizeScreenState extends ConsumerState<CustomizeScreen> {
     setState(() => _busy = true);
     final settings = ref.read(settingsRepositoryProvider);
     final store = await ref.read(mediaStoreProvider.future);
-    final previous = await settings.get('character_photo');
-    final saved = await store.saveCopy(picked.path, prefix: 'character');
-    await settings.set('character_photo', saved);
+    final previous = await settings.get(key);
+    final saved = await store.saveCopy(picked.path, prefix: prefix);
+    await settings.set(key, saved);
     await store.deleteCopy(previous);
-    ref.invalidate(characterPhotoProvider);
+    onSaved();
     if (mounted) {
-      setState(() {
-        _busy = false;
-        _message = '캐릭터 사진을 바꿨어요. 홈에서 확인해 보세요.';
-      });
+      setState(() => _busy = false);
     }
   }
 
-  /// 기본 캐릭터로 되돌린다. 복사해 둔 사진은 지운다.
-  Future<void> _resetCharacter() async {
+  /// 사진을 빼고 기본 그림으로 되돌린다. 복사해 둔 사진은 지운다.
+  Future<void> _clearPhoto({
+    required String key,
+    required VoidCallback onCleared,
+  }) async {
     final settings = ref.read(settingsRepositoryProvider);
     final store = await ref.read(mediaStoreProvider.future);
-    final previous = await settings.get('character_photo');
-    await settings.set('character_photo', '');
+    final previous = await settings.get(key);
+    await settings.set(key, '');
     await store.deleteCopy(previous);
-    ref.invalidate(characterPhotoProvider);
-    if (mounted) {
-      setState(() => _message = '기본 캐릭터로 되돌렸어요.');
-    }
+    onCleared();
   }
+
+  Future<void> _pickCharacter() => _choosePhoto(
+    key: 'character_photo',
+    prefix: 'character',
+    onSaved: () {
+      ref.invalidate(characterPhotoProvider);
+      setState(() => _message = '캐릭터 사진을 바꿨어요. 홈에서 확인해 보세요.');
+    },
+  );
+
+  Future<void> _resetCharacter() => _clearPhoto(
+    key: 'character_photo',
+    onCleared: () {
+      ref.invalidate(characterPhotoProvider);
+      setState(() => _message = '기본 캐릭터로 되돌렸어요.');
+    },
+  );
+
+  Future<void> _pickWorld() => _choosePhoto(
+    key: 'world_photo_$_worldPick',
+    prefix: 'world${_worldPick + 1}',
+    onSaved: () {
+      ref.invalidate(worldPhotoProvider(_worldPick));
+      setState(() => _message = '월드 ${_worldPick + 1} 배경을 바꿨어요. 맵에서 확인해 보세요.');
+    },
+  );
+
+  Future<void> _resetWorld() => _clearPhoto(
+    key: 'world_photo_$_worldPick',
+    onCleared: () {
+      ref.invalidate(worldPhotoProvider(_worldPick));
+      setState(() => _message = '월드 ${_worldPick + 1} 배경을 기본 색으로 되돌렸어요.');
+    },
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -193,6 +231,71 @@ class _CustomizeScreenState extends ConsumerState<CustomizeScreen> {
                         ),
                       ),
                     ],
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              WhiteFrameCard(
+                headerTitle: '월드 배경',
+                headerColor: AppColors.pink,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        for (
+                          var world = 0;
+                          world < WorldLayout.worldCount;
+                          world++
+                        )
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 3,
+                              ),
+                              child: ChoiceButton(
+                                label: '${world + 1}',
+                                height: 64,
+                                selected: _worldPick == world,
+                                color: AppColors.gold,
+                                onTap: () => setState(() => _worldPick = world),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      '${_worldPick + 1}번 월드(${WorldLayout.worldNames[_worldPick]})의 배경으로 쓸 사진을 골라요.',
+                      style: const TextStyle(
+                        fontSize: 20,
+                        height: 1.4,
+                        color: AppColors.ink,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    JellyButton(
+                      color: AppColors.gold,
+                      height: 72,
+                      semanticLabel: '월드 배경 사진 고르기',
+                      onTap: _busy ? null : _pickWorld,
+                      child: const Center(
+                        child: OutlinedText('사진 고르기', fontSize: 28),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    JellyButton(
+                      color: AppColors.white,
+                      height: 64,
+                      semanticLabel: '월드 배경 기본으로',
+                      onTap: _busy ? null : _resetWorld,
+                      child: const Center(
+                        child: Text(
+                          '기본 색으로 되돌리기',
+                          style: TextStyle(fontSize: 22, color: AppColors.ink),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),

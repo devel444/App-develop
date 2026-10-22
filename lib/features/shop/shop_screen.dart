@@ -16,6 +16,7 @@ import 'package:sticker_world/domain/sticker_rules.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
 import 'package:sticker_world/features/shop/gift_picture.dart';
 import 'package:sticker_world/features/shop/redeem_celebration.dart';
+import 'package:sticker_world/features/shop/ticket_card.dart';
 import 'package:sticker_world/features/stamp/stamp_widgets.dart';
 
 /// 선물가게: 모은 스티커로 선물을 고르고, 교환권을 확인한다.
@@ -73,6 +74,11 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
     final rewards = ref.watch(activeRewardsProvider).value ?? const <Reward>[];
     final redemptions =
         ref.watch(redemptionsProvider).value ?? const <Redemption>[];
+    final rewardNames = {
+      for (final reward
+          in ref.watch(allRewardsProvider).value ?? const <Reward>[])
+        reward.id: reward.name,
+    };
 
     return Stack(
       fit: StackFit.expand,
@@ -119,6 +125,7 @@ class _ShopScreenState extends ConsumerState<ShopScreen> {
                     padding: const EdgeInsets.only(top: 12),
                     child: _VoucherRow(
                       redemption: redemption,
+                      rewardName: rewardNames[redemption.rewardId] ?? '선물',
                       onDelivered: () => _markDelivered(redemption),
                     ),
                   ),
@@ -313,87 +320,46 @@ class _RewardCard extends StatelessWidget {
   }
 }
 
-/// 교환권 한 줄. 받기 전이면 부모가 "받았어요"를 누를 수 있다.
+/// 교환권 한 장. 티켓 모양으로 보여 주고, 받기 전이면 부모가 "받았어요"를 누를 수 있다.
 class _VoucherRow extends StatelessWidget {
-  const _VoucherRow({required this.redemption, required this.onDelivered});
+  const _VoucherRow({
+    required this.redemption,
+    required this.rewardName,
+    required this.onDelivered,
+  });
 
   final Redemption redemption;
+  final String rewardName;
   final VoidCallback onDelivered;
 
   @override
   Widget build(BuildContext context) {
     final delivered = redemption.deliveredAt != null;
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.white,
-        borderRadius: BorderRadius.circular(28),
-        boxShadow: const [
-          BoxShadow(color: Color(0x26000000), offset: Offset(0, 4)),
-        ],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '${redemption.voucherNo} · ${redemption.cost}개 사용',
-                      style: const TextStyle(
-                        fontSize: 20,
-                        color: AppColors.misdeed,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      localDateKey(redemption.createdAt),
-                      style: const TextStyle(
-                        fontSize: 18,
-                        color: AppColors.ink,
-                      ),
-                    ),
-                  ],
-                ),
+    return TicketCard(
+      title: rewardName,
+      subtitle:
+          '${redemption.voucherNo} · ${redemption.cost}개 · ${localDateKey(redemption.createdAt)}',
+      color: delivered ? AppColors.cream : AppColors.white,
+      trailing: delivered
+          ? const Center(
+              child: Text(
+                '받았어요 ✓',
+                style: TextStyle(fontSize: 22, color: AppColors.green),
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 14,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: delivered ? AppColors.green : AppColors.orange,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  delivered ? '받음' : '받기 전',
-                  style: const TextStyle(fontSize: 20, color: AppColors.white),
-                ),
-              ),
-            ],
-          ),
-          if (!delivered) ...[
-            const SizedBox(height: 12),
-            JellyButton(
+            )
+          : JellyButton(
               color: AppColors.mint,
-              height: 64,
+              height: 72,
               semanticLabel: '받았어요',
               onTap: onDelivered,
               child: const Center(
                 child: Text(
-                  '받았어요 (엄마·아빠)',
-                  style: TextStyle(fontSize: 22, color: AppColors.ink),
+                  '받았어요',
+                  style: TextStyle(fontSize: 24, color: AppColors.ink),
                 ),
               ),
             ),
-          ],
-        ],
-      ),
     );
   }
 }

@@ -135,37 +135,57 @@ class _ReportPageState extends ConsumerState<ReportPage> {
             ),
           ),
           const SizedBox(height: 16),
-          WhiteFrameCard(
-            headerTitle: '지금 잘하고 있는 점',
-            headerColor: AppColors.gold,
-            child: Column(
-              children: [
-                for (final line in report.good)
-                  _LineRow(
-                    line: line,
-                    leading: const Icon(
-                      Icons.star_rounded,
-                      size: 32,
-                      color: AppColors.gold,
-                    ),
+          LayoutBuilder(
+            builder: (context, box) {
+              final goodCard = WhiteFrameCard(
+                headerTitle: '지금 잘하고 있는 점',
+                headerColor: AppColors.gold,
+                child: Column(
+                  children: [
+                    for (final line in report.good)
+                      _LineRow(
+                        line: line,
+                        leading: const Icon(
+                          Icons.star_rounded,
+                          size: 32,
+                          color: AppColors.gold,
+                        ),
+                      ),
+                  ],
+                ),
+              );
+              final fixCard = WhiteFrameCard(
+                headerTitle: '고쳐나가야 할 점',
+                headerColor: AppColors.orange,
+                child: Column(
+                  children: [
+                    for (final line in report.fix)
+                      _LineRow(line: line, leading: _fixIcon(line.tone)),
+                    if (report.nextPromise != null) ...[
+                      const SizedBox(height: 12),
+                      _PromiseBubble(text: report.nextPromise!),
+                    ],
+                  ],
+                ),
+              );
+              // 넓은 화면(태블릿 가로 폭)에서는 두 칸을 나란히, 좁으면 위아래로 보여 준다.
+              if (box.maxWidth >= 640) {
+                return IntrinsicHeight(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: goodCard),
+                      const SizedBox(width: 16),
+                      Expanded(child: fixCard),
+                    ],
                   ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          WhiteFrameCard(
-            headerTitle: '고쳐나가야 할 점',
-            headerColor: AppColors.orange,
-            child: Column(
-              children: [
-                for (final line in report.fix)
-                  _LineRow(line: line, leading: _fixIcon(line.tone)),
-                if (report.nextPromise != null) ...[
-                  const SizedBox(height: 12),
-                  _PromiseBubble(text: report.nextPromise!),
-                ],
-              ],
-            ),
+                );
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [goodCard, const SizedBox(height: 16), fixCard],
+              );
+            },
           ),
           const SizedBox(height: 16),
           WhiteFrameCard(
