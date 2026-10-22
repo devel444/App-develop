@@ -45,7 +45,7 @@ Widget _recordsApp() {
       routinesProvider.overrideWith((ref) => Stream.value(const [])),
       routineLogsProvider.overrideWith((ref, date) => Stream.value(const [])),
       diaryOnProvider.overrideWith((ref, date) => Stream.value(null)),
-      duolingoLatestProvider.overrideWith((ref) async => null),
+      duolingoLatestProvider.overrideWith((ref) => Stream.value(null)),
       reportCommentProvider.overrideWith((ref, key) => Stream.value(null)),
     ],
     child: const MaterialApp(home: RecordsScreen()),

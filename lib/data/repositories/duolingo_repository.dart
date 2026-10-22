@@ -48,10 +48,20 @@ class DuolingoRepository {
   }
 
   Future<DuolingoSnapshot?> latest(int childId) {
-    return (_db.select(_db.duolingoSnapshots)
-          ..where((t) => t.childId.equals(childId))
-          ..orderBy([(t) => OrderingTerm.desc(t.id)])
-          ..limit(1))
-        .getSingleOrNull();
+    return _latestQuery(childId).getSingleOrNull();
+  }
+
+  /// 새 확인 기록이 생기면 바로 바뀌는 최신 기록.
+  Stream<DuolingoSnapshot?> watchLatest(int childId) {
+    return _latestQuery(childId).watchSingleOrNull();
+  }
+
+  SimpleSelectStatement<$DuolingoSnapshotsTable, DuolingoSnapshot> _latestQuery(
+    int childId,
+  ) {
+    return _db.select(_db.duolingoSnapshots)
+      ..where((t) => t.childId.equals(childId))
+      ..orderBy([(t) => OrderingTerm.desc(t.id)])
+      ..limit(1);
   }
 }

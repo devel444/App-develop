@@ -4,6 +4,7 @@ import 'package:sticker_world/data/repositories/catalog_repository.dart';
 import 'package:sticker_world/data/duolingo/duolingo_api.dart';
 import 'package:sticker_world/data/duolingo/duolingo_sync.dart';
 import 'package:sticker_world/data/duolingo/usage_source.dart';
+import 'package:sticker_world/data/repositories/badge_repository.dart';
 import 'package:sticker_world/data/repositories/child_repository.dart';
 import 'package:sticker_world/data/repositories/diary_repository.dart';
 import 'package:sticker_world/data/repositories/duolingo_repository.dart';
@@ -12,6 +13,7 @@ import 'package:sticker_world/data/repositories/reward_repository.dart';
 import 'package:sticker_world/data/repositories/routine_repository.dart';
 import 'package:sticker_world/data/repositories/settings_repository.dart';
 import 'package:sticker_world/data/repositories/sticker_repository.dart';
+import 'package:sticker_world/domain/badge_rules.dart';
 import 'package:sticker_world/domain/growth_report.dart';
 import 'package:sticker_world/domain/pin_service.dart';
 import 'package:sticker_world/domain/sticker_ledger.dart';
@@ -231,11 +233,89 @@ final reportCommentProvider =
           .watch(child.id, key.$1, key.$2);
     });
 
-/// 가장 최근 듀오링고 확인 기록 (리포트의 연속 일수에 쓴다).
-final duolingoLatestProvider = FutureProvider<DuolingoSnapshot?>((ref) async {
+/// 가장 최근 듀오링고 확인 기록 (리포트·배지의 연속 일수에 쓴다).
+final duolingoLatestProvider = StreamProvider<DuolingoSnapshot?>((ref) {
   final child = ref.watch(currentChildProvider).value;
   if (child == null) {
-    return null;
+    return Stream.value(null);
   }
-  return ref.watch(duolingoRepositoryProvider).latest(child.id);
+  return ref.watch(duolingoRepositoryProvider).watchLatest(child.id);
+});
+
+final badgeRepositoryProvider = Provider<BadgeRepository>(
+  (ref) => BadgeRepository(
+    ref.watch(databaseProvider),
+    ref.watch(stickerRepositoryProvider),
+  ),
+);
+
+/// 켜져 있는 배지 전체 (도감용).
+final badgeCatalogProvider = StreamProvider<List<Badge>>(
+  (ref) => ref.watch(badgeRepositoryProvider).watchCatalog(),
+);
+
+/// 아이가 얻은 배지 (최근 순).
+final badgeAwardsProvider = StreamProvider<List<BadgeAward>>((ref) {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return Stream.value(const []);
+  }
+  return ref.watch(badgeRepositoryProvider).watchAwards(child.id);
+});
+
+/// 배지 조건 숫자. 기록이 바뀌면 다시 계산한다 (도감의 진행도 힌트용).
+final badgeStatsProvider = FutureProvider<BadgeStats?>((ref) {
+  ref
+    ..watch(stickerHistoryProvider)
+    ..watch(clearDatesProvider)
+    ..watch(diaryEntriesProvider)
+    ..watch(duolingoLatestProvider);
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return Future<BadgeStats?>.value();
+  }
+  return ref.watch(badgeRepositoryProvider).statsFor(child.id);
+});
+
+/// 얻었지만 아직 팝업으로 안 보여 준 배지.
+class BadgePopupQueue extends Notifier<List<Badge>> {
+  @override
+  List<Badge> build() => const [];
+
+  void add(List<Badge> badges) => state = [...state, ...badges];
+
+  void removeFirst() {
+    if (state.isNotEmpty) {
+      state = state.sublist(1);
+    }
+  }
+}
+
+final badgePopupQueueProvider = NotifierProvider<BadgePopupQueue, List<Badge>>(
+  BadgePopupQueue.new,
+);
+
+/// 기록이 바뀔 때마다 배지 판정을 돌리고, 새로 얻은 배지를 팝업 줄에 넣는다.
+/// 배지 판정 화면(BadgeWatcher)이 이 값을 읽어서 켠다. 테스트에서는 끈다.
+final badgeCheckProvider = Provider<bool>((ref) {
+  void check() {
+    final child = ref.read(currentChildProvider).value;
+    if (child == null) {
+      return;
+    }
+    ref.read(badgeRepositoryProvider).evaluate(childId: child.id).then((
+      awarded,
+    ) {
+      if (awarded.isNotEmpty) {
+        ref.read(badgePopupQueueProvider.notifier).add(awarded);
+      }
+    });
+  }
+
+  ref.listen(currentChildProvider, (_, _) => check(), fireImmediately: true);
+  ref.listen(stickerHistoryProvider, (_, _) => check());
+  ref.listen(clearDatesProvider, (_, _) => check());
+  ref.listen(diaryEntriesProvider, (_, _) => check());
+  ref.listen(duolingoLatestProvider, (_, _) => check());
+  return true;
 });

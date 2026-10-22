@@ -1,6 +1,8 @@
 import 'package:go_router/go_router.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
+import 'package:sticker_world/features/badges/badge_screen.dart';
+import 'package:sticker_world/features/badges/badge_watcher.dart';
 import 'package:sticker_world/features/diary/diary_screen.dart';
 import 'package:sticker_world/features/duolingo/duolingo_settings_screen.dart';
 import 'package:sticker_world/features/home/home_screen.dart';
@@ -34,7 +36,7 @@ GoRouter buildRouter({required String initialLocation}) {
       // 하단 탭 5개. 탭마다 화면 상태가 따로 남는다.
       StatefulShellRoute.indexedStack(
         builder: (context, state, navigationShell) =>
-            MainShell(navigationShell: navigationShell),
+            BadgeWatcher(child: MainShell(navigationShell: navigationShell)),
         branches: [
           StatefulShellBranch(
             routes: [
@@ -88,14 +90,7 @@ GoRouter buildRouter({required String initialLocation}) {
         path: Routes.duolingo,
         builder: (_, _) => const DuolingoSettingsScreen(),
       ),
-      GoRoute(
-        path: Routes.badges,
-        builder: (_, _) => const PlaceholderScreen(
-          title: '배지 도감',
-          color: AppColors.gold,
-          note: 'P8 단계에서 만들어요.\n모은 배지와 아직 못 모은 배지',
-        ),
-      ),
+      GoRoute(path: Routes.badges, builder: (_, _) => const BadgeScreen()),
       GoRoute(
         path: Routes.parent,
         builder: (_, _) => const PlaceholderScreen(

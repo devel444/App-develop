@@ -39,22 +39,29 @@ class StickerRepository {
 
   /// 장부 전체를 리포트·달력용 값으로 준다. 날짜 오름차순.
   Stream<List<GrowthEvent>> watchHistory(int childId) {
-    return _eventsOf(childId).watch().map(
-      (rows) => [
-        for (final row in rows)
-          GrowthEvent(
-            id: row.id,
-            type: row.eventType,
-            amount: row.amount,
-            localDate: row.localDate,
-            createdAt: row.createdAt,
-            categoryId: row.categoryId,
-            memo: row.memo,
-            nextPromise: row.nextPromise,
-            relatedEventId: row.relatedEventId,
-          ),
-      ],
-    );
+    return _eventsOf(childId).watch().map(_toGrowthEvents);
+  }
+
+  /// 장부 전체를 한 번만 읽는다 (배지 판정용).
+  Future<List<GrowthEvent>> history(int childId) async {
+    return _toGrowthEvents(await _eventsOf(childId).get());
+  }
+
+  static List<GrowthEvent> _toGrowthEvents(List<StickerEvent> rows) {
+    return [
+      for (final row in rows)
+        GrowthEvent(
+          id: row.id,
+          type: row.eventType,
+          amount: row.amount,
+          localDate: row.localDate,
+          createdAt: row.createdAt,
+          categoryId: row.categoryId,
+          memo: row.memo,
+          nextPromise: row.nextPromise,
+          relatedEventId: row.relatedEventId,
+        ),
+    ];
   }
 
   /// 특정 날짜(YYYY-MM-DD)에 생긴 스티커 기록. 일기에 오늘의 스티커를 붙일 때 쓴다.

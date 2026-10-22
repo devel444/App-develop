@@ -15,9 +15,8 @@ import 'package:sticker_world/core/widgets/outlined_text.dart';
 import 'package:sticker_world/features/home/default_character.dart';
 import 'package:sticker_world/features/home/home_landscape.dart';
 
-// 열쇠 3칸 = 선물 3개의 가격. 지금 잔액이 가격 이상이면 열쇠가 열린다 (P3에서 선물 DB로 바꾼다).
-// 배지 칸은 P8에서 배지 DB로 바꾼다. 지금은 임시 값.
-const _medalsEarned = 3;
+// 열쇠 3칸 = 선물 3개의 가격. 지금 잔액이 가격 이상이면 열쇠가 열린다.
+// 배지 칸 5개는 얻은 배지 수만큼 금색으로 켜진다 (아이콘은 자리 표시).
 const _stickerMax = 100;
 const _medalIcons = [
   Icons.star_rounded,
@@ -39,6 +38,7 @@ class HomeScreen extends ConsumerWidget {
     final rewards = ref.watch(activeRewardsProvider).value ?? const [];
     final keyCosts = [for (final reward in rewards.take(3)) reward.cost];
     final keysEarned = keyCosts.where((cost) => summary.balance >= cost).length;
+    final medalsEarned = ref.watch(badgeAwardsProvider).value?.length ?? 0;
 
     return Stack(
       fit: StackFit.expand,
@@ -57,7 +57,7 @@ class HomeScreen extends ConsumerWidget {
                 name: name,
               ),
               Expanded(child: _Hero(name: name)),
-              _GoldPanel(balance: summary.balance),
+              _GoldPanel(balance: summary.balance, medalsEarned: medalsEarned),
               const SizedBox(height: 16),
               const _ActionRow(),
               const SizedBox(height: 16),
@@ -321,9 +321,10 @@ class _Character extends StatelessWidget {
 
 /// 금색 패널: 보유 스티커 수(누르면 맵) · 배지 5칸(누르면 배지 도감).
 class _GoldPanel extends StatelessWidget {
-  const _GoldPanel({required this.balance});
+  const _GoldPanel({required this.balance, required this.medalsEarned});
 
   final int balance;
+  final int medalsEarned;
 
   @override
   Widget build(BuildContext context) {
@@ -386,7 +387,7 @@ class _GoldPanel extends StatelessWidget {
                           fit: BoxFit.scaleDown,
                           child: GoldMedal(
                             size: 84,
-                            locked: i >= _medalsEarned,
+                            locked: i >= medalsEarned,
                             child: Icon(
                               _medalIcons[i],
                               size: 44,

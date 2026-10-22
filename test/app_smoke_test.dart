@@ -29,6 +29,8 @@ Widget _homeApp() => ProviderScope(
     pendingBonusesProvider.overrideWith((ref) => Stream.value(const [])),
     clearDatesProvider.overrideWith((ref) => Stream.value(const <String>{})),
     ledgerProvider.overrideWith((ref) => Stream.value(LedgerView.empty)),
+    badgeAwardsProvider.overrideWith((ref) => Stream.value(const [])),
+    badgeCheckProvider.overrideWithValue(false),
     initialLocationProvider.overrideWithValue(Routes.home),
   ],
   child: const StickerWorldApp(),
