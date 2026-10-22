@@ -10,7 +10,8 @@
 - PIN은 평문 저장 금지(salt + SHA-256 해시).
 - 듀오링고 비밀번호는 절대 저장하지 않는다. 비공식 API이므로 실패 시 대체 수단(UsageStats → 수동)으로 넘어간다.
 - UI 문구는 한국어, 아이 눈높이(짧게, 큰 글씨, 터치 영역 최소 64dp).
-- 닌텐도 공식 에셋을 코드에 직접 넣지 않는다. 에셋은 `assets/` 아래에서 교체 가능하게 둔다.
+- 닌텐도 공식 캐릭터·로고·음원을 코드/저장소에 넣지 않는다. 기본 에셋은 `assets/default/`(직접 제작), 개인용 교체 파일은 `assets/custom/`(gitignore) — PLAN.md 9장.
+- UI는 PLAN.md 8장의 USJ 스타일 공통 위젯(JellyButton, OutlinedText, WhiteFrameCard 등)을 재사용한다.
 
 ## 명령어
 - 실행: `flutter run`
