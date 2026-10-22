@@ -1,3 +1,18 @@
+# Flutter / Dart 기본
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+.idea/
+*.iml
+*.swp
+.DS_Store
+
+# Android 로컬 설정
+android/local.properties
+android/.gradle/
+
 # 개인용 커스텀 에셋 (공식 캐릭터·음원 등) — 저장소에 올리지 않음. PLAN.md 9장 참고
 assets/custom/*
 !assets/custom/README.md

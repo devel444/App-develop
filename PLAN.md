@@ -326,7 +326,7 @@ settings (key-value)
 ### 구조
 ```text
 assets/
-  default/      # 저장소에 포함: 직접 만든 기본 그림·소리
+  default/      # 저장소에 포함: 직접 만든 기본 그림·소리 (P0 기본 캐릭터는 코드로 그린 DefaultCharacter)
   custom/       # .gitignore 처리 — 부모가 넣는 개인용 파일 (저장소에 올라가지 않음)
     README.md   # 아래 표 (이 파일만 저장소에 포함)
 ```
