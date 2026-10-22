@@ -5,3 +5,14 @@ String localDateKey(DateTime time) {
   final day = local.day.toString().padLeft(2, '0');
   return '${local.year}-$month-$day';
 }
+
+/// 그 주 월요일의 날짜 문자열 'YYYY-MM-DD'. 옐로카드는 주 단위로 센다.
+String weekStartKey(DateTime time) {
+  final local = time.toLocal();
+  final monday = DateTime(
+    local.year,
+    local.month,
+    local.day,
+  ).subtract(Duration(days: local.weekday - DateTime.monday));
+  return localDateKey(monday);
+}

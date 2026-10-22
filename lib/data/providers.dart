@@ -1,9 +1,11 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sticker_world/data/db/app_database.dart';
+import 'package:sticker_world/data/repositories/catalog_repository.dart';
 import 'package:sticker_world/data/repositories/child_repository.dart';
 import 'package:sticker_world/data/repositories/settings_repository.dart';
 import 'package:sticker_world/data/repositories/sticker_repository.dart';
 import 'package:sticker_world/domain/pin_service.dart';
+import 'package:sticker_world/domain/sticker_ledger.dart';
 
 /// DB는 main에서 열어서 넘긴다 (테스트에서는 메모리 DB로 바꾼다).
 final databaseProvider = Provider<AppDatabase>((_) {
@@ -31,11 +33,51 @@ final currentChildProvider = StreamProvider<ChildrenData?>(
   (ref) => ref.watch(childRepositoryProvider).watchCurrent(),
 );
 
-/// 아이의 잔액과 누적 받은 개수. 아이가 없으면 0.
-final stickerSummaryProvider = StreamProvider<StickerSummary>((ref) {
+/// 아이의 장부 계산 결과 (잔액, 누적 받은 개수, 맵에 보이는 스티커 순서). 아이가 없으면 비어 있다.
+final ledgerProvider = StreamProvider<LedgerView>((ref) {
   final child = ref.watch(currentChildProvider).value;
   if (child == null) {
-    return Stream.value(StickerSummary.empty);
+    return Stream.value(LedgerView.empty);
   }
-  return ref.watch(stickerRepositoryProvider).watchSummary(child.id);
+  return ref.watch(stickerRepositoryProvider).watchView(child.id);
 });
+
+final catalogRepositoryProvider = Provider<CatalogRepository>(
+  (ref) => CatalogRepository(ref.watch(databaseProvider)),
+);
+
+final categoriesProvider = FutureProvider.family<List<Category>, String>(
+  (ref, kind) => ref.watch(catalogRepositoryProvider).categories(kind),
+);
+
+/// 카테고리 id → 색 값(ARGB). 맵에서 스티커 색을 고를 때 쓴다.
+final categoryColorsProvider = FutureProvider<Map<int, int>>((ref) async {
+  final praise = await ref.watch(categoriesProvider('praise').future);
+  final misdeed = await ref.watch(categoriesProvider('misdeed').future);
+  return {
+    for (final c in [...praise, ...misdeed]) c.id: c.colorValue,
+  };
+});
+
+final praiseTextsProvider = FutureProvider<List<String>>(
+  (ref) => ref.watch(catalogRepositoryProvider).praiseTexts(),
+);
+
+/// 되돌리기 제한 시간과 옐로카드 설정 (설정 테이블에서 읽는다).
+final stickerSettingsProvider = FutureProvider<StickerSettings>((ref) async {
+  final settings = ref.watch(settingsRepositoryProvider);
+  return StickerSettings(
+    undoSeconds: await settings.getInt('undo_seconds', fallback: 10),
+    yellowCardOn: (await settings.get('yellow_card_on')) == '1',
+  );
+});
+
+class StickerSettings {
+  const StickerSettings({
+    required this.undoSeconds,
+    required this.yellowCardOn,
+  });
+
+  final int undoSeconds;
+  final bool yellowCardOn;
+}

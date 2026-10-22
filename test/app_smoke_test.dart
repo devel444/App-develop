@@ -6,7 +6,7 @@ import 'package:sticker_world/core/assets/asset_resolver.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/data/db/app_database.dart';
 import 'package:sticker_world/data/providers.dart';
-import 'package:sticker_world/data/repositories/sticker_repository.dart';
+import 'package:sticker_world/domain/sticker_ledger.dart';
 
 /// 홈 화면 테스트용 공급자. DB 대신 고정값을 쓴다.
 /// Drift 스트림은 가짜 시간 안에서 끝나지 않을 수 있다. DB 동작은 온보딩·데이터 테스트에서 확인한다.
@@ -22,9 +22,8 @@ Widget _homeApp() => ProviderScope(
         ),
       ),
     ),
-    stickerSummaryProvider.overrideWith(
-      (ref) => Stream.value(StickerSummary.empty),
-    ),
+    categoryColorsProvider.overrideWith((ref) async => <int, int>{}),
+    ledgerProvider.overrideWith((ref) => Stream.value(LedgerView.empty)),
     initialLocationProvider.overrideWithValue(Routes.home),
   ],
   child: const StickerWorldApp(),
@@ -70,7 +69,8 @@ void main() {
     await tester.tap(find.text('맵'));
     await tester.pumpAndSettle();
 
-    expect(find.text('곧 만들어요'), findsWidgets);
+    expect(find.text('W1 · 풀밭'), findsWidgets);
+    expect(find.text('스티커 붙이기'), findsWidgets);
     expect(tester.takeException(), isNull);
   });
 }

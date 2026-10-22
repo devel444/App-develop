@@ -3,6 +3,9 @@ import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/widgets/pattern_background.dart';
 import 'package:sticker_world/features/home/home_screen.dart';
+import 'package:sticker_world/features/stamp/remove_screen.dart';
+import 'package:sticker_world/features/stamp/stamp_screen.dart';
+import 'package:sticker_world/features/world/map_screen.dart';
 import 'package:sticker_world/features/onboarding/onboarding_screen.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
 import 'package:sticker_world/features/pin/recovery_screen.dart';
@@ -47,14 +50,7 @@ GoRouter buildRouter({required String initialLocation}) {
           ),
           StatefulShellBranch(
             routes: [
-              GoRoute(
-                path: Routes.map,
-                builder: (_, _) => const PlaceholderScreen(
-                  title: '스티커 월드',
-                  color: AppColors.blue,
-                  note: 'P2 단계에서 만들어요.\n100칸 월드 맵과 스티커 붙이기·빼기',
-                ),
-              ),
+              GoRoute(path: Routes.map, builder: (_, _) => const MapScreen()),
             ],
           ),
           StatefulShellBranch(
@@ -84,22 +80,8 @@ GoRouter buildRouter({required String initialLocation}) {
         ],
       ),
       // 전체 화면으로 여는 화면들 (하단 탭 바를 가린다).
-      GoRoute(
-        path: Routes.stamp,
-        builder: (_, _) => const PlaceholderScreen(
-          title: '스티커 붙이기',
-          color: AppColors.blue,
-          note: 'P2 단계에서 만들어요.\n엄마·아빠 PIN → 카테고리 → 도장 쿵!',
-        ),
-      ),
-      GoRoute(
-        path: Routes.remove,
-        builder: (_, _) => const PlaceholderScreen(
-          title: '스티커 빼기',
-          color: AppColors.coral,
-          note: 'P2 단계에서 만들어요.\nPIN → 잘못 종류 → 사유 기록(필수)',
-        ),
-      ),
+      GoRoute(path: Routes.stamp, builder: (_, _) => const StampScreen()),
+      GoRoute(path: Routes.remove, builder: (_, _) => const RemoveScreen()),
       GoRoute(
         path: Routes.shop,
         builder: (_, _) => const PlaceholderScreen(

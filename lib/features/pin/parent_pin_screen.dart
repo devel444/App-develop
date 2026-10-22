@@ -19,6 +19,14 @@ Future<bool> requireParentPin(BuildContext context) async {
   return ok ?? false;
 }
 
+/// PIN을 맞춘 뒤 [route]로 간다. 틀리거나 취소하면 아무 일도 없다.
+Future<void> pinThenPush(BuildContext context, String route) async {
+  final ok = await requireParentPin(context);
+  if (ok && context.mounted) {
+    await context.push(route);
+  }
+}
+
 /// 홈의 🔔을 3초 길게 누르면 부모 모드로 들어간다.
 Future<void> openParentMode(BuildContext context) async {
   final ok = await requireParentPin(context);

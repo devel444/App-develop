@@ -5,7 +5,7 @@ import 'package:sticker_world/core/assets/asset_resolver.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/data/providers.dart';
-import 'package:sticker_world/data/repositories/sticker_repository.dart';
+import 'package:sticker_world/domain/sticker_ledger.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
 import 'package:sticker_world/core/widgets/coin_icon.dart';
 import 'package:sticker_world/core/widgets/gold_medal.dart';
@@ -35,8 +35,7 @@ class HomeScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final name = ref.watch(currentChildProvider).value?.name ?? '친구';
-    final summary =
-        ref.watch(stickerSummaryProvider).value ?? StickerSummary.empty;
+    final summary = ref.watch(ledgerProvider).value ?? LedgerView.empty;
     final keysEarned = _keyCosts
         .where((cost) => summary.balance >= cost)
         .length;
@@ -423,7 +422,7 @@ class _ActionRow extends StatelessWidget {
               color: AppColors.red,
               height: 112,
               semanticLabel: '스티커 붙이기',
-              onTap: () => context.push(Routes.stamp),
+              onTap: () => pinThenPush(context, Routes.stamp),
               child: const Center(
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
@@ -439,7 +438,7 @@ class _ActionRow extends StatelessWidget {
               color: AppColors.white,
               height: 112,
               semanticLabel: '스티커 빼기',
-              onTap: () => context.push(Routes.remove),
+              onTap: () => pinThenPush(context, Routes.remove),
               child: const Center(
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
