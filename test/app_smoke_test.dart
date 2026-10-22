@@ -31,6 +31,7 @@ Widget _homeApp() => ProviderScope(
     ledgerProvider.overrideWith((ref) => Stream.value(LedgerView.empty)),
     badgeAwardsProvider.overrideWith((ref) => Stream.value(const [])),
     badgeCheckProvider.overrideWithValue(false),
+    dailyBackupProvider.overrideWith((ref) async => null),
     initialLocationProvider.overrideWithValue(Routes.home),
   ],
   child: const StickerWorldApp(),

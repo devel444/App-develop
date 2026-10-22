@@ -18,4 +18,11 @@ abstract final class Routes {
   static const rewards = '/rewards';
   static const routines = '/routines';
   static const duolingo = '/duolingo';
+
+  /// 부모 모드 안 화면들 (부모 모드 메뉴에서만 연다).
+  static const parentPin = '/parent/pin';
+  static const parentCategories = '/parent/categories';
+  static const parentBadges = '/parent/badges';
+  static const parentBackup = '/parent/backup';
+  static const parentCustom = '/parent/custom';
 }

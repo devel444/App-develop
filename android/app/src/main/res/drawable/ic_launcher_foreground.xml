@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 적응형 아이콘의 앞그림: 금색 별. 안전 영역(가운데 66dp) 안에 들어간다. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54.0,26.0 L61.6,45.5 L82.5,46.7 L66.4,60.0 L71.6,80.3 L54.0,69.0 L36.4,80.3 L41.6,60.0 L25.5,46.7 L46.4,45.5 Z"
+        android:strokeColor="#8A5A00"
+        android:strokeWidth="3"
+        android:strokeLineJoin="round" />
+</vector>

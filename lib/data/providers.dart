@@ -1,4 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:sticker_world/core/time/local_date.dart';
+import 'package:sticker_world/data/backup/backup_files.dart';
+import 'package:sticker_world/data/backup/backup_service.dart';
 import 'package:sticker_world/data/db/app_database.dart';
 import 'package:sticker_world/data/repositories/catalog_repository.dart';
 import 'package:sticker_world/data/duolingo/duolingo_api.dart';
@@ -318,4 +325,40 @@ final badgeCheckProvider = Provider<bool>((ref) {
   ref.listen(diaryEntriesProvider, (_, _) => check());
   ref.listen(duolingoLatestProvider, (_, _) => check());
   return true;
+});
+
+/// 부모 설정: 꺼 둔 칭찬·잘못 카테고리까지 (종류별).
+final allCategoriesProvider = StreamProvider.family<List<Category>, String>(
+  (ref, kind) => ref.watch(catalogRepositoryProvider).watchAllCategories(kind),
+);
+
+/// 부모 설정: 꺼 둔 배지까지 모두.
+final allBadgesProvider = StreamProvider<List<Badge>>(
+  (ref) => ref.watch(badgeRepositoryProvider).watchAllBadges(),
+);
+
+final backupServiceProvider = Provider<BackupService>(
+  (ref) => BackupService(ref.watch(databaseProvider)),
+);
+
+/// 자동 백업 폴더: 앱 문서 폴더 아래 backups.
+final backupFilesProvider = FutureProvider<BackupFiles>((_) async {
+  final documents = await getApplicationDocumentsDirectory();
+  return BackupFiles(Directory(p.join(documents.path, 'backups')));
+});
+
+/// 앱을 열 때 오늘 백업이 없으면 한 번 만든다. 만들었으면 날짜, 아니면 null.
+final dailyBackupProvider = FutureProvider<String?>((ref) async {
+  final child = ref.watch(currentChildProvider).value;
+  if (child == null) {
+    return null;
+  }
+  final files = await ref.watch(backupFilesProvider.future);
+  final today = localDateKey(DateTime.now());
+  if (await files.hasDay(today)) {
+    return null;
+  }
+  final json = await ref.read(backupServiceProvider).exportJson();
+  await files.write(today, json);
+  return today;
 });

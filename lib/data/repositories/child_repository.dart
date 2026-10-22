@@ -19,6 +19,12 @@ class ChildRepository {
     return _db.into(_db.children).insert(ChildrenCompanion.insert(name: name));
   }
 
+  Future<void> rename({required int childId, required String name}) {
+    return (_db.update(_db.children)..where((t) => t.id.equals(childId))).write(
+      ChildrenCompanion(name: Value(name.trim())),
+    );
+  }
+
   /// 듀오링고 아이디와 앱 패키지를 저장한다. 비밀번호는 저장하지 않는다.
   Future<void> updateDuolingo({
     required int childId,

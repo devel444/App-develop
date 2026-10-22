@@ -1,6 +1,11 @@
 import 'package:go_router/go_router.dart';
 import 'package:sticker_world/core/router/routes.dart';
-import 'package:sticker_world/core/theme/app_colors.dart';
+import 'package:sticker_world/features/parent/backup_screen.dart';
+import 'package:sticker_world/features/parent/badge_admin_screen.dart';
+import 'package:sticker_world/features/parent/category_admin_screen.dart';
+import 'package:sticker_world/features/parent/customize_screen.dart';
+import 'package:sticker_world/features/parent/parent_menu_screen.dart';
+import 'package:sticker_world/features/parent/pin_change_screen.dart';
 import 'package:sticker_world/features/badges/badge_screen.dart';
 import 'package:sticker_world/features/badges/badge_watcher.dart';
 import 'package:sticker_world/features/diary/diary_screen.dart';
@@ -16,7 +21,6 @@ import 'package:sticker_world/features/world/map_screen.dart';
 import 'package:sticker_world/features/onboarding/onboarding_screen.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
 import 'package:sticker_world/features/pin/recovery_screen.dart';
-import 'package:sticker_world/features/placeholder/placeholder_screen.dart';
 import 'package:sticker_world/features/records/records_screen.dart';
 import 'package:sticker_world/features/shell/main_shell.dart';
 
@@ -91,13 +95,26 @@ GoRouter buildRouter({required String initialLocation}) {
         builder: (_, _) => const DuolingoSettingsScreen(),
       ),
       GoRoute(path: Routes.badges, builder: (_, _) => const BadgeScreen()),
+      GoRoute(path: Routes.parent, builder: (_, _) => const ParentMenuScreen()),
       GoRoute(
-        path: Routes.parent,
-        builder: (_, _) => const PlaceholderScreen(
-          title: '부모 모드',
-          color: AppColors.purple,
-          note: 'P9 단계에서 만들어요.\n캐릭터 꾸미기, 설정, 백업',
-        ),
+        path: Routes.parentPin,
+        builder: (_, _) => const PinChangeScreen(),
+      ),
+      GoRoute(
+        path: Routes.parentCategories,
+        builder: (_, _) => const CategoryAdminScreen(),
+      ),
+      GoRoute(
+        path: Routes.parentBadges,
+        builder: (_, _) => const BadgeAdminScreen(),
+      ),
+      GoRoute(
+        path: Routes.parentBackup,
+        builder: (_, _) => const BackupScreen(),
+      ),
+      GoRoute(
+        path: Routes.parentCustom,
+        builder: (_, _) => const CustomizeScreen(),
       ),
     ],
   );

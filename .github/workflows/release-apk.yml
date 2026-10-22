@@ -1,0 +1,49 @@
+name: Release APK
+
+# 수동 실행(Actions 탭의 Run workflow)이나 v로 시작하는 태그 푸시로 APK를 만든다.
+# 결과 APK는 실행 기록의 Artifacts에서 내려받는다.
+# 서명은 디버그 키라서 가족 태블릿에 직접 설치하는 용도다. 공개 배포용 서명은 따로 한다.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sticker-world-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+          retention-days: 30

@@ -22,6 +22,20 @@ class BadgeRepository {
     )..where((t) => t.isActive.equals(true))).watch();
   }
 
+  /// 부모 설정용: 꺼 둔 배지까지 모두.
+  Stream<List<Badge>> watchAllBadges() {
+    return (_db.select(
+      _db.badges,
+    )..orderBy([(t) => OrderingTerm.asc(t.code)])).watch();
+  }
+
+  /// 끄면 조건이 맞아도 얻지 않는다. 이미 얻은 배지는 그대로 둔다.
+  Future<void> setBadgeActive(String code, {required bool active}) {
+    return (_db.update(_db.badges)..where((t) => t.code.equals(code))).write(
+      BadgesCompanion(isActive: Value(active)),
+    );
+  }
+
   /// 얻은 배지. 최근에 얻은 것이 위로 온다.
   Stream<List<BadgeAward>> watchAwards(int childId) {
     return (_db.select(_db.badgeAwards)
