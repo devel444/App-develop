@@ -17,6 +17,7 @@ import 'package:sticker_world/core/widgets/jelly_button.dart';
 import 'package:sticker_world/core/widgets/outlined_text.dart';
 import 'package:sticker_world/features/home/default_character.dart';
 import 'package:sticker_world/features/home/home_extras.dart';
+import 'package:sticker_world/features/world/character_picker.dart';
 
 // 열쇠 3칸 = 선물 3개의 가격. 지금 잔액이 가격 이상이면 열쇠가 열린다.
 // 배지 칸 5개는 얻은 배지 수만큼 금색으로 켜진다 (아이콘은 자리 표시).
@@ -150,7 +151,12 @@ class _ScoreBand extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          _Emblem(initial: name.isEmpty ? '' : name.substring(0, 1)),
+          // 가운데 동그라미를 누르면 캐릭터 8칸 중 고르는 창이 열린다.
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => showCharacterPicker(context),
+            child: _Emblem(initial: name.isEmpty ? '' : name.substring(0, 1)),
+          ),
           const SizedBox(width: 12),
           // 열쇠를 누르면 선물 가게로 간다. 열린 열쇠는 바로 살 수 있다는 뜻이고,
           // 잠긴 열쇠는 가게에서 다음 선물까지 얼마나 남았는지 보여 준다.

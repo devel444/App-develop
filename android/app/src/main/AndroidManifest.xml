@@ -6,7 +6,7 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <application
-        android:label="지우의 스티커 월드"
+        android:label="스티커 월드"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

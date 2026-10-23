@@ -21,7 +21,7 @@ class StickerWorldApp extends ConsumerWidget {
     // 앱을 열면 오늘 백업이 있는지 보고, 없으면 한 번 만든다 (기다리지 않는다).
     ref.watch(dailyBackupProvider);
     return MaterialApp.router(
-      title: '지우의 스티커 월드',
+      title: '스티커 월드',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
       routerConfig: ref.watch(routerProvider),

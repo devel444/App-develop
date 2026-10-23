@@ -52,7 +52,10 @@ class WorldBackdrop extends ConsumerWidget {
           Positioned.fill(child: background),
           if (hasImage)
             const Positioned.fill(child: ColoredBox(color: Color(0x33FFFFFF))),
-          Padding(padding: const EdgeInsets.all(8), child: child),
+          // 판을 가운데에 놓는다 (Stack은 기본으로 왼쪽 위에 붙이기 때문).
+          Center(
+            child: Padding(padding: const EdgeInsets.all(8), child: child),
+          ),
         ],
       ),
     );
