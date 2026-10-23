@@ -15,6 +15,10 @@ import 'package:sticker_world/features/home/home_landscape.dart';
 import 'package:sticker_world/features/world/world_layout.dart';
 import 'package:sticker_world/domain/home_greeting.dart';
 
+/// 8인치처럼 좁고 낮은 태블릿이면 true. 이때는 글자와 버튼을 줄이고 캐릭터를 키운다.
+bool homeIsCompact(BuildContext context) =>
+    MediaQuery.sizeOf(context).shortestSide < 700;
+
 /// 시간대 인사말 (홈 이름 아래).
 class HomeGreeting extends StatelessWidget {
   const HomeGreeting({super.key});
@@ -24,8 +28,8 @@ class HomeGreeting extends StatelessWidget {
     return Text(
       greetingFor(DateTime.now()),
       textAlign: TextAlign.center,
-      style: const TextStyle(
-        fontSize: 26,
+      style: TextStyle(
+        fontSize: homeIsCompact(context) ? 18 : 26,
         color: AppColors.white,
         shadows: [Shadow(color: Color(0x80000000), offset: Offset(0, 2))],
       ),
@@ -47,14 +51,15 @@ class TodayProgressBar extends ConsumerWidget {
         ? '오늘 할 일을 모두 끝냈어요!'
         : '오늘 할 일 ${progress.left}개 남았어요';
 
+    final compact = homeIsCompact(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 48),
+      padding: EdgeInsets.symmetric(horizontal: compact ? 28 : 48),
       child: Column(
         children: [
-          OutlinedText(message, fontSize: 24, outlineWidth: 2),
-          const SizedBox(height: 6),
+          OutlinedText(message, fontSize: compact ? 17 : 24, outlineWidth: 2),
+          SizedBox(height: compact ? 4 : 6),
           Container(
-            height: 18,
+            height: compact ? 12 : 18,
             decoration: BoxDecoration(
               color: const Color(0xFFE3D6BC),
               borderRadius: BorderRadius.circular(9),

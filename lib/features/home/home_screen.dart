@@ -31,6 +31,7 @@ const _medalIcons = [
 ];
 
 /// 홈: USJ 앱 메인 화면 구조 (PLAN.md 2-0).
+/// 좁은 태블릿(8인치)에서는 위아래 고정 요소를 줄이고 캐릭터 자리를 넓힌다.
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
@@ -43,6 +44,8 @@ class HomeScreen extends ConsumerWidget {
     final keyCosts = [for (final reward in rewards.take(3)) reward.cost];
     final keysEarned = keyCosts.where((cost) => summary.balance >= cost).length;
     final medalsEarned = ref.watch(badgeAwardsProvider).value?.length ?? 0;
+    final compact = homeIsCompact(context);
+    final gap = compact ? 8.0 : 16.0;
 
     return Stack(
       fit: StackFit.expand,
@@ -62,9 +65,9 @@ class HomeScreen extends ConsumerWidget {
               const WeeklyReportBanner(),
               Expanded(child: _Hero(name: name)),
               _GoldPanel(balance: summary.balance, medalsEarned: medalsEarned),
-              const SizedBox(height: 16),
+              SizedBox(height: gap),
               const _ActionRow(),
-              const SizedBox(height: 16),
+              SizedBox(height: gap),
             ],
           ),
         ),
@@ -80,23 +83,27 @@ class _TopBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = homeIsCompact(context);
+    final side = compact ? 56.0 : 72.0;
     return SizedBox(
-      height: 72,
+      height: side,
       child: Row(
         children: [
-          const SizedBox(width: 72),
+          SizedBox(width: side),
           Expanded(
-            child: Center(child: OutlinedText('$name의 스티커 월드', fontSize: 34)),
+            child: Center(
+              child: OutlinedText('$name의 스티커 월드', fontSize: compact ? 26 : 34),
+            ),
           ),
           SizedBox(
-            width: 72,
-            height: 72,
+            width: side,
+            height: side,
             child: HoldToOpen(
               onOpen: () => openParentMode(context),
-              child: const Icon(
+              child: Icon(
                 Icons.notifications_rounded,
                 color: AppColors.white,
-                size: 40,
+                size: compact ? 30 : 40,
               ),
             ),
           ),
@@ -120,8 +127,9 @@ class _ScoreBand extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = homeIsCompact(context);
     return Container(
-      height: 96,
+      height: compact ? 68 : 96,
       color: AppColors.red,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       child: Row(
@@ -130,8 +138,8 @@ class _ScoreBand extends StatelessWidget {
             child: _Pill(
               child: Row(
                 children: [
-                  const CoinIcon(size: 46),
-                  const SizedBox(width: 10),
+                  CoinIcon(size: compact ? 36 : 46),
+                  SizedBox(width: compact ? 6 : 10),
                   Expanded(
                     child: FittedBox(
                       fit: BoxFit.scaleDown,
@@ -139,7 +147,7 @@ class _ScoreBand extends StatelessWidget {
                       child: OutlinedText(
                         '$totalCoins',
                         fontFamily: 'LilitaOne',
-                        fontSize: 44,
+                        fontSize: compact ? 34 : 44,
                         color: AppColors.ink,
                         outlineColor: AppColors.white,
                         textAlign: TextAlign.right,
@@ -195,8 +203,9 @@ class _Pill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = homeIsCompact(context);
     return Container(
-      height: 64,
+      height: compact ? 48 : 64,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
         color: const Color(0xFFF6B3BC),
@@ -215,9 +224,11 @@ class _KeySlot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = homeIsCompact(context);
+    final size = compact ? 34.0 : 50.0;
     return Container(
-      width: 50,
-      height: 50,
+      width: size,
+      height: size,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: opened ? const Color(0xFFF5A623) : const Color(0xFFB98D93),
@@ -228,7 +239,7 @@ class _KeySlot extends StatelessWidget {
       ),
       child: Icon(
         Icons.key_rounded,
-        size: 28,
+        size: compact ? 18 : 28,
         color: opened ? AppColors.white : const Color(0xFF9A6F75),
       ),
     );
@@ -242,9 +253,12 @@ class _Emblem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = homeIsCompact(context);
+    final outer = compact ? 62.0 : 88.0;
+    final inner = compact ? 46.0 : 66.0;
     return Container(
-      width: 88,
-      height: 88,
+      width: outer,
+      height: outer,
       alignment: Alignment.center,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
@@ -252,8 +266,8 @@ class _Emblem extends StatelessWidget {
         border: Border.all(color: AppColors.white, width: 5),
       ),
       child: Container(
-        width: 66,
-        height: 66,
+        width: inner,
+        height: inner,
         alignment: Alignment.center,
         decoration: const BoxDecoration(
           shape: BoxShape.circle,
@@ -261,7 +275,7 @@ class _Emblem extends StatelessWidget {
         ),
         child: Text(
           initial,
-          style: const TextStyle(fontSize: 40, color: AppColors.red),
+          style: TextStyle(fontSize: compact ? 28 : 40, color: AppColors.red),
         ),
       ),
     );
@@ -269,6 +283,7 @@ class _Emblem extends StatelessWidget {
 }
 
 /// 가운데: 캐릭터(원형 링 위), 이름표.
+/// 좁은 화면에서는 링을 남는 높이까지 키운다 (FittedBox가 위아래로 늘린다).
 class _Hero extends StatelessWidget {
   const _Hero({required this.name});
 
@@ -276,13 +291,13 @@ class _Hero extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = homeIsCompact(context);
     return Column(
       children: [
         Expanded(
           child: Center(
-            // 화면이 작으면 링과 캐릭터를 같이 줄인다.
             child: FittedBox(
-              fit: BoxFit.scaleDown,
+              fit: compact ? BoxFit.contain : BoxFit.scaleDown,
               child: SizedBox(
                 width: 300,
                 height: 300,
@@ -312,20 +327,27 @@ class _Hero extends StatelessWidget {
             ),
           ),
         ),
-        const SizedBox(height: 8),
+        SizedBox(height: compact ? 4 : 8),
         Container(
-          padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 6),
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 24 : 36,
+            vertical: compact ? 2 : 6,
+          ),
           decoration: BoxDecoration(
             color: const Color(0x8C1E5A8C),
             borderRadius: BorderRadius.circular(18),
           ),
-          child: OutlinedText(name, fontSize: 40, outlineWidth: 3),
+          child: OutlinedText(
+            name,
+            fontSize: compact ? 28 : 40,
+            outlineWidth: 3,
+          ),
         ),
-        const SizedBox(height: 10),
+        SizedBox(height: compact ? 4 : 10),
         const HomeGreeting(),
-        const SizedBox(height: 8),
+        SizedBox(height: compact ? 4 : 8),
         const TodayProgressBar(),
-        const SizedBox(height: 10),
+        SizedBox(height: compact ? 4 : 10),
       ],
     );
   }
@@ -375,12 +397,13 @@ class _GoldPanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = homeIsCompact(context);
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 40),
+      padding: EdgeInsets.symmetric(horizontal: compact ? 28 : 40),
       child: Container(
         decoration: BoxDecoration(
           color: AppColors.gold,
-          borderRadius: BorderRadius.circular(34),
+          borderRadius: BorderRadius.circular(compact ? 26 : 34),
           boxShadow: const [
             BoxShadow(color: AppColors.goldDeep, offset: Offset(0, 8)),
           ],
@@ -392,7 +415,7 @@ class _GoldPanel extends StatelessWidget {
               behavior: HitTestBehavior.opaque,
               onTap: () => context.go(Routes.map),
               child: SizedBox(
-                height: 104,
+                height: compact ? 72 : 104,
                 child: Center(
                   // 좁은 화면에서는 숫자 줄 전체를 줄여서 맞춘다.
                   child: FittedBox(
@@ -400,12 +423,12 @@ class _GoldPanel extends StatelessWidget {
                     child: Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        CoinIcon(size: 60),
-                        SizedBox(width: 14),
+                        CoinIcon(size: compact ? 44 : 60),
+                        SizedBox(width: compact ? 10 : 14),
                         OutlinedText(
                           '$balance / $_stickerMax',
                           fontFamily: 'LilitaOne',
-                          fontSize: 56,
+                          fontSize: compact ? 40 : 56,
                           color: AppColors.ink,
                           outlineColor: AppColors.white,
                         ),
@@ -420,8 +443,8 @@ class _GoldPanel extends StatelessWidget {
               behavior: HitTestBehavior.opaque,
               onTap: () => context.push(Routes.badges),
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  vertical: 14,
+                padding: EdgeInsets.symmetric(
+                  vertical: compact ? 8 : 14,
                   horizontal: 16,
                 ),
                 child: Row(
@@ -433,11 +456,11 @@ class _GoldPanel extends StatelessWidget {
                         child: FittedBox(
                           fit: BoxFit.scaleDown,
                           child: GoldMedal(
-                            size: 84,
+                            size: compact ? 56 : 84,
                             locked: i >= medalsEarned,
                             child: Icon(
                               _medalIcons[i],
-                              size: 44,
+                              size: compact ? 30 : 44,
                               color: const Color(0xFF8A5A00),
                             ),
                           ),
@@ -460,56 +483,61 @@ class _ActionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final compact = homeIsCompact(context);
+    final height = compact ? 80.0 : 112.0;
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 40),
+      padding: EdgeInsets.symmetric(horizontal: compact ? 28 : 40),
       child: Row(
         children: [
           Expanded(
             flex: 16,
             child: JellyButton(
               color: AppColors.red,
-              height: 112,
+              height: height,
               semanticLabel: '스티커 붙이기',
               onTap: () => pinThenPush(context, Routes.stamp),
-              child: const Center(
+              child: Center(
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
-                  child: OutlinedText('스티커 붙이기', fontSize: 34),
+                  child: OutlinedText('스티커 붙이기', fontSize: compact ? 24 : 34),
                 ),
               ),
             ),
           ),
-          const SizedBox(width: 14),
+          SizedBox(width: compact ? 10 : 14),
           Expanded(
             flex: 10,
             child: JellyButton(
               color: AppColors.white,
-              height: 112,
+              height: height,
               semanticLabel: '스티커 빼기',
               onTap: () => pinThenPush(context, Routes.remove),
-              child: const Center(
+              child: Center(
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
                   child: Text(
                     '스티커 빼기',
-                    style: TextStyle(fontSize: 26, color: AppColors.red),
+                    style: TextStyle(
+                      fontSize: compact ? 19 : 26,
+                      color: AppColors.red,
+                    ),
                   ),
                 ),
               ),
             ),
           ),
-          const SizedBox(width: 14),
+          SizedBox(width: compact ? 10 : 14),
           Expanded(
             flex: 10,
             child: JellyButton(
               color: AppColors.pink,
-              height: 112,
+              height: height,
               semanticLabel: '선물가게',
               onTap: () => context.push(Routes.shop),
-              child: const Center(
+              child: Center(
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
-                  child: OutlinedText('선물가게', fontSize: 28),
+                  child: OutlinedText('선물가게', fontSize: compact ? 20 : 28),
                 ),
               ),
             ),
