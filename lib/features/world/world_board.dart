@@ -8,12 +8,15 @@ import 'package:sticker_world/features/world/world_layout.dart';
 
 const _cell = 76.0;
 const _gapX = 14.0;
-const _gapY = 90.0;
+const _gapY = 70.0;
 const _boardWidth =
     WorldLayout.columns * _cell + (WorldLayout.columns - 1) * _gapX;
 const _boardHeight = WorldLayout.rows * _cell + (WorldLayout.rows - 1) * _gapY;
 const _tokenSize = 72.0;
 const _tokenLift = 80.0;
+
+/// 남는 공간이 넉넉하면 판을 이만큼까지 키운다 (8인치에서 맵을 크게 보이게 하려고).
+const _maxBoardScale = 1.6;
 
 /// 한 월드(20칸)의 판. 채운 칸은 받은 칭찬 색으로, 지금 위치에는 캐릭터 토큰이 선다.
 class WorldBoard extends StatelessWidget {
@@ -93,7 +96,10 @@ class WorldBoard extends StatelessWidget {
     final fit = fitSize;
     final scale = fit == null
         ? 1.0
-        : min(1.0, min(fit.width / _boardWidth, fit.height / _boardHeight));
+        : min(
+            _maxBoardScale,
+            min(fit.width / _boardWidth, fit.height / _boardHeight),
+          );
 
     return SizedBox(
       width: _boardWidth * scale,

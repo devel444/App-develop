@@ -16,7 +16,7 @@ class JellyTabSpec {
   final Color labelColor;
 }
 
-/// 하단 탭 5개. 선택된 탭은 연한 색과 위쪽 흰 막대로 표시한다 (크기는 모두 같다).
+/// 하단 탭 5개. 크기와 자리는 모두 같고, 선택된 탭은 연한 색으로만 구분한다.
 class JellyTabBar extends StatelessWidget {
   const JellyTabBar({
     super.key,
@@ -84,48 +84,25 @@ class _TabButton extends StatelessWidget {
       semanticLabel: spec.label,
       onTap: onTap,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-      child: Stack(
-        children: [
-          if (selected)
-            Positioned(
-              top: 14,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
-                  width: 56,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: AppColors.white,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                ),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(spec.icon, size: 44, color: labelColor),
+            Text(
+              spec.label,
+              style: TextStyle(
+                fontSize: 24,
+                color: labelColor,
+                shadows: selected
+                    ? null
+                    : const [
+                        Shadow(offset: Offset(0, 2), color: Color(0x73000000)),
+                      ],
               ),
             ),
-          Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(spec.icon, size: 44, color: labelColor),
-                Text(
-                  spec.label,
-                  style: TextStyle(
-                    fontSize: 24,
-                    color: labelColor,
-                    shadows: selected
-                        ? null
-                        : const [
-                            Shadow(
-                              offset: Offset(0, 2),
-                              color: Color(0x73000000),
-                            ),
-                          ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

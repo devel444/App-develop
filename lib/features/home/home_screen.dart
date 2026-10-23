@@ -8,7 +8,9 @@ import 'package:sticker_world/core/assets/asset_resolver.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/data/providers.dart';
+import 'package:sticker_world/domain/home_speech.dart';
 import 'package:sticker_world/domain/sticker_ledger.dart';
+import 'package:sticker_world/features/home/speech_bubble.dart';
 import 'package:sticker_world/features/pin/parent_pin_screen.dart';
 import 'package:sticker_world/core/widgets/coin_icon.dart';
 import 'package:sticker_world/core/widgets/gold_medal.dart';
@@ -64,7 +66,8 @@ class HomeScreen extends ConsumerWidget {
               const WeeklyReportBanner(),
               Expanded(child: _Hero(name: name)),
               _GoldPanel(balance: summary.balance, medalsEarned: medalsEarned),
-              SizedBox(height: gap),
+              // 금색 패널의 그림자가 버튼에 닿지 않도록 띄운다.
+              SizedBox(height: compact ? 20 : 28),
               const _ActionRow(),
               SizedBox(height: gap),
             ],
@@ -303,12 +306,20 @@ class _CharacterButton extends ConsumerWidget {
   }
 }
 
-/// 가운데: 캐릭터(원형 링 위), 이름표.
+/// 가운데: 왼쪽에 캐릭터(원형 링), 오른쪽에 이름표와 캐릭터의 말풍선.
 /// 좁은 화면에서는 링을 남는 높이까지 키운다 (FittedBox가 위아래로 늘린다).
-class _Hero extends StatelessWidget {
+class _Hero extends ConsumerStatefulWidget {
   const _Hero({required this.name});
 
   final String name;
+
+  @override
+  ConsumerState<_Hero> createState() => _HeroState();
+}
+
+class _HeroState extends ConsumerState<_Hero> {
+  // 홈을 열 때 한 번 고른 말을 그대로 보여 준다 (화면을 다시 그릴 때마다 바뀌지 않게).
+  late final String _speech = pickHomeSpeech(ref.read(randomProvider));
 
   @override
   Widget build(BuildContext context) {
@@ -316,55 +327,75 @@ class _Hero extends StatelessWidget {
     return Column(
       children: [
         Expanded(
-          child: Center(
-            child: FittedBox(
-              fit: compact ? BoxFit.contain : BoxFit.scaleDown,
-              child: SizedBox(
-                width: 300,
-                height: 300,
-                child: Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    Container(
+          child: Row(
+            children: [
+              // 캐릭터는 가운데보다 조금 왼쪽에 선다.
+              Expanded(
+                flex: 11,
+                child: Center(
+                  child: FittedBox(
+                    fit: compact ? BoxFit.contain : BoxFit.scaleDown,
+                    child: SizedBox(
                       width: 300,
                       height: 300,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xFF1E8FE0),
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Container(
+                            width: 300,
+                            height: 300,
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Color(0xFF1E8FE0),
+                            ),
+                          ),
+                          Container(
+                            width: 236,
+                            height: 236,
+                            decoration: const BoxDecoration(
+                              shape: BoxShape.circle,
+                              color: Color(0xFF5CC8F5),
+                            ),
+                          ),
+                          const _Character(),
+                        ],
                       ),
                     ),
-                    Container(
-                      width: 236,
-                      height: 236,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: Color(0xFF5CC8F5),
-                      ),
-                    ),
-                    const _Character(),
-                  ],
+                  ),
                 ),
               ),
-            ),
+              Expanded(
+                flex: 9,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: compact ? 16 : 22,
+                          vertical: compact ? 2 : 6,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0x8C1E5A8C),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: OutlinedText(
+                          widget.name,
+                          fontSize: compact ? 28 : 40,
+                          outlineWidth: 3,
+                        ),
+                      ),
+                      SizedBox(height: compact ? 10 : 16),
+                      SpeechBubble(text: _speech),
+                    ],
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
-        SizedBox(height: compact ? 4 : 8),
-        Container(
-          padding: EdgeInsets.symmetric(
-            horizontal: compact ? 24 : 36,
-            vertical: compact ? 2 : 6,
-          ),
-          decoration: BoxDecoration(
-            color: const Color(0x8C1E5A8C),
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: OutlinedText(
-            name,
-            fontSize: compact ? 28 : 40,
-            outlineWidth: 3,
-          ),
-        ),
-        SizedBox(height: compact ? 4 : 10),
         const HomeGreeting(),
         SizedBox(height: compact ? 4 : 8),
         const TodayProgressBar(),

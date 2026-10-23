@@ -110,13 +110,13 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                   flex: 3,
                   child: JellyButton(
                     color: AppColors.red,
-                    height: 112,
+                    height: 84,
                     semanticLabel: '스티커 붙이기',
                     onTap: () => pinThenPush(context, Routes.stamp),
                     child: const Center(
                       child: FittedBox(
                         fit: BoxFit.scaleDown,
-                        child: OutlinedText('스티커 붙이기', fontSize: 34),
+                        child: OutlinedText('스티커 붙이기', fontSize: 28),
                       ),
                     ),
                   ),
@@ -126,7 +126,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                   flex: 2,
                   child: JellyButton(
                     color: AppColors.white,
-                    height: 112,
+                    height: 84,
                     semanticLabel: '스티커 빼기',
                     onTap: () => pinThenPush(context, Routes.remove),
                     child: const Center(
@@ -134,7 +134,7 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                         fit: BoxFit.scaleDown,
                         child: Text(
                           '스티커 빼기',
-                          style: TextStyle(fontSize: 26, color: AppColors.red),
+                          style: TextStyle(fontSize: 22, color: AppColors.red),
                         ),
                       ),
                     ),

@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// 젤리처럼 통통한 버튼 (USJ 앱 스타일).
-/// 아래쪽 그림자, 위쪽 흰 하이라이트, 누르면 살짝 줄어드는 효과를 준다.
+/// 아래쪽 그림자, 누르면 살짝 줄어드는 효과를 준다. (흰 하이라이트는 두지 않는다.)
 /// 자식 위젯은 버튼 크기에 꽉 맞게 늘어난다. 가운데 정렬이 필요하면 Center로 감싼다.
 class JellyButton extends StatefulWidget {
   const JellyButton({
@@ -92,24 +92,6 @@ class _JellyPainter extends CustomPainter {
       Rect.fromLTWH(0, 0, size.width, size.height * 0.9),
     );
     canvas.drawRRect(body, Paint()..color = color);
-
-    final s = (size.height / 96).clamp(0.6, 1.6);
-    final shine = Paint()..color = const Color(0xBFFFFFFF);
-    final radius = Radius.circular(5 * s);
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(size.width - 72 * s, 9 * s, 42 * s, 9 * s),
-        radius,
-      ),
-      shine,
-    );
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(size.width - 96 * s, 9 * s, 16 * s, 9 * s),
-        radius,
-      ),
-      shine,
-    );
   }
 
   @override
