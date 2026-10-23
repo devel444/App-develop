@@ -17,7 +17,6 @@ import 'package:sticker_world/core/widgets/jelly_button.dart';
 import 'package:sticker_world/core/widgets/outlined_text.dart';
 import 'package:sticker_world/features/home/default_character.dart';
 import 'package:sticker_world/features/home/home_extras.dart';
-import 'package:sticker_world/features/home/home_landscape.dart';
 
 // 열쇠 3칸 = 선물 3개의 가격. 지금 잔액이 가격 이상이면 열쇠가 열린다.
 // 배지 칸 5개는 얻은 배지 수만큼 금색으로 켜진다 (아이콘은 자리 표시).
@@ -47,9 +46,7 @@ class HomeScreen extends ConsumerWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        const Positioned.fill(
-          child: CustomPaint(painter: HomeLandscapePainter()),
-        ),
+        const HomeBackground(),
         const PraiseOnce(),
         SafeArea(
           bottom: false,
@@ -334,7 +331,7 @@ class _Character extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final photo = ref.watch(characterPhotoProvider).value;
+    final photo = ref.watch(characterRosterProvider).value?.activeSlot.photo;
     final custom = AssetResolver.custom('character.png');
     const fallback = FittedBox(
       fit: BoxFit.scaleDown,
@@ -345,12 +342,12 @@ class _Character extends ConsumerWidget {
     if (photo != null) {
       picture = Image.file(
         File(photo),
-        height: 260,
+        height: 300,
         fit: BoxFit.contain,
         errorBuilder: (_, _, _) => fallback,
       );
     } else if (custom != null) {
-      picture = Image.asset(custom, height: 260, fit: BoxFit.contain);
+      picture = Image.asset(custom, height: 300, fit: BoxFit.contain);
     } else {
       picture = fallback;
     }

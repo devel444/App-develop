@@ -1,3 +1,4 @@
+import 'package:sticker_world/domain/character_roster.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -32,7 +33,7 @@ Widget _homeApp() => ProviderScope(
     badgeAwardsProvider.overrideWith((ref) => Stream.value(const [])),
     badgeCheckProvider.overrideWithValue(false),
     dailyBackupProvider.overrideWith((ref) async => null),
-    characterPhotoProvider.overrideWith((ref) async => null),
+    characterRosterProvider.overrideWith((ref) async => CharacterRoster.empty),
     dailyPraiseProvider.overrideWith((ref) async => null),
     weeklyReportBannerProvider.overrideWith((ref) async => false),
     worldPhotoProvider.overrideWith((ref, world) async => null),

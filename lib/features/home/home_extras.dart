@@ -1,6 +1,9 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sticker_world/core/assets/asset_resolver.dart';
 import 'package:sticker_world/core/router/routes.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/time/local_date.dart';
@@ -8,6 +11,8 @@ import 'package:sticker_world/core/widgets/jelly_button.dart';
 import 'package:sticker_world/core/widgets/outlined_text.dart';
 import 'package:sticker_world/core/widgets/white_frame_card.dart';
 import 'package:sticker_world/data/providers.dart';
+import 'package:sticker_world/features/home/home_landscape.dart';
+import 'package:sticker_world/features/world/world_layout.dart';
 import 'package:sticker_world/domain/home_greeting.dart';
 
 /// 시간대 인사말 (홈 이름 아래).
@@ -174,6 +179,41 @@ class WeeklyReportBanner extends ConsumerWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// 홈 뒤 배경. 지금 월드의 사진(또는 개인용 world{n}.png)이 있으면 그것을, 없으면 기본 풍경을 그린다.
+/// 스테이지(월드)가 넘어가면 배경도 함께 바뀐다.
+class HomeBackground extends ConsumerWidget {
+  const HomeBackground({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final balance = ref.watch(ledgerProvider).value?.balance ?? 0;
+    final world = WorldLayout.worldFor(balance);
+    final photo = ref.watch(worldPhotoProvider(world)).value;
+    final custom = AssetResolver.custom('world${world + 1}.png');
+    const landscape = CustomPaint(painter: HomeLandscapePainter());
+
+    if (photo == null && custom == null) {
+      return const SizedBox.expand(child: landscape);
+    }
+    final image = photo != null
+        ? Image.file(
+            File(photo),
+            fit: BoxFit.cover,
+            errorBuilder: (_, _, _) => landscape,
+          )
+        : Image.asset(custom!, fit: BoxFit.cover);
+    return SizedBox.expand(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          image,
+          const ColoredBox(color: Color(0x33FFFFFF)),
+        ],
       ),
     );
   }

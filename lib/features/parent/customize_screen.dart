@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
@@ -10,6 +12,7 @@ import 'package:sticker_world/core/widgets/pattern_background.dart';
 import 'package:sticker_world/core/widgets/pill_row.dart';
 import 'package:sticker_world/core/widgets/screen_frame.dart';
 import 'package:sticker_world/core/widgets/white_frame_card.dart';
+import 'package:sticker_world/domain/character_roster.dart';
 import 'package:sticker_world/data/providers.dart';
 import 'package:sticker_world/features/world/world_layout.dart';
 import 'package:sticker_world/features/stamp/stamp_widgets.dart';
@@ -130,22 +133,141 @@ class _CustomizeScreenState extends ConsumerState<CustomizeScreen> {
     onCleared();
   }
 
-  Future<void> _pickCharacter() => _choosePhoto(
-    key: 'character_photo',
-    prefix: 'character',
+  /// 캐릭터 칸의 사진 고르기·빼기, 이름 바꾸기, 지금 캐릭터로 정하기.
+  Future<void> _pickSlotPhoto(int index) => _choosePhoto(
+    key: 'character_slot_$index',
+    prefix: 'character${index + 1}',
     onSaved: () {
-      ref.invalidate(characterPhotoProvider);
-      setState(() => _message = '캐릭터 사진을 바꿨어요. 홈에서 확인해 보세요.');
+      ref.invalidate(characterRosterProvider);
+      setState(() => _message = '${index + 1}번 캐릭터 사진을 바꿨어요.');
     },
   );
 
-  Future<void> _resetCharacter() => _clearPhoto(
-    key: 'character_photo',
+  Future<void> _clearSlotPhoto(int index) => _clearPhoto(
+    key: 'character_slot_$index',
     onCleared: () {
-      ref.invalidate(characterPhotoProvider);
-      setState(() => _message = '기본 캐릭터로 되돌렸어요.');
+      ref.invalidate(characterRosterProvider);
+      setState(() => _message = '${index + 1}번 캐릭터를 기본 그림으로 되돌렸어요.');
     },
   );
+
+  Future<void> _renameSlot(CharacterSlot slot) async {
+    final controller = TextEditingController(text: slot.name);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('캐릭터 이름'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          style: const TextStyle(fontSize: 26),
+          decoration: const InputDecoration(border: OutlineInputBorder()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(controller.text),
+            child: const Text('저장'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    final trimmed = name?.trim() ?? '';
+    if (trimmed.isEmpty) {
+      return;
+    }
+    await ref
+        .read(settingsRepositoryProvider)
+        .set('character_name_${slot.index}', trimmed);
+    ref.invalidate(characterRosterProvider);
+  }
+
+  Future<void> _setActiveSlot(int index) async {
+    await ref
+        .read(settingsRepositoryProvider)
+        .set('character_active', '$index');
+    ref.invalidate(characterRosterProvider);
+    if (mounted) {
+      setState(() => _message = '${index + 1}번 캐릭터로 정했어요. 홈과 맵에서 확인해 보세요.');
+    }
+  }
+
+  /// 칸을 누르면 할 수 있는 일들.
+  Future<void> _slotActions(CharacterSlot slot) {
+    return showDialog<void>(
+      context: context,
+      builder: (dialogContext) {
+        void run(Future<void> Function() action) {
+          Navigator.of(dialogContext).pop();
+          action();
+        }
+
+        return AlertDialog(
+          title: Text('${slot.index + 1}번 · ${slot.name}'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              JellyButton(
+                color: AppColors.gold,
+                height: 72,
+                semanticLabel: '이 캐릭터로 정하기',
+                onTap: () => run(() => _setActiveSlot(slot.index)),
+                child: const Center(
+                  child: OutlinedText('이 캐릭터로 정하기', fontSize: 26),
+                ),
+              ),
+              const SizedBox(height: 10),
+              JellyButton(
+                color: AppColors.white,
+                height: 64,
+                semanticLabel: '이름 바꾸기',
+                onTap: () => run(() => _renameSlot(slot)),
+                child: const Center(
+                  child: Text(
+                    '이름 바꾸기',
+                    style: TextStyle(fontSize: 22, color: AppColors.ink),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              JellyButton(
+                color: AppColors.white,
+                height: 64,
+                semanticLabel: '사진 고르기',
+                onTap: () => run(() => _pickSlotPhoto(slot.index)),
+                child: const Center(
+                  child: Text(
+                    '사진 고르기',
+                    style: TextStyle(fontSize: 22, color: AppColors.ink),
+                  ),
+                ),
+              ),
+              if (slot.photo != null) ...[
+                const SizedBox(height: 10),
+                JellyButton(
+                  color: AppColors.white,
+                  height: 64,
+                  semanticLabel: '사진 빼기',
+                  onTap: () => run(() => _clearSlotPhoto(slot.index)),
+                  child: const Center(
+                    child: Text(
+                      '사진 빼기',
+                      style: TextStyle(fontSize: 22, color: AppColors.ink),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        );
+      },
+    );
+  }
 
   Future<void> _pickWorld() => _choosePhoto(
     key: 'world_photo_$_worldPick',
@@ -166,7 +288,8 @@ class _CustomizeScreenState extends ConsumerState<CustomizeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final hasPhoto = ref.watch(characterPhotoProvider).value != null;
+    final roster =
+        ref.watch(characterRosterProvider).value ?? CharacterRoster.empty;
 
     return Stack(
       fit: StackFit.expand,
@@ -179,61 +302,63 @@ class _CustomizeScreenState extends ConsumerState<CustomizeScreen> {
             padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
             children: [
               WhiteFrameCard(
-                headerTitle: '캐릭터 사진',
+                headerTitle: '캐릭터 8명',
                 headerColor: AppColors.pink,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     const Text(
-                      '태블릿 사진첩에서 캐릭터로 쓸 사진을 골라요. 배경이 투명한 그림이면 더 예뻐요.',
+                      '칸을 누르면 이름, 사진을 바꾸거나 지금 캐릭터로 정할 수 있어요. '
+                      '이름은 칸마다 자유롭게 적으면 돼요.',
                       style: TextStyle(
                         fontSize: 20,
                         height: 1.4,
                         color: AppColors.ink,
                       ),
                     ),
-                    const SizedBox(height: 14),
-                    JellyButton(
-                      color: AppColors.gold,
-                      height: 72,
-                      semanticLabel: '캐릭터 사진 고르기',
-                      onTap: _busy ? null : _pickCharacter,
-                      child: const Center(
-                        child: OutlinedText('사진 고르기', fontSize: 28),
-                      ),
-                    ),
-                    if (hasPhoto) ...[
-                      const SizedBox(height: 10),
-                      JellyButton(
-                        color: AppColors.white,
-                        height: 64,
-                        semanticLabel: '기본 캐릭터로 되돌리기',
-                        onTap: _busy ? null : _resetCharacter,
-                        child: const Center(
-                          child: Text(
-                            '기본 캐릭터로 되돌리기',
-                            style: TextStyle(
-                              fontSize: 22,
-                              color: AppColors.ink,
+                    const SizedBox(height: 12),
+                    for (final slot in roster.slots)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: PillRow(
+                          accent: slot.index == roster.active
+                              ? AppColors.gold
+                              : AppColors.white,
+                          leading: ClipOval(
+                            child: SizedBox(
+                              width: 60,
+                              height: 60,
+                              child: slot.photo == null
+                                  ? const Icon(
+                                      Icons.person_rounded,
+                                      color: AppColors.ink,
+                                    )
+                                  : Image.file(
+                                      File(slot.photo!),
+                                      fit: BoxFit.cover,
+                                      errorBuilder: (_, _, _) => const Icon(
+                                        Icons.person_rounded,
+                                        color: AppColors.ink,
+                                      ),
+                                    ),
                             ),
                           ),
+                          title: '${slot.index + 1}. ${slot.name}',
+                          subtitle: slot.index == roster.active
+                              ? '지금 쓰는 캐릭터'
+                              : slot.photo == null
+                              ? '사진 없음 · 기본 그림'
+                              : '사진 있음',
+                          onTap: () => _slotActions(slot),
                         ),
                       ),
-                    ],
-                    if (_message != null) ...[
-                      const SizedBox(height: 10),
-                      Text(
-                        _message!,
-                        textAlign: TextAlign.center,
-                        style: const TextStyle(
-                          fontSize: 20,
-                          color: AppColors.misdeed,
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),
+              if (_message != null) ...[
+                const SizedBox(height: 12),
+                HintText(_message!),
+              ],
               const SizedBox(height: 16),
               WhiteFrameCard(
                 headerTitle: '월드 배경',

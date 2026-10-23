@@ -24,6 +24,7 @@ import 'package:sticker_world/data/repositories/routine_repository.dart';
 import 'package:sticker_world/data/repositories/settings_repository.dart';
 import 'package:sticker_world/data/repositories/sticker_repository.dart';
 import 'package:sticker_world/domain/badge_rules.dart';
+import 'package:sticker_world/domain/character_roster.dart';
 import 'package:sticker_world/domain/daily_progress.dart';
 import 'package:sticker_world/domain/praise_pick.dart';
 import 'package:sticker_world/domain/weekly_report_banner.dart';
@@ -389,12 +390,29 @@ final soundPlayerProvider = Provider<SoundPlayer>((ref) {
   );
 });
 
-/// 부모가 고른 캐릭터 사진 경로. 없으면 null (기본 캐릭터를 그린다).
-final characterPhotoProvider = FutureProvider<String?>((ref) async {
-  final path = await ref
-      .watch(settingsRepositoryProvider)
-      .get('character_photo');
-  return path == null || path.isEmpty ? null : path;
+/// 캐릭터 8칸 (사진·이름)과 지금 쓰는 칸. 이전 버전의 캐릭터 사진은 1번 칸으로 옮겨 쓴다.
+final characterRosterProvider = FutureProvider<CharacterRoster>((ref) async {
+  final settings = ref.watch(settingsRepositoryProvider);
+  final active = (await settings.getInt(
+    'character_active',
+    fallback: 0,
+  )).clamp(0, characterSlotCount - 1);
+  final slots = <CharacterSlot>[];
+  for (var i = 0; i < characterSlotCount; i++) {
+    final name = (await settings.get('character_name_$i'))?.trim();
+    var photo = await settings.get('character_slot_$i');
+    if (i == 0 && photo == null) {
+      photo = await settings.get('character_photo');
+    }
+    slots.add(
+      CharacterSlot(
+        index: i,
+        name: name == null || name.isEmpty ? defaultCharacterName(i) : name,
+        photo: photo == null || photo.isEmpty ? null : photo,
+      ),
+    );
+  }
+  return CharacterRoster(active: active, slots: slots);
 });
 
 /// 무작위 값. 테스트에서는 정해진 값으로 바꾼다.

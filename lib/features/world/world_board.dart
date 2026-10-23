@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
 import 'package:sticker_world/core/widgets/outlined_text.dart';
@@ -5,12 +7,12 @@ import 'package:sticker_world/features/world/world_layout.dart';
 
 const _cell = 76.0;
 const _gapX = 14.0;
-const _gapY = 30.0;
+const _gapY = 90.0;
 const _boardWidth =
     WorldLayout.columns * _cell + (WorldLayout.columns - 1) * _gapX;
 const _boardHeight = WorldLayout.rows * _cell + (WorldLayout.rows - 1) * _gapY;
-const _tokenSize = 52.0;
-const _tokenLift = 54.0;
+const _tokenSize = 72.0;
+const _tokenLift = 80.0;
 
 /// 한 월드(20칸)의 판. 채운 칸은 받은 칭찬 색으로, 지금 위치에는 캐릭터 토큰이 선다.
 class WorldBoard extends StatelessWidget {
@@ -21,6 +23,8 @@ class WorldBoard extends StatelessWidget {
     required this.stack,
     required this.colorOf,
     this.giftCells = const {},
+    this.characterPhoto,
+    this.onCharacterTap,
   });
 
   final int world;
@@ -34,6 +38,12 @@ class WorldBoard extends StatelessWidget {
 
   /// 선물 가격 칸 번호들. 선물 목록에서 온다.
   final Set<int> giftCells;
+
+  /// 지금 쓰는 캐릭터 사진 (없으면 '지' 글자 토큰).
+  final String? characterPhoto;
+
+  /// 토큰을 누르면 캐릭터 고르기 창을 연다.
+  final VoidCallback? onCharacterTap;
 
   @override
   Widget build(BuildContext context) {
@@ -69,7 +79,7 @@ class WorldBoard extends StatelessWidget {
           curve: Curves.easeOutBack,
           left: at.col * (_cell + _gapX) + (_cell - _tokenSize) / 2,
           top: at.row * (_cell + _gapY) - _tokenLift,
-          child: const IgnorePointer(child: _Token()),
+          child: _Token(photo: characterPhoto, onTap: onCharacterTap),
         ),
       );
     }
@@ -183,27 +193,53 @@ class _CellTile extends StatelessWidget {
   }
 }
 
-/// 지금 칸에 선 캐릭터 토큰.
+/// 지금 칸에 선 캐릭터 토큰. 누르면 캐릭터 고르기 창이 열린다.
 class _Token extends StatelessWidget {
-  const _Token();
+  const _Token({this.photo, this.onTap});
+
+  final String? photo;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: _tokenSize,
-      height: _tokenSize,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        color: AppColors.red,
-        border: Border.all(color: AppColors.white, width: 4),
-        boxShadow: const [
-          BoxShadow(color: Color(0x59000000), offset: Offset(0, 4)),
-        ],
-      ),
-      child: const Text(
-        '지',
-        style: TextStyle(fontSize: 26, color: AppColors.white),
+    final path = photo;
+    final face = path == null
+        ? const Text(
+            '지',
+            style: TextStyle(fontSize: 30, color: AppColors.white),
+          )
+        : Image.file(
+            File(path),
+            fit: BoxFit.cover,
+            width: _tokenSize,
+            height: _tokenSize,
+            errorBuilder: (_, _, _) => const Text(
+              '지',
+              style: TextStyle(fontSize: 30, color: AppColors.white),
+            ),
+          );
+
+    return Semantics(
+      button: onTap != null,
+      label: '캐릭터 고르기',
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: onTap,
+        child: Container(
+          width: _tokenSize,
+          height: _tokenSize,
+          alignment: Alignment.center,
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: AppColors.red,
+            border: Border.all(color: AppColors.white, width: 4),
+            boxShadow: const [
+              BoxShadow(color: Color(0x59000000), offset: Offset(0, 4)),
+            ],
+          ),
+          child: face,
+        ),
       ),
     );
   }
