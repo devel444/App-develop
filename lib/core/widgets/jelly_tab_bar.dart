@@ -16,7 +16,7 @@ class JellyTabSpec {
   final Color labelColor;
 }
 
-/// 하단 탭 5개. 선택된 탭은 연한 색으로 더 높게 올라온다 (USJ 하단 메뉴 방식).
+/// 하단 탭 5개. 선택된 탭은 연한 색과 위쪽 흰 막대로 표시한다 (크기는 모두 같다).
 class JellyTabBar extends StatelessWidget {
   const JellyTabBar({
     super.key,
@@ -77,31 +77,55 @@ class _TabButton extends StatelessWidget {
         : spec.color;
     final labelColor = selected ? AppColors.ink : spec.labelColor;
 
+    // 모든 탭은 같은 크기·같은 자리에 둔다. 선택된 탭은 밝은 색과 위쪽 막대로만 표시한다.
     return JellyButton(
       color: color,
-      height: selected ? 156 : 138,
+      height: 138,
       semanticLabel: spec.label,
       onTap: onTap,
       borderRadius: const BorderRadius.vertical(top: Radius.circular(30)),
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(spec.icon, size: 44, color: labelColor),
-            Text(
-              spec.label,
-              style: TextStyle(
-                fontSize: 24,
-                color: labelColor,
-                shadows: selected
-                    ? null
-                    : const [
-                        Shadow(offset: Offset(0, 2), color: Color(0x73000000)),
-                      ],
+      child: Stack(
+        children: [
+          if (selected)
+            Positioned(
+              top: 14,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Container(
+                  width: 56,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: AppColors.white,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                ),
               ),
             ),
-          ],
-        ),
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(spec.icon, size: 44, color: labelColor),
+                Text(
+                  spec.label,
+                  style: TextStyle(
+                    fontSize: 24,
+                    color: labelColor,
+                    shadows: selected
+                        ? null
+                        : const [
+                            Shadow(
+                              offset: Offset(0, 2),
+                              color: Color(0x73000000),
+                            ),
+                          ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }

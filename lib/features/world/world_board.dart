@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:sticker_world/core/theme/app_colors.dart';
@@ -25,6 +26,7 @@ class WorldBoard extends StatelessWidget {
     this.giftCells = const {},
     this.characterPhoto,
     this.onCharacterTap,
+    this.fitSize,
   });
 
   final int world;
@@ -44,6 +46,9 @@ class WorldBoard extends StatelessWidget {
 
   /// 토큰을 누르면 캐릭터 고르기 창을 연다.
   final VoidCallback? onCharacterTap;
+
+  /// 판이 들어갈 수 있는 가로·세로 크기. 이보다 크면 판 전체를 줄인다. 없으면 원래 크기.
+  final Size? fitSize;
 
   @override
   Widget build(BuildContext context) {
@@ -84,19 +89,28 @@ class WorldBoard extends StatelessWidget {
       );
     }
 
-    return FittedBox(
-      fit: BoxFit.scaleDown,
-      child: SizedBox(
-        width: _boardWidth,
-        height: _boardHeight,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            Positioned.fill(
-              child: CustomPaint(painter: _PathPainter(world: world)),
-            ),
-            ...cells,
-          ],
+    // 판은 주어진 공간에 맞춰 통째로 줄인다. 8인치처럼 낮은 화면에서도 20칸이 모두 보인다.
+    final fit = fitSize;
+    final scale = fit == null
+        ? 1.0
+        : min(1.0, min(fit.width / _boardWidth, fit.height / _boardHeight));
+
+    return SizedBox(
+      width: _boardWidth * scale,
+      height: _boardHeight * scale,
+      child: FittedBox(
+        child: SizedBox(
+          width: _boardWidth,
+          height: _boardHeight,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(
+                child: CustomPaint(painter: _PathPainter(world: world)),
+              ),
+              ...cells,
+            ],
+          ),
         ),
       ),
     );

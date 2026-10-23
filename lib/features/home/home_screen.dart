@@ -60,7 +60,6 @@ class HomeScreen extends ConsumerWidget {
               _ScoreBand(
                 totalCoins: summary.totalEarned,
                 keysEarned: keysEarned,
-                name: name,
               ),
               const WeeklyReportBanner(),
               Expanded(child: _Hero(name: name)),
@@ -113,17 +112,12 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-/// 빨간 띠: 코인 수 · 엠블럼 · 선물 열쇠.
+/// 빨간 띠: 코인 수 · 캐릭터 고르기 버튼 · 선물 열쇠.
 class _ScoreBand extends StatelessWidget {
-  const _ScoreBand({
-    required this.totalCoins,
-    required this.keysEarned,
-    required this.name,
-  });
+  const _ScoreBand({required this.totalCoins, required this.keysEarned});
 
   final int totalCoins;
   final int keysEarned;
-  final String name;
 
   @override
   Widget build(BuildContext context) {
@@ -159,11 +153,11 @@ class _ScoreBand extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 12),
-          // 가운데 동그라미를 누르면 캐릭터 8칸 중 고르는 창이 열린다.
+          // 가운데 버튼을 누르면 캐릭터 8칸 중 고르는 창이 열린다.
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: () => showCharacterPicker(context),
-            child: _Emblem(initial: name.isEmpty ? '' : name.substring(0, 1)),
+            child: const _CharacterButton(),
           ),
           const SizedBox(width: 12),
           // 열쇠를 누르면 선물 가게로 간다. 열린 열쇠는 바로 살 수 있다는 뜻이고,
@@ -246,37 +240,64 @@ class _KeySlot extends StatelessWidget {
   }
 }
 
-class _Emblem extends StatelessWidget {
-  const _Emblem({required this.initial});
+/// 빨간 띠 가운데의 캐릭터 고르기 버튼. 지금 캐릭터 얼굴과 "캐릭터 고르기" 글자로 버튼이라는 걸 보여 준다.
+class _CharacterButton extends ConsumerWidget {
+  const _CharacterButton();
 
-  final String initial;
+  static const _defaultFace = FittedBox(
+    fit: BoxFit.contain,
+    child: DefaultCharacter(),
+  );
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final compact = homeIsCompact(context);
-    final outer = compact ? 62.0 : 88.0;
-    final inner = compact ? 46.0 : 66.0;
+    final photo = ref.watch(characterRosterProvider).value?.activeSlot.photo;
+    final height = compact ? 62.0 : 88.0;
+    final face = compact ? 46.0 : 66.0;
+    final labelStyle = TextStyle(
+      fontSize: compact ? 18 : 24,
+      height: 1.1,
+      color: AppColors.white,
+    );
+
     return Container(
-      width: outer,
-      height: outer,
-      alignment: Alignment.center,
+      height: height,
+      padding: EdgeInsets.only(left: 6, right: compact ? 10 : 16),
       decoration: BoxDecoration(
-        shape: BoxShape.circle,
         color: AppColors.red,
+        borderRadius: BorderRadius.circular(height / 2),
         border: Border.all(color: AppColors.white, width: 5),
       ),
-      child: Container(
-        width: inner,
-        height: inner,
-        alignment: Alignment.center,
-        decoration: const BoxDecoration(
-          shape: BoxShape.circle,
-          color: AppColors.white,
-        ),
-        child: Text(
-          initial,
-          style: TextStyle(fontSize: compact ? 28 : 40, color: AppColors.red),
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: face,
+            height: face,
+            clipBehavior: Clip.antiAlias,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.white,
+            ),
+            child: photo == null
+                ? _defaultFace
+                : Image.file(
+                    File(photo),
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => _defaultFace,
+                  ),
+          ),
+          SizedBox(width: compact ? 8 : 12),
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('캐릭터', style: labelStyle),
+              Text('고르기', style: labelStyle),
+            ],
+          ),
+        ],
       ),
     );
   }

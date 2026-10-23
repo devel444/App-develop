@@ -24,6 +24,10 @@ const _worldColors = [
   Color(0xFFF9C9DE),
 ];
 
+/// 흰 카드 틀 (테두리·안쪽 여백·제목 띠·배경 여백)이 차지하는 크기. 판에 줄 공간을 구할 때 뺀다.
+const _cardChromeWidth = 76.0;
+const _cardChromeHeight = 156.0;
+
 /// 맵 탭: 100칸 스티커 월드. 좌우 화살표로 월드를 넘긴다.
 class MapScreen extends ConsumerStatefulWidget {
   const MapScreen({super.key});
@@ -61,24 +65,31 @@ class _MapScreenState extends ConsumerState<MapScreen> {
                     ? () => setState(() => _page = page + 1)
                     : null,
                 child: Center(
-                  child: WhiteFrameCard(
-                    headerTitle: worldName,
-                    headerColor: _worldColors[page],
-                    child: WorldBackdrop(
-                      world: page,
-                      tint: _worldColors[page],
-                      child: WorldBoard(
+                  // 카드가 차지할 수 있는 크기를 알아야 판을 맞춰 줄일 수 있다.
+                  child: LayoutBuilder(
+                    builder: (context, box) => WhiteFrameCard(
+                      headerTitle: worldName,
+                      headerColor: _worldColors[page],
+                      child: WorldBackdrop(
                         world: page,
-                        balance: ledger.balance,
-                        stack: ledger.stack,
-                        colorOf: (id) => Color(colors[id] ?? 0xFF7A7A8C),
-                        giftCells: giftCosts.toSet(),
-                        characterPhoto: ref
-                            .watch(characterRosterProvider)
-                            .value
-                            ?.activeSlot
-                            .photo,
-                        onCharacterTap: () => showCharacterPicker(context),
+                        tint: _worldColors[page],
+                        child: WorldBoard(
+                          world: page,
+                          balance: ledger.balance,
+                          stack: ledger.stack,
+                          colorOf: (id) => Color(colors[id] ?? 0xFF7A7A8C),
+                          giftCells: giftCosts.toSet(),
+                          characterPhoto: ref
+                              .watch(characterRosterProvider)
+                              .value
+                              ?.activeSlot
+                              .photo,
+                          onCharacterTap: () => showCharacterPicker(context),
+                          fitSize: Size(
+                            box.maxWidth - _cardChromeWidth,
+                            box.maxHeight - _cardChromeHeight,
+                          ),
+                        ),
                       ),
                     ),
                   ),
