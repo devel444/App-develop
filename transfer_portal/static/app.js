@@ -252,6 +252,8 @@
     }).join("");
   }
   // ---- 권한 ----
+  function isLoggedIn() { return state.isAdmin || !!state.user; }
+  var MEMBER_ROUTES = ["items", "tasks"];  // 로그인해야 보이는 메뉴
   function canApply() { return state.isAdmin || !!(state.user && state.user.canApply); }
   function mySector() { return state.user && state.user.sector ? state.user.sector : ""; }
   function userLabel(u) { return (u.team ? u.team + " " : "") + u.name + (u.title ? " " + u.title : ""); }
@@ -310,18 +312,11 @@
   function renderPresence() {
     var p = state.presence, box = $("#presenceBox");
     if (!box || !p) return;
-    var MAX = 8;
-    var names = p.users.slice(0, MAX).map(function (u) {
-      return '<li title="' + esc(userLabel(u)) + '"><span class="pres-team">' + esc(u.team) + "</span>" + esc(u.name) + (u.title ? " " + esc(u.title) : "") +
-        (u.admin ? ' <span class="pres-admin">관리자</span>' : "") + "</li>";
-    }).join("");
-    var extra = [];
-    if (p.users.length > MAX) extra.push("외 " + (p.users.length - MAX) + "명");
-    if (p.admins) extra.push("관리자 " + p.admins);
-    if (p.anonymous) extra.push("비로그인 " + p.anonymous);
-    box.innerHTML = '<div class="pres-head"><span class="pres-dot"></span>현재 접속 <b>' + p.count + "</b>명</div>" +
-      (names ? '<ul class="pres-list">' + names + "</ul>" : "") +
-      (extra.length ? '<div class="pres-extra">' + extra.join(" · ") + "</div>" : "");
+    var u = state.user;
+    var me = u ? '<div class="pres-me"><span class="pres-team">' + esc(u.team) + "</span>" + esc(u.name) + (u.title ? " " + esc(u.title) : "") + "</div>"
+      : state.isAdmin ? '<div class="pres-me">관리자 모드</div>'
+      : '<div class="pres-me muted-light">로그인하지 않음</div>';
+    box.innerHTML = '<div class="pres-head"><span class="pres-dot"></span>현재 접속 <b>' + p.count + "</b>명</div>" + me;
   }
 
   // =====================================================================
@@ -332,6 +327,7 @@
     if (token) safeLocal("set", "portalUserToken", token); else safeLocal("del", "portalUserToken");
     updateNav();
     if (msg) toast(msg, user ? "ok" : "");
+    if (!isLoggedIn() && state.detail) closeDetail(true);
     if (state.detail) renderDetail();
     render(false);
     presencePing();
@@ -339,10 +335,13 @@
   function updateNav() {
     var u = state.user;
     $("#navApply").style.display = canApply() ? "" : "none";
+    $("#navItems").style.display = isLoggedIn() ? "" : "none";
+    $("#navTasks").style.display = isLoggedIn() ? "" : "none";
     $("#navAccountLabel").textContent = u ? u.name + (u.title ? " " + u.title : "") : "로그인 / 가입";
     var tb = $("#navAccountBadge");
     tb.textContent = u ? u.team : "";
     tb.style.display = u ? "" : "none";
+    renderPresence();
     if (state.route === "apply" && !canApply() && !state.apply.result) render(false);
   }
   function setAdmin(on, msg) {
@@ -378,17 +377,25 @@
     $all(".nav-link").forEach(function (a) { a.classList.toggle("active", a.getAttribute("data-route") === route); });
     render(true);
     if (changed) { window.scrollTo(0, 0); if (state.clientId) presencePing(); }
-    if (route === "items" && parts[1]) openDetail(decodeURIComponent(parts[1]));
+    if (route === "items" && parts[1] && isLoggedIn()) openDetail(decodeURIComponent(parts[1]));
   }
   function go(route) {
     if (location.hash === "#" + route) onHash(); else location.hash = route;
   }
   function render(animate) {
     var view = $("#view");
-    VIEWS[state.route]();
+    if (MEMBER_ROUTES.indexOf(state.route) !== -1 && !isLoggedIn()) renderLoginRequired();
+    else VIEWS[state.route]();
     if (animate) { view.classList.remove("enter"); void view.offsetWidth; view.classList.add("enter"); }
   }
   function setView(html) { $("#view").innerHTML = html; }
+  function renderLoginRequired() {
+    var name = state.route === "tasks" ? "🛠️ 보완 과제 현황" : "📋 양산이관 세부현황";
+    setView('<div class="page-head"><div><h2>' + name + "</h2></div></div>" +
+      '<div class="card success-box"><div class="big">🔒</div><h3 style="font-size:18px">로그인 후 볼 수 있습니다</h3>' +
+      "<p>사번으로 로그인하세요. 아직 회원이 아니면 [가입 신청] 후 관리자 승인을 받으면 됩니다.</p>" +
+      '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" data-action="nav" data-route="account">👤 로그인 / 가입</button></div></div>');
+  }
 
   // =====================================================================
   // 메뉴 1: 대시보드
@@ -793,10 +800,17 @@
   // =====================================================================
   // 로그인 / 가입 (아이디 = 사번, 관리자 승인 후 사용)
   // =====================================================================
+  // 팀 선택 목록: 개발팀(신청) / 6대 부문별 검토팀으로 묶어서 표시
   function teamOptions(selected) {
-    return '<option value="">팀 선택</option>' + state.teams.map(function (t) {
-      var tag = t.canApply ? " (신청 가능)" : t.sector ? " (" + t.sector + " 부문 검토)" : "";
-      return '<option value="' + esc(t.name) + '"' + (selected === t.name ? " selected" : "") + ">" + esc(t.name + tag) + "</option>";
+    var groups = [{ label: "개발팀 (양산이관 신청)", list: state.teams.filter(function (t) { return t.canApply; }) }]
+      .concat(SECTORS.map(function (sec) {
+        return { label: sec + " 부문 (검토 의견 작성)", list: state.teams.filter(function (t) { return !t.canApply && t.sector === sec; }) };
+      }))
+      .concat([{ label: "기타 (열람)", list: state.teams.filter(function (t) { return !t.canApply && !t.sector; }) }]);
+    return '<option value="">팀 선택</option>' + groups.filter(function (g) { return g.list.length; }).map(function (g) {
+      return '<optgroup label="' + esc(g.label) + '">' + g.list.map(function (t) {
+        return '<option value="' + esc(t.name) + '"' + (selected === t.name ? " selected" : "") + ">" + esc(t.name) + "</option>";
+      }).join("") + "</optgroup>";
     }).join("");
   }
   function renderAccount() {
@@ -824,22 +838,24 @@
     }
     setView(
       '<div class="page-head"><div><h2>👤 로그인 / 가입</h2><p>아이디는 사번입니다 · 가입 신청 후 관리자(간사) 승인이 끝나면 로그인할 수 있습니다</p></div></div>' +
-      '<div class="admin-grid"><div class="card"><div class="card-title">🔐 로그인</div>' +
+      '<div class="account-col"><div class="card login-card"><div class="card-title">🔐 로그인</div>' +
       '<div class="field"><label>사번</label><input id="loginEmp" class="input" autocomplete="username" placeholder="예) 2015001" /></div>' +
       '<div class="field"><label>비밀번호</label><input id="loginPw" type="password" class="input" autocomplete="current-password" /></div>' +
       '<button class="btn btn-primary btn-lg" data-action="userLogin">로그인</button>' +
-      '<div class="card-sub">비밀번호를 잊었으면 관리자에게 임시 비밀번호 발급을 요청하세요.</div></div>' +
-      '<div class="card"><div class="card-title">📝 가입 신청</div><div class="info-grid" style="grid-template-columns:1fr 1fr">' +
+      '<div class="login-foot"><span class="card-sub">비밀번호를 잊었으면 관리자에게 임시 비밀번호 발급을 요청하세요.</span>' +
+      '<button class="btn btn-secondary btn-sm" data-action="toggleSignup">' + (state.showSignup ? "▲ 가입 신청 닫기" : "📝 가입 신청") + "</button></div></div>" +
+      '<div class="card signup-card' + (state.showSignup ? " open" : "") + '" id="signupCard"><div class="card-title">📝 가입 신청 <span class="card-sub">관리자 승인 후 로그인할 수 있습니다</span></div><div class="info-grid" style="grid-template-columns:1fr 1fr">' +
       '<div class="field"><label>사번 <span class="req">*</span></label><input id="suEmp" class="input" maxlength="20" placeholder="영문/숫자" /></div>' +
       '<div class="field"><label>이름 <span class="req">*</span></label><input id="suName" class="input" maxlength="30" /></div>' +
-      '<div class="field"><label>직급</label><input id="suTitle" class="input" maxlength="20" placeholder="예) 팀장, 책임" /></div>' +
+      '<div class="field"><label>직급 <span class="req">*</span></label><select id="suTitle" class="select"><option value="">직급 선택</option><option value="팀장">팀장</option><option value="Pro">Pro</option></select></div>' +
       '<div class="field"><label>팀 <span class="req">*</span></label><select id="suTeam" class="select">' + teamOptions("") + "</select></div>" +
       '<div class="field span2"><label>이메일 <span class="req">*</span> <span class="muted">(작성 완료·검토 요청 메일에 사용)</span></label><input id="suEmail" type="email" class="input" placeholder="name@company.com" /></div>' +
       '<div class="field"><label>비밀번호 <span class="req">*</span></label><input id="suPw" type="password" class="input" autocomplete="new-password" /></div>' +
       '<div class="field"><label>비밀번호 확인 <span class="req">*</span></label><input id="suPw2" type="password" class="input" autocomplete="new-password" /></div>' +
       '</div><button class="btn btn-teal" data-action="userSignup">가입 신청</button>' +
-      '<div class="card-sub">· 개발팀(결정성장/EPI/Wafering/제품개발팀): 양산이관 신청 가능<br>· 6대 부문 검토팀: 담당 부문 Risk 검토 작성 및 작성 완료 처리</div></div></div>'
+      '<div class="card-sub">· 개발팀(결정성장/EPI/Wafering/제품개발팀): 양산이관 신청 가능<br>· 6대 부문 검토팀: 담당 부문 Risk 검토 의견 작성 및 작성 완료 처리</div></div></div>'
     );
+
   }
 
   // =====================================================================
@@ -1007,7 +1023,7 @@
       '<div style="display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" data-action="saveRecipients">💾 저장</button></div></div>' +
 
       // 메일 발송 설정
-      '<div class="card"><div class="card-title">⚙️ 메일 발송 설정</div>' +
+      '<div class="card"><div class="card-title">⚙️ 메일 발송 설정</div>' + mailDiagHtml(s.mailDiag) +
       '<label class="check-line"><input type="checkbox" id="stPreferOutlook" ' + (s.mail.preferOutlook ? "checked" : "") + " /> 서버 PC Outlook 자동 발송 우선 사용 (실패 시 SMTP)</label>" +
       '<div class="info-grid" style="grid-template-columns:2fr 1fr"><div class="field"><label>SMTP 호스트</label><input id="stSmtpHost" class="input" value="' + esc(smtp.host) + '" placeholder="mail.company.com" /></div>' +
       '<div class="field"><label>포트</label><input id="stSmtpPort" type="number" class="input" value="' + esc(smtp.port) + '" /></div>' +
@@ -1070,6 +1086,15 @@
     renderMailPanel();
   }
 
+  function mailDiagHtml(d) {
+    if (!d) return "";
+    var warn = d.elevated ? '<div class="banner warn" style="font-size:12px">⚠️ 서버가 관리자 권한으로 실행 중입니다. Outlook 자동 발송이 0x80080005 오류로 실패할 수 있으니 ' +
+      "검은 창을 닫고 run_server.bat 을 그냥 더블클릭해 다시 실행하세요.</div>" : "";
+    return '<div class="kv" style="font-size:12px"><b>Outlook 연동</b><span>' + (d.pywin32 ? "✅ " : "⚠️ ") + esc(d.outlookMethod) + "</span>" +
+      "<b>실행 권한</b><span>" + (d.elevated ? "⚠️ 관리자 권한" : "✅ 일반 권한") + "</span>" +
+      '<b>Python</b><span style="word-break:break-all">' + esc(d.python) + "</span></div>" + warn +
+      '<div class="card-sub">Outlook 자동 발송은 서버 PC에서 <b>클래식 Outlook을 켜 두고</b>, 서버와 Outlook을 <b>둘 다 일반 권한</b>으로 실행해야 합니다.</div>';
+  }
   function renderUserRows() {
     var body = $("#userBody");
     if (!body) return;
@@ -1722,18 +1747,25 @@
         setUser(r.token, r.user, userLabel(r.user) + "님 환영합니다.");
       }).catch(fail);
     },
+    toggleSignup: function (el) {
+      state.showSignup = !state.showSignup;
+      var card = $("#signupCard");
+      card.classList.toggle("open", state.showSignup);
+      el.textContent = state.showSignup ? "▲ 가입 신청 닫기" : "📝 가입 신청";
+      if (state.showSignup) setTimeout(function () { card.scrollIntoView({ behavior: "smooth", block: "start" }); $("#suEmp").focus(); }, 60);
+    },
     userLogout: function () {
       api("POST", "/api/users/logout").catch(function () { });
       setUser(null, null, "로그아웃했습니다.");
     },
     userSignup: function () {
       var v = function (id) { return $("#" + id).value.trim(); };
-      if (!v("suEmp") || !v("suName") || !v("suTeam") || !v("suEmail") || !$("#suPw").value) { toast("필수 항목(*)을 모두 입력하세요.", "err"); return; }
+      if (!v("suEmp") || !v("suName") || !v("suTitle") || !v("suTeam") || !v("suEmail") || !$("#suPw").value) { toast("필수 항목(*)을 모두 입력하세요.", "err"); return; }
       if ($("#suPw").value !== $("#suPw2").value) { toast("비밀번호 확인이 일치하지 않습니다.", "err"); return; }
       api("POST", "/api/users/signup", { empId: v("suEmp"), name: v("suName"), title: v("suTitle"), team: v("suTeam"), email: v("suEmail"), password: $("#suPw").value })
         .then(function (r) {
           toast(r.message, "ok");
-          ["suEmp", "suName", "suTitle", "suEmail", "suPw", "suPw2"].forEach(function (id) { $("#" + id).value = ""; });
+          state.showSignup = false; renderAccount();
         }).catch(fail);
     },
     userChangePw: function () {

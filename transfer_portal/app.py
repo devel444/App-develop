@@ -59,18 +59,23 @@ PRESENCE_TTL_SEC = 60
 # 팀 목록 (관리자 모드에서 이름/부문/신청권한 수정 가능)
 #  - canApply: 양산이관 신청 가능한 개발팀
 #  - sector  : 6대 부문 검토 담당 팀 (해당 부문 Risk 행 작성 권한)
-DEFAULT_TEAMS = [
-    {"name": "결정성장개발팀", "sector": "", "canApply": True},
-    {"name": "EPI개발팀", "sector": "", "canApply": True},
-    {"name": "Wafering개발팀", "sector": "", "canApply": True},
-    {"name": "제품개발팀", "sector": "", "canApply": True},
-    {"name": "품질보증팀", "sector": "품질/수율", "canApply": False},
-    {"name": "설비기술팀", "sector": "장비", "canApply": False},
-    {"name": "생산관리팀", "sector": "생산성", "canApply": False},
-    {"name": "공정기술팀", "sector": "Process", "canApply": False},
-    {"name": "제조팀", "sector": "제조", "canApply": False},
-    {"name": "경영기획팀", "sector": "손익", "canApply": False},
+REVIEW_TEAMS = {
+    "품질/수율": ["종합공정1팀", "종합공정2팀", "종합공정담당"],
+    "장비": ["장비기술1팀", "장비기술2팀", "장비기술3팀", "Metrology기술팀", "MS장비기술팀", "장비기술담당"],
+    "생산성": ["제조운영팀", "제조혁신담당"],
+    "Process": ["LS공정기술1팀", "LS공정기술2팀", "LS공정기술3팀", "오염제어기술팀", "MS공정기술팀", "GR기술1팀", "GR기술2팀",
+                "EPI기술1팀", "EPI기술2팀", "청주EPI기술팀", "LSwafering기술담당", "MSwafering기술담당", "Growing기술담당", "EPI기술담당"],
+    "제조": ["LS제조1팀", "LS제조2팀", "LS제조3팀", "LS제조4팀", "LS제조5팀", "MS제조1팀", "MS제조2팀", "LS제조담당", "MS제조담당"],
+    "손익": ["효율혁신팀", "경영관리담당"],
+}
+DEV_TEAMS = ["결정성장개발팀", "EPI개발팀", "Wafering개발팀", "제품개발팀"]
+DEFAULT_TEAMS = [{"name": t, "sector": "", "canApply": True} for t in DEV_TEAMS] + [
+    {"name": t, "sector": sector, "canApply": False} for sector, teams in REVIEW_TEAMS.items() for t in teams
 ]
+# v3 에서 임시로 넣었던 예시 팀 목록 → 저장돼 있으면 실제 조직으로 자동 교체
+OLD_SAMPLE_TEAMS = {"결정성장개발팀", "EPI개발팀", "Wafering개발팀", "제품개발팀", "품질보증팀", "설비기술팀", "생산관리팀",
+                    "공정기술팀", "제조팀", "경영기획팀"}
+TITLES = ["팀장", "Pro"]
 
 
 # ---------------------------------------------------------------------------
@@ -587,7 +592,10 @@ class Store:
                     base[k] = v
             for sector in SECTORS:
                 base["criteria"].setdefault("checklist", {}).setdefault(sector, "")
-            base["teams"] = normalize_teams(base.get("teams")) or copy.deepcopy(DEFAULT_TEAMS)
+            teams = normalize_teams(base.get("teams"))
+            if not teams or {t["name"] for t in teams} == OLD_SAMPLE_TEAMS:
+                teams = copy.deepcopy(DEFAULT_TEAMS)
+            base["teams"] = teams
             return base
 
     def save_settings(self, s: Dict[str, Any]) -> None:
@@ -706,30 +714,90 @@ def portal_base(settings: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # 메일 (Outlook 1순위 → SMTP 2순위)
 # ---------------------------------------------------------------------------
-# pywin32 가 없으면 Windows 기본 PowerShell 로 Outlook COM 을 호출한다.
-PS_OUTLOOK = (
-    "$ErrorActionPreference='Stop'; "
-    "$p = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PORTAL_MAIL_JSON | ConvertFrom-Json; "
-    "$o = New-Object -ComObject Outlook.Application; "
-    "$m = $o.CreateItem(0); "
-    "$m.To = $p.to; $m.CC = $p.cc; $m.Subject = $p.subject; $m.HTMLBody = $p.html; "
-    "if ($p.display) { $m.Display($false) } else { $m.Send() }"
-)
+# ---------------------------------------------------------------------------
+# Outlook 연동 진단
+#  - 0x80080005(CO_E_SERVER_EXEC_FAILURE): 서버와 Outlook 의 실행 권한(관리자/일반)이 다르거나
+#    Outlook 이 시작 중이라 응답하지 못할 때 발생 → 실행 중인 Outlook 에 먼저 붙고, 실패하면 재시도.
+# ---------------------------------------------------------------------------
+OUTLOOK_LOCK = threading.Lock()  # Outlook COM 호출은 한 번에 하나씩
+
+
+def is_elevated() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def pywin32_status() -> Tuple[bool, str]:
+    try:
+        import pythoncom  # noqa: F401
+        import win32com.client  # noqa: F401
+        return True, "pywin32 사용"
+    except Exception as e:  # noqa: BLE001
+        return False, f"pywin32 없음 → PowerShell 사용 ({type(e).__name__}: {e})"
+
+
+def mail_diagnostics() -> Dict[str, Any]:
+    ok, msg = pywin32_status()
+    return {
+        "platform": "Windows" if os.name == "nt" else sys.platform,
+        "python": sys.executable,
+        "pywin32": ok,
+        "outlookMethod": msg if os.name == "nt" else "Windows가 아니어서 Outlook 사용 불가",
+        "elevated": is_elevated(),
+    }
+
+
+def explain_outlook_error(e: Exception) -> str:
+    text = str(e)
+    code = ""
+    if getattr(e, "args", None) and isinstance(e.args[0], int):  # pywintypes.com_error
+        code = hex(e.args[0] & 0xFFFFFFFF)
+    if "80080005" in text or code == "0x80080005":
+        hint = ("서버(검은 창)가 '관리자 권한'으로 실행 중입니다. 창을 닫고 run_server.bat 을 그냥 더블클릭(일반 권한)으로 다시 실행하세요."
+                if is_elevated() else
+                "Outlook 이 '관리자 권한'으로 실행 중이거나 시작 중입니다. Outlook 을 완전히 종료한 뒤 일반 권한으로 다시 켜 두고 재시도하세요.")
+        return f"Outlook 실행 권한 불일치(0x80080005). {hint}"
+    if "80040154" in text or code == "0x80040154":
+        return "클래식 Outlook 이 설치되어 있지 않습니다. ('새 Outlook' 앱은 자동 발송을 지원하지 않습니다 → SMTP 설정 사용)"
+    if "8004010f" in text.lower() or code == "0x8004010f":
+        return "Outlook 프로필/계정에 접근할 수 없습니다. Outlook 을 한 번 직접 실행해 로그인해 두세요."
+    return text
 
 
 def outlook_mail(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
     if os.name != "nt":
         raise RuntimeError("Outlook 연동은 Windows 서버 PC에서만 가능합니다.")
-    try:
-        import pythoncom  # pywin32 (선택 설치)
-        import win32com.client
-    except ImportError:
-        _outlook_powershell(to, cc, subject, html_body, display)
-        return
+    last: Optional[Exception] = None
+    with OUTLOOK_LOCK:
+        for attempt in range(2):  # Outlook 이 막 켜지는 중이면 잠시 후 한 번 더
+            try:
+                if pywin32_status()[0]:
+                    _outlook_pywin32(to, cc, subject, html_body, display)
+                else:
+                    _outlook_powershell(to, cc, subject, html_body, display)
+                return
+            except Exception as e:  # noqa: BLE001
+                last = e
+                if attempt == 0:
+                    time.sleep(4)
+    raise RuntimeError(explain_outlook_error(last))
+
+
+def _outlook_pywin32(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
+    import pythoncom
+    import win32com.client
 
     pythoncom.CoInitialize()
     try:
-        outlook = win32com.client.Dispatch("Outlook.Application")
+        try:  # 이미 켜져 있는 Outlook 에 연결 (새로 띄우는 것보다 권한 문제가 적다)
+            outlook = win32com.client.GetActiveObject("Outlook.Application")
+        except Exception:  # noqa: BLE001
+            outlook = win32com.client.Dispatch("Outlook.Application")
         mail = outlook.CreateItem(0)
         mail.To = "; ".join(to)
         mail.CC = "; ".join(cc)
@@ -741,6 +809,18 @@ def outlook_mail(to: List[str], cc: List[str], subject: str, html_body: str, dis
             mail.Send()
     finally:
         pythoncom.CoUninitialize()
+
+
+PS_OUTLOOK = (
+    "$ErrorActionPreference='Stop'; "
+    "$p = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PORTAL_MAIL_JSON | ConvertFrom-Json; "
+    "$o = $null; "
+    "try { $o = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application') } catch { $o = $null }; "
+    "if (-not $o) { $o = New-Object -ComObject Outlook.Application }; "
+    "$m = $o.CreateItem(0); "
+    "$m.To = $p.to; $m.CC = $p.cc; $m.Subject = $p.subject; $m.HTMLBody = $p.html; "
+    "if ($p.display) { $m.Display($false) } else { $m.Send() }"
+)
 
 
 def _outlook_powershell(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
@@ -1174,6 +1254,7 @@ def h_get_settings(req: Optional[Req] = None):
         "secretaryEmails": s["secretaryEmails"], "leaderEmails": s["leaderEmails"], "portalUrl": s["portalUrl"],
         "mail": s["mail"], "smtp": smtp, "reviewers": normalize_reviewers(s["reviewers"]), "criteria": s["criteria"],
         "suggestedPortalUrl": f"http://{lan_ip()}:{PORT}/",
+        "mailDiag": mail_diagnostics(),
     }
 
 
@@ -1506,6 +1587,9 @@ def h_signup(req: Req):
         raise HTTPException(400, "팀을 선택하세요.")
     if not email:
         raise HTTPException(400, "이메일을 올바르게 입력하세요.")
+    title = _s(p.get("title"))
+    if title not in TITLES:
+        raise HTTPException(400, "직급(팀장 / Pro)을 선택하세요.")
     if len(password) < 4:
         raise HTTPException(400, "비밀번호는 4자 이상이어야 합니다.")
 
@@ -1514,7 +1598,7 @@ def h_signup(req: Req):
         if old and old.get("status") != "rejected":
             raise HTTPException(409, "이미 가입 신청된 사번입니다." if old.get("status") == "pending" else "이미 가입된 사번입니다.")
         salt = secrets.token_hex(16)
-        users[emp_id] = {"empId": emp_id, "name": name, "title": _s(p.get("title"))[:20], "team": team, "email": email,
+        users[emp_id] = {"empId": emp_id, "name": name, "title": title, "team": team, "email": email,
                          "status": "pending", "pwSalt": salt, "pwHash": hash_password(password, salt),
                          "createdAt": now_str(), "approvedAt": ""}
         return users[emp_id]
@@ -1684,33 +1768,15 @@ def h_sector_reopen(req: Req):
 
 # --- 현재 접속자 ------------------------------------------------------------
 def _presence_snapshot() -> Dict[str, Any]:
+    """현재 접속 인원수만 공개 (같은 회원이 여러 탭을 열어도 1명)."""
     now = time.time()
-    users, seen_emp, anon, admins = [], set(), 0, 0
-    all_users = store.users()
-    settings = store.settings()
     with PRESENCE_LOCK:
         for cid in [c for c, v in PRESENCE.items() if v["seen"] < now - PRESENCE_TTL_SEC]:
             PRESENCE.pop(cid, None)
         entries = list(PRESENCE.values())
-    for v in entries:
-        if v.get("empId") and v["empId"] in all_users:
-            if v["empId"] in seen_emp:
-                continue
-            seen_emp.add(v["empId"])
-            u = all_users[v["empId"]]
-            users.append({"name": u.get("name", ""), "title": u.get("title", ""), "team": u.get("team", ""),
-                          "admin": bool(v.get("admin"))})
-        elif v.get("admin"):
-            admins += 1
-        else:
-            anon += 1
-    users.sort(key=lambda u: (team_order(settings, u["team"]), u["name"]))
-    return {"count": len(users) + admins + anon, "users": users, "admins": admins, "anonymous": anon}
-
-
-def team_order(settings: Dict[str, Any], team: str) -> int:
-    names = [t["name"] for t in settings["teams"]]
-    return names.index(team) if team in names else len(names)
+    members = {v["empId"] for v in entries if v.get("empId")}
+    others = sum(1 for v in entries if not v.get("empId"))
+    return {"count": len(members) + others}
 
 
 def h_presence(req: Req):
@@ -1901,6 +1967,11 @@ if __name__ == "__main__":
     print(f" 저장소 : {store.root} ({'공유폴더' if store.is_network else '로컬 폴백 - 공유폴더 접근 불가'})")
     print(f" 접속   : http://{lan_ip()}:{PORT}  (이 PC: http://localhost:{PORT})")
     print(" 종료   : 이 창을 닫거나 Ctrl+C")
+    if os.name == "nt":
+        print(f" 메일   : Outlook 연동 - {pywin32_status()[1]}")
+        if is_elevated():
+            print(" [경고] 관리자 권한으로 실행 중입니다. Outlook 자동 발송이 0x80080005 오류로 실패할 수 있으니")
+            print("        이 창을 닫고 run_server.bat 을 그냥 더블클릭(일반 권한)해서 실행하세요.")
     print("=" * 64)
     try:
         httpd.serve_forever()
