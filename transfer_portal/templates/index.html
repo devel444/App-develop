@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>양산이관 검증위원회 포털</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <span class="brand-badge">개발 → 기술 양산이관</span>
+      <h1>양산이관 검증위원회</h1>
+      <p id="storageInfo" class="storage-info">저장소 확인 중…</p>
+    </div>
+    <nav class="nav-group">
+      <a class="nav-link" href="#dashboard" data-route="dashboard"><span class="nav-ico">📊</span>대시보드</a>
+      <a class="nav-link" href="#items" data-route="items"><span class="nav-ico">📋</span>양산이관 세부현황</a>
+      <a class="nav-link" href="#tasks" data-route="tasks"><span class="nav-ico">🛠️</span>보완 과제 현황<span id="navDelayBadge" class="nav-count"></span></a>
+      <a class="nav-link" href="#apply" data-route="apply"><span class="nav-ico">📝</span>양산이관 신청</a>
+    </nav>
+    <nav class="nav-group nav-bottom">
+      <a class="nav-link" href="#criteria" data-route="criteria"><span class="nav-ico">📖</span>양산이관 기준</a>
+      <a class="nav-link" href="#admin" data-route="admin"><span class="nav-ico">🔒</span>관리자 모드<span id="adminBadge" class="admin-badge">잠김</span></a>
+    </nav>
+  </aside>
+
+  <main class="workspace">
+    <div id="view" class="view"></div>
+  </main>
+
+  <!-- 안건 상세 모달 -->
+  <div id="detailModal" class="modal-backdrop" aria-hidden="true">
+    <div class="modal-window modal-xl" role="dialog" aria-modal="true">
+      <div class="modal-header" id="detailHeader"></div>
+      <div class="modal-body" id="detailBody"></div>
+      <div class="modal-footer" id="detailFooter"></div>
+    </div>
+  </div>
+
+  <div id="toastWrap" class="toast-wrap"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
