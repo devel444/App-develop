@@ -6,7 +6,7 @@ REM  No pip install needed: uses Python standard library only.
 REM ============================================================
 chcp 65001 >nul
 cd /d "%~dp0"
-title Transfer Portal Server (port 8000)
+title Transfer Portal Server
 
 set "PY="
 python --version >nul 2>nul && set "PY=python"
@@ -18,15 +18,15 @@ if not defined PY (
   exit /b 1
 )
 
-REM Outlook automation fails (0x80080005) if this runs as Administrator
+REM Port: change 8000 below if needed (80 = no port number in the address)
+if not defined PORTAL_PORT set "PORTAL_PORT=8000"
 net session >nul 2>nul
 if not errorlevel 1 (
-  echo [WARN] Running as Administrator. Outlook auto-mail may fail - error 0x80080005.
-  echo        Close this window and double-click run_server.bat normally, not 'Run as administrator'.
+  echo [INFO] Running with administrator rights. Outlook mail will use a normal-rights helper automatically.
   echo.
 )
-echo [START] http://localhost:8000
-start "" /b cmd /c "timeout /t 3 >nul & start http://localhost:8000"
+echo [START] http://localhost:%PORTAL_PORT%
+start "" /b cmd /c "timeout /t 3 >nul & start http://localhost:%PORTAL_PORT%"
 %PY% app.py
 echo.
 echo [STOP] Server stopped.

@@ -384,6 +384,7 @@
   }
   function render(animate) {
     var view = $("#view");
+    view.classList.toggle("account-view", state.route === "account");
     if (MEMBER_ROUTES.indexOf(state.route) !== -1 && !isLoggedIn()) renderLoginRequired();
     else VIEWS[state.route]();
     if (animate) { view.classList.remove("enter"); void view.offsetWidth; view.classList.add("enter"); }
@@ -1010,7 +1011,8 @@
 
       // 팀 관리
       '<div class="card full"><div class="card-title">🏢 팀 관리 <span class="card-sub">신청 가능 = 양산이관 신청 메뉴 표시 · 검토 부문 = 해당 부문 Risk 행 작성 권한</span></div>' +
-      '<div class="table-wrap"><table><thead><tr><th>팀 이름</th><th style="width:170px">검토 부문</th><th style="width:130px">양산이관 신청</th><th style="width:60px"></th></tr></thead><tbody id="teamBody"></tbody></table></div>' +
+      '<div class="team-grid"><div class="team-head"><span>팀 이름</span><span>검토 부문</span><span>신청</span><span></span></div>' +
+      '<div class="team-head"><span>팀 이름</span><span>검토 부문</span><span>신청</span><span></span></div><div class="team-rows" id="teamBody"></div></div>' +
       '<div style="display:flex;justify-content:space-between;gap:6px"><button class="btn btn-secondary btn-sm" data-action="teamAdd">+ 팀 추가</button>' +
       '<button class="btn btn-primary btn-sm" data-action="teamSave">💾 팀 목록 저장</button></div></div>' +
 
@@ -1019,7 +1021,10 @@
       '<div class="field"><label>담당자(간사) 이메일 <span class="muted">(여러 명은 ; 또는 줄바꿈 구분)</span></label><textarea id="stSecretary" class="textarea" style="min-height:60px">' + esc(s.secretaryEmails.join("; ")) + "</textarea></div>" +
       '<div class="field"><label>팀장 이메일</label><textarea id="stLeader" class="textarea" style="min-height:60px">' + esc(s.leaderEmails.join("; ")) + "</textarea></div>" +
       '<div class="field"><label>포털 접속 주소 <span class="muted">(메일 본문 링크 · 비우면 자동: ' + esc(s.suggestedPortalUrl) + ")</span></label>" +
-      '<input id="stPortalUrl" class="input" value="' + esc(s.portalUrl) + '" placeholder="' + esc(s.suggestedPortalUrl) + '" /></div>' +
+      '<input id="stPortalUrl" class="input" value="' + esc(s.portalUrl) + '" placeholder="' + esc(s.suggestedPortalUrl) + '" />' +
+      '<div class="card-sub">메일 속 링크 주소만 바꾸는 칸입니다. 이름 주소를 쓰려면 먼저 다른 PC에서 아래 주소가 열리는지 확인하세요: ' +
+      (s.nameUrls || []).map(function (u) { return '<button class="btn btn-secondary btn-sm" data-action="usePortalUrl" data-url="' + esc(u) + '">' + esc(u) + "</button>"; }).join(" ") +
+      "</div></div>" +
       '<div style="display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" data-action="saveRecipients">💾 저장</button></div></div>' +
 
       // 메일 발송 설정
@@ -1073,7 +1078,8 @@
       "<b>저장소</b><span>" + esc(state.storage.path) + "</span>" +
       "<b>연동 상태</b><span>" + (state.storage.isNetwork ? "✅ 사내 공유폴더" : "⚠️ 로컬 폴백 (공유폴더 접근 불가)") + "</span>" +
       "<b>데이터 버전</b><span>v" + state.version + " · 안건 " + state.items.length + "건</span>" +
-      "<b>자동 백업</b><span>backups/data_YYYYMMDD.json (최근 30일)</span></div></div>" +
+      "<b>자동 백업</b><span>backups/data_YYYYMMDD.json (최근 30일)</span>" +
+      "<b>접속 주소</b><span>" + esc(s.suggestedPortalUrl) + (s.nameUrls || []).map(function (u) { return "<br>" + esc(u) + " (PC 이름)"; }).join("") + "</span></div></div>" +
       "</div>"
     );
     renderReviewerRows();
@@ -1088,12 +1094,15 @@
 
   function mailDiagHtml(d) {
     if (!d) return "";
-    var warn = d.elevated ? '<div class="banner warn" style="font-size:12px">⚠️ 서버가 관리자 권한으로 실행 중입니다. Outlook 자동 발송이 0x80080005 오류로 실패할 수 있으니 ' +
-      "검은 창을 닫고 run_server.bat 을 그냥 더블클릭해 다시 실행하세요.</div>" : "";
+    var yn = function (v, yes, no) { return v === true ? yes : v === false ? no : "확인 불가"; };
+    var priv = !d.elevated ? "✅ 일반 권한"
+      : d.uac === false ? "관리자 권한 (이 PC는 UAC가 꺼져 있어 모든 프로그램이 관리자 권한 → 정상)"
+      : "⚠️ 관리자 권한 → Outlook 연결이 막히면 일반 권한 작업으로 자동 우회합니다";
     return '<div class="kv" style="font-size:12px"><b>Outlook 연동</b><span>' + (d.pywin32 ? "✅ " : "⚠️ ") + esc(d.outlookMethod) + "</span>" +
-      "<b>실행 권한</b><span>" + (d.elevated ? "⚠️ 관리자 권한" : "✅ 일반 권한") + "</span>" +
-      '<b>Python</b><span style="word-break:break-all">' + esc(d.python) + "</span></div>" + warn +
-      '<div class="card-sub">Outlook 자동 발송은 서버 PC에서 <b>클래식 Outlook을 켜 두고</b>, 서버와 Outlook을 <b>둘 다 일반 권한</b>으로 실행해야 합니다.</div>';
+      "<b>Outlook 실행</b><span>" + yn(d.outlookRunning, "✅ 켜져 있음", "⚠️ 꺼져 있음 → 서버 PC에서 Outlook을 켜 두세요") + "</span>" +
+      "<b>서버 실행 권한</b><span>" + esc(priv) + "</span>" +
+      '<b>Python</b><span style="word-break:break-all">' + esc(d.python) + "</span></div>" +
+      '<div class="card-sub">Outlook 2016/2019/365 데스크톱 버전 모두 지원합니다. 서버 PC에서 <b>Outlook을 켜 둔 상태</b>여야 자동 발송됩니다.</div>';
   }
   function renderUserRows() {
     var body = $("#userBody");
@@ -1122,12 +1131,12 @@
     var body = $("#teamBody");
     if (!body) return;
     body.innerHTML = state.teamDraft.map(function (t, i) {
-      return '<tr><td><input class="input" style="width:100%" data-team="' + i + '" data-teamf="name" value="' + esc(t.name) + '" /></td>' +
-        '<td><select class="select" data-team="' + i + '" data-teamf="sector"><option value="">(없음)</option>' + SECTORS.map(function (s) {
+      return '<div class="team-row"><input class="input" data-team="' + i + '" data-teamf="name" value="' + esc(t.name) + '" placeholder="팀 이름" />' +
+        '<select class="select" data-team="' + i + '" data-teamf="sector"><option value="">(없음)</option>' + SECTORS.map(function (s) {
           return '<option value="' + esc(s) + '"' + (t.sector === s ? " selected" : "") + ">" + esc(s) + "</option>";
-        }).join("") + "</select></td>" +
-        '<td><label class="check-line"><input type="checkbox" data-team="' + i + '" data-teamf="canApply"' + (t.canApply ? " checked" : "") + " /> 신청 가능</label></td>" +
-        '<td><button class="btn btn-danger btn-sm" data-action="teamDel" data-idx="' + i + '">✕</button></td></tr>';
+        }).join("") + "</select>" +
+        '<label class="check-line" title="양산이관 신청 가능"><input type="checkbox" data-team="' + i + '" data-teamf="canApply"' + (t.canApply ? " checked" : "") + " />신청</label>" +
+        '<button class="btn btn-danger btn-sm" data-action="teamDel" data-idx="' + i + '" title="삭제">✕</button></div>';
     }).join("");
   }
   function userAction(empId, body, msg) {
@@ -1803,6 +1812,7 @@
       if (!confirm(emp + " 회원을 삭제할까요?")) return;
       api("DELETE", "/api/admin/users/" + encodeURIComponent(emp)).then(function (list) { state.adminUsers = list; renderUserRows(); toast("삭제했습니다.", "ok"); }).catch(fail);
     },
+    usePortalUrl: function (el) { $("#stPortalUrl").value = el.getAttribute("data-url"); toast("[💾 저장]을 눌러야 반영됩니다."); },
     teamAdd: function () { state.teamDraft.push({ name: "", sector: "", canApply: false }); renderTeamRows(); },
     teamDel: function (el) { state.teamDraft.splice(+el.getAttribute("data-idx"), 1); renderTeamRows(); },
     teamSave: function () {

@@ -159,6 +159,16 @@ def unique_path(folder: Path, name: str) -> Path:
     return target
 
 
+def host_names() -> List[str]:
+    """이 PC의 이름 기반 접속 주소 후보 (컴퓨터 이름, 사내 DNS 전체 이름)."""
+    names = []
+    for n in (socket.gethostname(), socket.getfqdn()):
+        n = (n or "").strip()
+        if n and n.lower() not in ("localhost",) and not re.match(r"^[\d.]+$", n) and n not in names:
+            names.append(n)
+    return names
+
+
 def lan_ip() -> str:
     """사내망 IP 추정 (패킷은 실제로 전송되지 않음)."""
     try:
@@ -741,6 +751,29 @@ def pywin32_status() -> Tuple[bool, str]:
         return False, f"pywin32 없음 → PowerShell 사용 ({type(e).__name__}: {e})"
 
 
+def uac_enabled() -> Optional[bool]:
+    """UAC(사용자 계정 컨트롤) 켜짐 여부. 꺼져 있으면 모든 프로그램이 관리자 권한으로 실행된다."""
+    if os.name != "nt":
+        return None
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System") as k:
+            return bool(winreg.QueryValueEx(k, "EnableLUA")[0])
+    except OSError:
+        return None
+
+
+def outlook_running() -> Optional[bool]:
+    if os.name != "nt":
+        return None
+    try:
+        out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq OUTLOOK.EXE", "/NH"], capture_output=True, timeout=10,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        return b"OUTLOOK.EXE" in out.upper()
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def mail_diagnostics() -> Dict[str, Any]:
     ok, msg = pywin32_status()
     return {
@@ -749,6 +782,8 @@ def mail_diagnostics() -> Dict[str, Any]:
         "pywin32": ok,
         "outlookMethod": msg if os.name == "nt" else "Windows가 아니어서 Outlook 사용 불가",
         "elevated": is_elevated(),
+        "uac": uac_enabled(),
+        "outlookRunning": outlook_running(),
     }
 
 
@@ -758,10 +793,13 @@ def explain_outlook_error(e: Exception) -> str:
     if getattr(e, "args", None) and isinstance(e.args[0], int):  # pywintypes.com_error
         code = hex(e.args[0] & 0xFFFFFFFF)
     if "80080005" in text or code == "0x80080005":
-        hint = ("서버(검은 창)가 '관리자 권한'으로 실행 중입니다. 창을 닫고 run_server.bat 을 그냥 더블클릭(일반 권한)으로 다시 실행하세요."
-                if is_elevated() else
-                "Outlook 이 '관리자 권한'으로 실행 중이거나 시작 중입니다. Outlook 을 완전히 종료한 뒤 일반 권한으로 다시 켜 두고 재시도하세요.")
-        return f"Outlook 실행 권한 불일치(0x80080005). {hint}"
+        if outlook_running() is False:
+            hint = "Outlook 이 꺼져 있습니다. 서버 PC에서 Outlook 을 먼저 켜 두고 다시 시도하세요."
+        elif is_elevated():
+            hint = "서버가 관리자 권한으로 실행 중이라 Outlook 에 연결하지 못했습니다."
+        else:
+            hint = "Outlook 이 관리자 권한으로 실행 중이거나 시작 중입니다. Outlook 을 완전히 종료한 뒤 다시 켜 두고 재시도하세요."
+        return f"Outlook 연결 실패(0x80080005). {hint}"
     if "80040154" in text or code == "0x80040154":
         return "클래식 Outlook 이 설치되어 있지 않습니다. ('새 Outlook' 앱은 자동 발송을 지원하지 않습니다 → SMTP 설정 사용)"
     if "8004010f" in text.lower() or code == "0x8004010f":
@@ -772,20 +810,95 @@ def explain_outlook_error(e: Exception) -> str:
 def outlook_mail(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
     if os.name != "nt":
         raise RuntimeError("Outlook 연동은 Windows 서버 PC에서만 가능합니다.")
-    last: Optional[Exception] = None
     with OUTLOOK_LOCK:
-        for attempt in range(2):  # Outlook 이 막 켜지는 중이면 잠시 후 한 번 더
+        try:
+            _outlook_direct(to, cc, subject, html_body, display)
+            return
+        except Exception as first:  # noqa: BLE001
+            if is_elevated():
+                # 서버가 관리자 권한이면 일반 권한 Outlook 에 붙을 수 없다(0x80080005).
+                # → 탐색기(일반 권한)를 통해 별도 작업으로 실행한다.
+                try:
+                    _outlook_via_explorer(to, cc, subject, html_body, display)
+                    return
+                except Exception as second:  # noqa: BLE001
+                    raise RuntimeError(f"{explain_outlook_error(first)} / 일반 권한 우회 실행도 실패: {second}")
+            time.sleep(4)  # Outlook 이 막 켜지는 중이면 잠시 후 한 번 더
             try:
-                if pywin32_status()[0]:
-                    _outlook_pywin32(to, cc, subject, html_body, display)
-                else:
-                    _outlook_powershell(to, cc, subject, html_body, display)
+                _outlook_direct(to, cc, subject, html_body, display)
                 return
             except Exception as e:  # noqa: BLE001
-                last = e
-                if attempt == 0:
-                    time.sleep(4)
-    raise RuntimeError(explain_outlook_error(last))
+                raise RuntimeError(explain_outlook_error(e))
+
+
+def _outlook_direct(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
+    if pywin32_status()[0]:
+        _outlook_pywin32(to, cc, subject, html_body, display)
+    else:
+        _outlook_powershell(to, cc, subject, html_body, display)
+
+
+PS_OUTLOOK_JOB = r"""
+$ErrorActionPreference = 'Stop'
+$res = '{result}'
+try {{
+  $p = Get-Content -Raw -Encoding UTF8 -LiteralPath '{data}' | ConvertFrom-Json
+  $o = $null
+  try {{ $o = [Runtime.InteropServices.Marshal]::GetActiveObject('Outlook.Application') }} catch {{ $o = $null }}
+  if (-not $o) {{ $o = New-Object -ComObject Outlook.Application }}
+  $m = $o.CreateItem(0)
+  $m.To = $p.to; $m.CC = $p.cc; $m.Subject = $p.subject; $m.HTMLBody = $p.html
+  if ($p.display) {{ $m.Display($false) }} else {{ $m.Send() }}
+  Set-Content -LiteralPath $res -Value 'OK' -Encoding UTF8
+}} catch {{
+  Set-Content -LiteralPath $res -Value ('ERR ' + $_.Exception.Message) -Encoding UTF8
+}}
+"""
+
+
+def _mail_job_dir() -> Path:
+    for base in (os.environ.get("PUBLIC"), tempfile.gettempdir()):
+        if base:
+            d = Path(base) / "transfer_portal_mail"
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                return d
+            except OSError:
+                continue
+    raise RuntimeError("메일 작업 폴더를 만들 수 없습니다.")
+
+
+def _outlook_via_explorer(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
+    """explorer.exe 로 .cmd 를 열면 탐색기(일반 권한)가 실행하므로, 관리자 권한 서버에서도 Outlook 에 연결된다."""
+    d = _mail_job_dir()
+    jid = secrets.token_hex(6)
+    data, result, ps1, cmd = (d / f"{jid}.json", d / f"{jid}.result.txt", d / f"{jid}.ps1", d / f"{jid}.cmd")
+    try:
+        data.write_text(json.dumps({"to": "; ".join(to), "cc": "; ".join(cc), "subject": subject, "html": html_body,
+                                    "display": display}, ensure_ascii=False), encoding="utf-8")
+        ps1.write_text(PS_OUTLOOK_JOB.format(result=str(result).replace("'", "''"), data=str(data).replace("'", "''")),
+                       encoding="utf-8-sig")
+        # 실행 정책에 막히지 않도록 -File 대신 스크립트 내용을 -Command 로 실행
+        loader = f"& ([ScriptBlock]::Create((Get-Content -Raw -Encoding UTF8 -LiteralPath '{ps1}')))"
+        with open(cmd, "w", encoding="mbcs" if os.name == "nt" else "utf-8", newline="") as f:
+            f.write(f'@echo off\r\nstart "" /min powershell -NoProfile -WindowStyle Hidden -Command "{loader}"\r\n')
+        subprocess.Popen(["explorer.exe", str(cmd)])
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            if result.exists():
+                time.sleep(0.3)
+                text = result.read_text(encoding="utf-8-sig", errors="replace").strip()
+                if text == "OK":
+                    return
+                raise RuntimeError(text[4:] if text.startswith("ERR ") else text)
+            time.sleep(0.5)
+        raise RuntimeError("60초 안에 응답이 없습니다. (회사 보안 정책으로 PowerShell 실행이 막혔을 수 있습니다)")
+    finally:
+        for f in (data, result, ps1, cmd):
+            try:
+                f.unlink()
+            except OSError:
+                pass
 
 
 def _outlook_pywin32(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
@@ -1254,6 +1367,7 @@ def h_get_settings(req: Optional[Req] = None):
         "secretaryEmails": s["secretaryEmails"], "leaderEmails": s["leaderEmails"], "portalUrl": s["portalUrl"],
         "mail": s["mail"], "smtp": smtp, "reviewers": normalize_reviewers(s["reviewers"]), "criteria": s["criteria"],
         "suggestedPortalUrl": f"http://{lan_ip()}:{PORT}/",
+        "nameUrls": [f"http://{n}:{PORT}/" for n in host_names()],
         "mailDiag": mail_diagnostics(),
     }
 
@@ -1966,12 +2080,15 @@ if __name__ == "__main__":
     print(" 양산이관 검증위원회 통합 관리 포털")
     print(f" 저장소 : {store.root} ({'공유폴더' if store.is_network else '로컬 폴백 - 공유폴더 접근 불가'})")
     print(f" 접속   : http://{lan_ip()}:{PORT}  (이 PC: http://localhost:{PORT})")
+    for n in host_names():
+        print(f"          http://{n}:{PORT}  (PC 이름 주소 - 다른 PC에서 열리면 이 주소를 써도 됩니다)")
     print(" 종료   : 이 창을 닫거나 Ctrl+C")
     if os.name == "nt":
         print(f" 메일   : Outlook 연동 - {pywin32_status()[1]}")
         if is_elevated():
-            print(" [경고] 관리자 권한으로 실행 중입니다. Outlook 자동 발송이 0x80080005 오류로 실패할 수 있으니")
-            print("        이 창을 닫고 run_server.bat 을 그냥 더블클릭(일반 권한)해서 실행하세요.")
+            print("          (관리자 권한 실행 중 - Outlook 연결이 막히면 일반 권한 작업으로 자동 우회합니다)")
+        if outlook_running() is False:
+            print(" [안내] Outlook 이 꺼져 있습니다. 자동 메일 발송을 쓰려면 Outlook 을 켜 두세요.")
     print("=" * 64)
     try:
         httpd.serve_forever()
