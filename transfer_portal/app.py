@@ -1,14 +1,16 @@
-"""양산이관 검증위원회 통합 관리 포털 - Python(FastAPI) 서버.
+"""양산이관 검증위원회 통합 관리 포털 - Python 서버 (표준 라이브러리만 사용, 추가 설치 불필요).
 
 실행: python app.py  (또는 run_server.bat 더블클릭)
 접속: http://<서버PC IP>:8000
 
 데이터는 사내 공유폴더(NETWORK_DIR)에 저장하며, 접근할 수 없으면 ./shared_data 로 자동 전환한다.
+회사망에서 pip 설치가 막혀도 동작하도록 FastAPI 등 외부 패키지를 쓰지 않는다.
 """
 from __future__ import annotations
 
 import copy
 import datetime as dt
+import mimetypes
 import hashlib
 import html
 import json
@@ -18,17 +20,17 @@ import secrets
 import shutil
 import smtplib
 import socket
+import subprocess
+import sys
+import tempfile
 import threading
 import time
+import traceback
 from email.message import EmailMessage
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import quote
-
-import uvicorn
-from fastapi import BackgroundTasks, Body, Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response
-from fastapi.staticfiles import StaticFiles
+from typing import Any, Callable, Dict, List, Optional, Tuple
+from urllib.parse import quote, unquote, urlsplit
 
 # ---------------------------------------------------------------------------
 # 기본 설정
@@ -39,6 +41,7 @@ LOCAL_DIR = BASE_DIR / "shared_data"
 HOST = os.environ.get("PORTAL_HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORTAL_PORT", "8000"))
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 파일당 100MB
+MAX_REQUEST_BYTES = 500 * 1024 * 1024  # 요청 1건(여러 파일 합계)
 TOKEN_TTL_SEC = 12 * 3600
 BACKUP_KEEP_DAYS = 30
 
@@ -54,6 +57,15 @@ ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 # ---------------------------------------------------------------------------
 # 공용 유틸
 # ---------------------------------------------------------------------------
+class HTTPException(Exception):
+    """핸들러에서 던지면 {"detail": ...} JSON 오류 응답으로 바뀐다."""
+
+    def __init__(self, status: int, detail: Any):
+        super().__init__(str(detail))
+        self.status = status
+        self.detail = detail
+
+
 def now_str() -> str:
     return dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -423,7 +435,7 @@ def _writable_dir(path: Path) -> bool:
         return False
 
 
-def resolve_storage_dir() -> (Path, bool):
+def resolve_storage_dir() -> Tuple[Path, bool]:
     env = os.environ.get("PORTAL_DATA_DIR")
     if env and _writable_dir(Path(env)):
         return Path(env), True
@@ -551,7 +563,7 @@ TOKENS: Dict[str, float] = {}
 LOGIN_FAILS: Dict[str, List[float]] = {}
 
 
-def require_admin(x_admin_token: str = Header(default="")) -> str:
+def require_admin(x_admin_token: str) -> str:
     exp = TOKENS.get(x_admin_token)
     if not x_admin_token or not exp or exp < time.time():
         TOKENS.pop(x_admin_token, None)
@@ -591,9 +603,26 @@ def portal_base(settings: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 # 메일 (Outlook 1순위 → SMTP 2순위)
 # ---------------------------------------------------------------------------
+# pywin32 가 없으면 Windows 기본 PowerShell 로 Outlook COM 을 호출한다.
+PS_OUTLOOK = (
+    "$ErrorActionPreference='Stop'; "
+    "$p = Get-Content -Raw -Encoding UTF8 -LiteralPath $env:PORTAL_MAIL_JSON | ConvertFrom-Json; "
+    "$o = New-Object -ComObject Outlook.Application; "
+    "$m = $o.CreateItem(0); "
+    "$m.To = $p.to; $m.CC = $p.cc; $m.Subject = $p.subject; $m.HTMLBody = $p.html; "
+    "if ($p.display) { $m.Display($false) } else { $m.Send() }"
+)
+
+
 def outlook_mail(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
-    import pythoncom  # pywin32 (Windows 전용)
-    import win32com.client
+    if os.name != "nt":
+        raise RuntimeError("Outlook 연동은 Windows 서버 PC에서만 가능합니다.")
+    try:
+        import pythoncom  # pywin32 (선택 설치)
+        import win32com.client
+    except ImportError:
+        _outlook_powershell(to, cc, subject, html_body, display)
+        return
 
     pythoncom.CoInitialize()
     try:
@@ -609,6 +638,27 @@ def outlook_mail(to: List[str], cc: List[str], subject: str, html_body: str, dis
             mail.Send()
     finally:
         pythoncom.CoUninitialize()
+
+
+def _outlook_powershell(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
+    fd, path = tempfile.mkstemp(suffix=".json", prefix="portal_mail_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump({"to": "; ".join(to), "cc": "; ".join(cc), "subject": subject, "html": html_body,
+                       "display": display}, f, ensure_ascii=False)
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", PS_OUTLOOK],
+            env=dict(os.environ, PORTAL_MAIL_JSON=path), capture_output=True, timeout=90,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if result.returncode != 0:
+            err = result.stderr.decode("cp949", "replace").strip().splitlines()
+            raise RuntimeError("Outlook(PowerShell) 실패: " + (err[0] if err else f"코드 {result.returncode}"))
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 def smtp_mail(settings: Dict[str, Any], to: List[str], cc: List[str], subject: str, html_body: str, text_body: str) -> None:
@@ -784,8 +834,7 @@ def notify_new_item(item_id: str) -> None:
     store.mutate(_apply)
 
 
-def is_local_request(request: Request) -> bool:
-    host = request.client.host if request.client else ""
+def is_local_request(host: str) -> bool:
     if host in ("127.0.0.1", "::1", "localhost"):
         return True
     try:
@@ -795,45 +844,117 @@ def is_local_request(request: Request) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# FastAPI 앱
+# HTTP 요청 / 응답 (표준 라이브러리 http.server 기반)
 # ---------------------------------------------------------------------------
-app = FastAPI(title="양산이관 검증위원회 포털", docs_url=None, redoc_url=None)
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+class Req:
+    def __init__(self, method: str, path: str, query: str, headers: Any, body: bytes, client_host: str):
+        self.method = method
+        self.path = path
+        self.query = query
+        self.headers = headers
+        self.body = body
+        self.client_host = client_host
+        self.params: Dict[str, str] = {}
+        self._form: Optional[Tuple[Dict[str, str], List[Tuple[str, str, bytes]]]] = None
 
-NO_CACHE = {"Cache-Control": "no-store"}
+    @property
+    def token(self) -> str:
+        return self.headers.get("X-Admin-Token", "") or ""
+
+    def json(self) -> Dict[str, Any]:
+        try:
+            data = json.loads(self.body.decode("utf-8") or "{}")
+        except (ValueError, UnicodeDecodeError):
+            raise HTTPException(400, "요청 형식(JSON)이 올바르지 않습니다.")
+        if not isinstance(data, dict):
+            raise HTTPException(400, "요청 형식(JSON)이 올바르지 않습니다.")
+        return data
+
+    def form(self) -> Tuple[Dict[str, str], List[Tuple[str, str, bytes]]]:
+        if self._form is None:
+            self._form = parse_multipart(self.headers.get("Content-Type", ""), self.body)
+        return self._form
 
 
-@app.get("/")
-def index():
-    return FileResponse(BASE_DIR / "templates" / "index.html", headers=NO_CACHE)
+class Resp:
+    def __init__(self, body: bytes, content_type: str, status: int = 200, headers: Optional[Dict[str, str]] = None):
+        self.body = body
+        self.content_type = content_type
+        self.status = status
+        self.headers = headers or {}
 
 
+class FileResp:
+    def __init__(self, path: Path, filename: Optional[str] = None, attachment: bool = True):
+        self.path = path
+        self.filename = filename or path.name
+        self.attachment = attachment
+
+
+def parse_multipart(content_type: str, body: bytes) -> Tuple[Dict[str, str], List[Tuple[str, str, bytes]]]:
+    """multipart/form-data → (일반 필드, [(필드명, 파일명, 내용)]). 한글 파일명(UTF-8)을 그대로 지원."""
+    m = re.search(r'boundary="?([^";]+)"?', content_type)
+    if not m:
+        raise HTTPException(400, "multipart 형식이 아닙니다.")
+    boundary = b"--" + m.group(1).encode("latin-1")
+    fields: Dict[str, str] = {}
+    files: List[Tuple[str, str, bytes]] = []
+    for part in body.split(boundary)[1:]:
+        if part.startswith(b"--"):
+            break
+        if part.startswith(b"\r\n"):
+            part = part[2:]
+        raw_head, _, data = part.partition(b"\r\n\r\n")
+        if data.endswith(b"\r\n"):
+            data = data[:-2]
+        head = raw_head.decode("utf-8", "replace")
+        disp = re.search(r"(?im)^content-disposition:(.*)$", head)
+        if not disp:
+            continue
+        name_m = re.search(r'\bname="([^"]*)"', disp.group(1))
+        file_m = re.search(r'\bfilename="([^"]*)"', disp.group(1))
+        name = name_m.group(1) if name_m else ""
+        if file_m:
+            if file_m.group(1):
+                files.append((name, file_m.group(1), data))
+        else:
+            fields[name] = data.decode("utf-8", "replace")
+    return fields, files
+
+
+def json_resp(obj: Any, status: int = 200) -> Resp:
+    return Resp(json.dumps(obj, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8", status)
+
+
+def content_disposition(filename: str, attachment: bool = True) -> str:
+    kind = "attachment" if attachment else "inline"
+    ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename) or "download"
+    return f"{kind}; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
+
+
+# ---------------------------------------------------------------------------
+# API 핸들러
+# ---------------------------------------------------------------------------
 def public_settings(s: Dict[str, Any]) -> Dict[str, Any]:
     return {"criteria": s["criteria"], "sectors": SECTORS}
 
 
-@app.get("/api/bootstrap")
-def bootstrap():
+def h_bootstrap(req: Req):
     data = store.load()
-    return Response(
-        json.dumps({
-            "items": data["items"], "version": data["version"], "settings": public_settings(store.settings()),
-            "storage": {"path": str(store.root), "isNetwork": store.is_network},
-            "today": today_str(),
-        }, ensure_ascii=False),
-        media_type="application/json", headers=NO_CACHE,
-    )
+    return {
+        "items": data["items"], "version": data["version"], "settings": public_settings(store.settings()),
+        "storage": {"path": str(store.root), "isNetwork": store.is_network}, "today": today_str(),
+    }
 
 
-@app.get("/api/version")
-def version():
-    return Response(json.dumps({"version": store.load()["version"]}), media_type="application/json", headers=NO_CACHE)
+def h_version(req: Req):
+    return {"version": store.load()["version"]}
 
 
 # --- 관리자 인증 ------------------------------------------------------------
-@app.post("/api/login")
-def login(request: Request, payload: Dict[str, Any] = Body(...)):
-    ip = request.client.host if request.client else "?"
+def h_login(req: Req):
+    payload = req.json()
+    ip = req.client_host
     recent = [t for t in LOGIN_FAILS.get(ip, []) if t > time.time() - 60]
     if len(recent) >= 5:
         raise HTTPException(429, "비밀번호를 여러 번 틀렸습니다. 1분 후 다시 시도하세요.")
@@ -847,14 +968,13 @@ def login(request: Request, payload: Dict[str, Any] = Body(...)):
     return {"token": token}
 
 
-@app.post("/api/logout")
-def logout(x_admin_token: str = Header(default="")):
-    TOKENS.pop(x_admin_token, None)
+def h_logout(req: Req):
+    TOKENS.pop(req.token, None)
     return {"ok": True}
 
 
-@app.post("/api/admin/password")
-def change_password(payload: Dict[str, Any] = Body(...), _: str = Depends(require_admin)):
+def h_change_password(req: Req):
+    payload = req.json()
     s = store.settings()
     if not secrets.compare_digest(hash_password(_s(payload.get("current")), s["adminPasswordSalt"]), s["adminPasswordHash"]):
         raise HTTPException(403, "현재 비밀번호가 일치하지 않습니다.")
@@ -868,8 +988,7 @@ def change_password(payload: Dict[str, Any] = Body(...), _: str = Depends(requir
 
 
 # --- 설정 ------------------------------------------------------------------
-@app.get("/api/settings")
-def get_settings(_: str = Depends(require_admin)):
+def h_get_settings(req: Optional[Req] = None):
     s = store.settings()
     smtp = dict(s["smtp"])
     smtp["hasPassword"] = bool(smtp.pop("password", ""))
@@ -880,8 +999,8 @@ def get_settings(_: str = Depends(require_admin)):
     }
 
 
-@app.put("/api/settings")
-def put_settings(payload: Dict[str, Any] = Body(...), _: str = Depends(require_admin)):
+def h_put_settings(req: Req):
+    payload = req.json()
     s = store.settings()
     if "secretaryEmails" in payload:
         s["secretaryEmails"] = _emails(payload["secretaryEmails"])
@@ -893,8 +1012,12 @@ def put_settings(payload: Dict[str, Any] = Body(...), _: str = Depends(require_a
         s["mail"]["preferOutlook"] = bool(payload["mail"].get("preferOutlook", True))
     if isinstance(payload.get("smtp"), dict):
         p = payload["smtp"]
+        try:
+            port = int(p.get("port") or 25)
+        except ValueError:
+            raise HTTPException(400, "SMTP 포트는 숫자여야 합니다.")
         s["smtp"].update({
-            "host": _s(p.get("host")), "port": int(p.get("port") or 25), "useTls": bool(p.get("useTls")),
+            "host": _s(p.get("host")), "port": port, "useTls": bool(p.get("useTls")),
             "username": _s(p.get("username")), "sender": _s(p.get("sender")),
         })
         if p.get("clearPassword"):
@@ -913,11 +1036,11 @@ def put_settings(payload: Dict[str, Any] = Body(...), _: str = Depends(require_a
                 if sector in c["checklist"]:
                     s["criteria"]["checklist"][sector] = _text(c["checklist"][sector])
     store.save_settings(s)
-    return get_settings(_)
+    return h_get_settings()
 
 
-@app.post("/api/mail/test")
-def mail_test(payload: Dict[str, Any] = Body(...), _: str = Depends(require_admin)):
+def h_mail_test(req: Req):
+    payload = req.json()
     s = store.settings()
     to = _emails(payload.get("to")) or _emails(s["secretaryEmails"])
     if not to:
@@ -935,50 +1058,38 @@ def mail_test(payload: Dict[str, Any] = Body(...), _: str = Depends(require_admi
 
 
 # --- 안건 ------------------------------------------------------------------
-async def _save_uploads(folder: Path, files: List[UploadFile], by: str) -> List[Dict[str, Any]]:
+def save_uploads(folder: Path, files: List[Tuple[str, str, bytes]], by: str) -> List[Dict[str, Any]]:
+    for _, filename, data in files:
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"'{filename}' 파일이 100MB를 초과합니다.")
     saved = []
     folder.mkdir(parents=True, exist_ok=True)
-    for f in files:
-        if not f or not f.filename:
-            continue
-        target = unique_path(folder, safe_filename(f.filename))
-        size = 0
-        try:
-            with open(target, "wb") as out:
-                while True:
-                    chunk = await f.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    if size > MAX_UPLOAD_BYTES:
-                        raise HTTPException(413, f"'{f.filename}' 파일이 100MB를 초과합니다.")
-                    out.write(chunk)
-        except HTTPException:
-            target.unlink(missing_ok=True)
-            raise
-        saved.append({"name": target.name, "size": size, "uploadedAt": now_str(), "by": by})
+    for _, filename, data in files:
+        target = unique_path(folder, safe_filename(filename))
+        target.write_bytes(data)
+        saved.append({"name": target.name, "size": len(data), "uploadedAt": now_str(), "by": by})
     return saved
 
 
-@app.post("/api/apply")
-async def apply(
-    background: BackgroundTasks,
-    category: str = Form("제품"), npSp: str = Form("NP"), title: str = Form(...), requester: str = Form(...),
-    requesterDept: str = Form(...), requesterEmail: str = Form(""), proposalDate: str = Form(""),
-    summary: str = Form(""), files: List[UploadFile] = File(default=[]),
-):
+def h_apply(req: Req):
     """메뉴 4: 제품개발팀 신규 신청 (비밀번호 불필요)."""
-    if not _s(title) or not _s(requester) or not _s(requesterDept):
+    f, files = req.form()
+    title, requester, dept = _s(f.get("title")), _s(f.get("requester")), _s(f.get("requesterDept"))
+    email = _s(f.get("requesterEmail"))
+    if not title or not requester or not dept:
         raise HTTPException(400, "제품/기술명, 요청자, 소속 부서는 필수입니다.")
-    if _s(requesterEmail) and not _emails(requesterEmail):
+    if email and not _emails(email):
         raise HTTPException(400, "요청자 이메일 형식이 올바르지 않습니다.")
-    p_date = _date(proposalDate) or today_str()
+    for _, filename, data in files:
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, f"'{filename}' 파일이 100MB를 초과합니다.")
+    p_date = _date(f.get("proposalDate")) or today_str()
 
     def _create(data):
         item = normalize_item({
-            "id": next_item_id(data["items"], p_date[:4]), "category": category, "npSp": npSp,
-            "title": title[:200], "requester": requester[:100], "requesterDept": requesterDept[:100],
-            "requesterEmail": requesterEmail, "proposalDate": p_date, "summary": summary[:5000],
+            "id": next_item_id(data["items"], p_date[:4]), "category": f.get("category", "제품"), "npSp": f.get("npSp", "NP"),
+            "title": title[:200], "requester": requester[:100], "requesterDept": dept[:100],
+            "requesterEmail": email, "proposalDate": p_date, "summary": (f.get("summary") or "")[:5000],
             "accepted": False, "source": "신청", "stages": {}, "risks": default_risk_rows(),
             "notify": {"status": "pending", "message": "알림 메일 발송 대기", "at": now_str()},
         })
@@ -987,23 +1098,20 @@ async def apply(
 
     item = store.mutate(_create)
     if files:
-        try:
-            saved = await _save_uploads(store.item_dir(item["id"]), files, requester)
-        except HTTPException:
-            store.mutate(lambda d: d.update(items=[i for i in d["items"] if i["id"] != item["id"]]))
-            raise
+        saved = save_uploads(store.item_dir(item["id"]), files, requester)
 
         def _attach(data):
             it = find_item(data, item["id"])
             it["attachments"] = saved
             return it
         item = store.mutate(_attach)
-    background.add_task(notify_new_item, item["id"])
+    threading.Thread(target=notify_new_item, args=(item["id"],), daemon=True).start()
     return item
 
 
-@app.put("/api/items/{item_id}")
-def update_item(item_id: str, payload: Dict[str, Any] = Body(...), _: str = Depends(require_admin)):
+def h_update_item(req: Req):
+    item_id = req.params["id"]
+    payload = req.json()
     incoming = payload.get("item") or {}
 
     def _update(data):
@@ -1020,11 +1128,11 @@ def update_item(item_id: str, payload: Dict[str, Any] = Body(...), _: str = Depe
     return store.mutate(_update)
 
 
-@app.delete("/api/items/{item_id}")
-def delete_item(item_id: str, _: str = Depends(require_admin)):
+def h_delete_item(req: Req):
+    item_id = req.params["id"]
+
     def _delete(data):
-        cur = find_item(data, item_id)
-        data["items"].remove(cur)
+        data["items"].remove(find_item(data, item_id))
     store.mutate(_delete)
     folder = store.item_dir(item_id)
     if folder.exists():  # 첨부는 지우지 않고 백업 폴더로 이동
@@ -1034,10 +1142,9 @@ def delete_item(item_id: str, _: str = Depends(require_admin)):
     return {"ok": True}
 
 
-@app.post("/api/items/{item_id}/accept")
-def accept_item(item_id: str, _: str = Depends(require_admin)):
+def h_accept_item(req: Req):
     def _accept(data):
-        cur = find_item(data, item_id)
+        cur = find_item(data, req.params["id"])
         cur["accepted"] = True
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
@@ -1045,10 +1152,11 @@ def accept_item(item_id: str, _: str = Depends(require_admin)):
     return store.mutate(_accept)
 
 
-@app.post("/api/items/{item_id}/risks/{idx}/toggle")
-def toggle_risk(item_id: str, idx: int, _: str = Depends(require_admin)):
+def h_toggle_risk(req: Req):
+    idx = int(req.params["idx"])
+
     def _toggle(data):
-        cur = find_item(data, item_id)
+        cur = find_item(data, req.params["id"])
         if not 0 <= idx < len(cur["risks"]):
             raise HTTPException(404, "과제를 찾을 수 없습니다.")
         r = cur["risks"][idx]
@@ -1059,10 +1167,9 @@ def toggle_risk(item_id: str, idx: int, _: str = Depends(require_admin)):
     return store.mutate(_toggle)
 
 
-@app.post("/api/items/bulk")
-def bulk_replace(payload: Dict[str, Any] = Body(...), _: str = Depends(require_admin)):
+def h_bulk_replace(req: Req):
     """엑셀(CSV) 업로드 결과 반영: 전달된 목록으로 전체 교체 (같은 ID 의 첨부/이력은 유지)."""
-    incoming = payload.get("items")
+    incoming = req.json().get("items")
     if not isinstance(incoming, list):
         raise HTTPException(400, "items 목록이 필요합니다.")
 
@@ -1086,17 +1193,26 @@ def bulk_replace(payload: Dict[str, Any] = Body(...), _: str = Depends(require_a
     return {"count": store.mutate(_bulk)}
 
 
-@app.get("/api/admin/backup")
-def download_backup(_: str = Depends(require_admin)):
-    return FileResponse(store.data_path, filename=f"data_backup_{dt.datetime.now():%Y%m%d_%H%M}.json",
-                        media_type="application/json")
+def h_backup(req: Req):
+    return FileResp(store.data_path, f"data_backup_{dt.datetime.now():%Y%m%d_%H%M}.json")
 
 
 # --- 첨부파일 --------------------------------------------------------------
-@app.post("/api/items/{item_id}/attachments")
-async def upload_attachments(item_id: str, files: List[UploadFile] = File(...), _: str = Depends(require_admin)):
+def _attachment_path(folder: Path, name: str) -> Path:
+    safe = safe_filename(name)
+    path = (folder / safe).resolve()
+    if safe != name or path.parent != folder.resolve() or not path.is_file():
+        raise HTTPException(404, "파일을 찾을 수 없습니다.")
+    return path
+
+
+def h_upload_attachments(req: Req):
+    item_id = req.params["id"]
     find_item(store.load(), item_id)
-    saved = await _save_uploads(store.item_dir(item_id), files, "관리자")
+    _, files = req.form()
+    if not files:
+        raise HTTPException(400, "업로드할 파일이 없습니다.")
+    saved = save_uploads(store.item_dir(item_id), files, "관리자")
 
     def _attach(data):
         it = find_item(data, item_id)
@@ -1106,23 +1222,13 @@ async def upload_attachments(item_id: str, files: List[UploadFile] = File(...), 
     return store.mutate(_attach)
 
 
-def _attachment_path(folder: Path, name: str) -> Path:
-    safe = safe_filename(name)
-    path = (folder / safe).resolve()
-    if safe != name or path.parent != folder.resolve() or not path.is_file():
-        raise HTTPException(404, "파일을 찾을 수 없습니다.")
-    return path
+def h_download_attachment(req: Req):
+    return FileResp(_attachment_path(store.item_dir(req.params["id"]), req.params["name"]))
 
 
-@app.get("/api/items/{item_id}/attachments/{name}")
-def download_attachment(item_id: str, name: str):
-    path = _attachment_path(store.item_dir(item_id), name)
-    return FileResponse(path, filename=path.name)
-
-
-@app.delete("/api/items/{item_id}/attachments/{name}")
-def delete_attachment(item_id: str, name: str, _: str = Depends(require_admin)):
-    path = _attachment_path(store.item_dir(item_id), name)
+def h_delete_attachment(req: Req):
+    item_id = req.params["id"]
+    path = _attachment_path(store.item_dir(item_id), req.params["name"])
     trash = store.backup_dir / "deleted_attachments" / item_id
     trash.mkdir(parents=True, exist_ok=True)
     shutil.move(str(path), str(unique_path(trash, path.name)))
@@ -1136,8 +1242,7 @@ def delete_attachment(item_id: str, name: str, _: str = Depends(require_admin)):
 
 
 # --- 표준 양식 자료실 ------------------------------------------------------
-@app.get("/api/forms")
-def list_forms():
+def h_list_forms(req: Optional[Req] = None):
     files = []
     for p in sorted(store.forms_dir.iterdir(), key=lambda x: x.name):
         if p.is_file() and not p.name.startswith("."):
@@ -1147,26 +1252,26 @@ def list_forms():
     return files
 
 
-@app.get("/api/forms/{name}")
-def download_form(name: str):
-    path = _attachment_path(store.forms_dir, name)
-    return FileResponse(path, filename=path.name)
+def h_download_form(req: Req):
+    return FileResp(_attachment_path(store.forms_dir, req.params["name"]))
 
 
-@app.post("/api/forms")
-async def upload_forms(files: List[UploadFile] = File(...), _: str = Depends(require_admin)):
-    await _save_uploads(store.forms_dir, files, "관리자")
-    return list_forms()
+def h_upload_forms(req: Req):
+    _, files = req.form()
+    if not files:
+        raise HTTPException(400, "업로드할 파일이 없습니다.")
+    save_uploads(store.forms_dir, files, "관리자")
+    return h_list_forms()
 
 
-@app.delete("/api/forms/{name}")
-def delete_form(name: str, _: str = Depends(require_admin)):
-    _attachment_path(store.forms_dir, name).unlink()
-    return list_forms()
+def h_delete_form(req: Req):
+    _attachment_path(store.forms_dir, req.params["name"]).unlink()
+    return h_list_forms()
 
 
 # --- 검토 요청 메일 --------------------------------------------------------
-def _review_mail_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _review_mail(req: Req) -> Dict[str, Any]:
+    payload = req.json()
     item = find_item(store.load(), _s(payload.get("itemId")))
     to = _emails(payload.get("to"))
     if not to:
@@ -1175,15 +1280,13 @@ def _review_mail_from_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
                              _text(payload.get("summary")))
 
 
-@app.post("/api/mail/review/preview")
-def review_preview(payload: Dict[str, Any] = Body(...), _: str = Depends(require_admin)):
-    return _review_mail_from_payload(payload)
+def h_review_preview(req: Req):
+    return _review_mail(req)
 
 
-@app.post("/api/mail/review/eml")
-def review_eml(payload: Dict[str, Any] = Body(...), _: str = Depends(require_admin)):
+def h_review_eml(req: Req):
     """X-Unsent: 1 헤더가 있는 .eml 초안 → 더블클릭하면 Outlook 새 메일(보내기 버튼 활성) 창으로 열린다."""
-    mail = _review_mail_from_payload(payload)
+    mail = _review_mail(req)
     msg = EmailMessage()
     msg["To"] = "; ".join(mail["to"])
     if mail["cc"]:
@@ -1193,18 +1296,14 @@ def review_eml(payload: Dict[str, Any] = Body(...), _: str = Depends(require_adm
     msg.set_content(mail["text"])
     msg.add_alternative(mail["html"], subtype="html")
     fname = safe_filename(f"검토요청_{mail['subject'][:60]}.eml")
-    return Response(
-        msg.as_bytes(), media_type="message/rfc822",
-        headers={"Content-Disposition": f"attachment; filename=\"review_request.eml\"; filename*=UTF-8''{quote(fname)}"},
-    )
+    return Resp(msg.as_bytes(), "message/rfc822", headers={"Content-Disposition": content_disposition(fname)})
 
 
-@app.post("/api/mail/review/outlook")
-def review_outlook(request: Request, payload: Dict[str, Any] = Body(...), _: str = Depends(require_admin)):
+def h_review_outlook(req: Req):
     """서버 PC에서 접속한 경우에만 Outlook 작성창(mail.Display())을 직접 띄운다."""
-    if not is_local_request(request):
+    if not is_local_request(req.client_host):
         raise HTTPException(409, "서버 PC가 아닌 곳에서 접속했습니다. .eml 초안으로 엽니다.")
-    mail = _review_mail_from_payload(payload)
+    mail = _review_mail(req)
     try:
         outlook_mail(mail["to"], mail["cc"], mail["subject"], mail["html"], display=True)
     except Exception as e:  # noqa: BLE001
@@ -1213,10 +1312,149 @@ def review_outlook(request: Request, payload: Dict[str, Any] = Body(...), _: str
 
 
 # ---------------------------------------------------------------------------
+# 라우팅
+# ---------------------------------------------------------------------------
+SEG = r"([^/]+)"
+ROUTES: List[Tuple[str, "re.Pattern[str]", Callable[[Req], Any], bool, List[str]]] = []
+
+
+def route(method: str, pattern: str, handler: Callable[[Req], Any], admin: bool = False) -> None:
+    names = re.findall(r"\{(\w+)\}", pattern)
+    regex = re.compile("^" + re.sub(r"\{\w+\}", SEG, pattern) + "$")
+    ROUTES.append((method, regex, handler, admin, names))
+
+
+route("GET", "/api/bootstrap", h_bootstrap)
+route("GET", "/api/version", h_version)
+route("POST", "/api/login", h_login)
+route("POST", "/api/logout", h_logout)
+route("POST", "/api/admin/password", h_change_password, admin=True)
+route("GET", "/api/settings", h_get_settings, admin=True)
+route("PUT", "/api/settings", h_put_settings, admin=True)
+route("POST", "/api/mail/test", h_mail_test, admin=True)
+route("POST", "/api/apply", h_apply)
+route("POST", "/api/items/bulk", h_bulk_replace, admin=True)
+route("PUT", "/api/items/{id}", h_update_item, admin=True)
+route("DELETE", "/api/items/{id}", h_delete_item, admin=True)
+route("POST", "/api/items/{id}/accept", h_accept_item, admin=True)
+route("POST", "/api/items/{id}/risks/{idx}/toggle", h_toggle_risk, admin=True)
+route("POST", "/api/items/{id}/attachments", h_upload_attachments, admin=True)
+route("GET", "/api/items/{id}/attachments/{name}", h_download_attachment)
+route("DELETE", "/api/items/{id}/attachments/{name}", h_delete_attachment, admin=True)
+route("GET", "/api/admin/backup", h_backup, admin=True)
+route("GET", "/api/forms", h_list_forms)
+route("POST", "/api/forms", h_upload_forms, admin=True)
+route("GET", "/api/forms/{name}", h_download_form)
+route("DELETE", "/api/forms/{name}", h_delete_form, admin=True)
+route("POST", "/api/mail/review/preview", h_review_preview, admin=True)
+route("POST", "/api/mail/review/eml", h_review_eml, admin=True)
+route("POST", "/api/mail/review/outlook", h_review_outlook, admin=True)
+
+STATIC_DIR = (BASE_DIR / "static").resolve()
+
+
+def dispatch(req: Req) -> Any:
+    if req.method == "GET" and req.path in ("/", "/index.html"):
+        return FileResp(BASE_DIR / "templates" / "index.html", attachment=False)
+    if req.method == "GET" and req.path.startswith("/static/"):
+        path = (STATIC_DIR / req.path[len("/static/"):]).resolve()
+        if path.parent != STATIC_DIR or not path.is_file():
+            raise HTTPException(404, "Not Found")
+        return FileResp(path, attachment=False)
+    path_matched = False
+    for method, regex, handler, admin, names in ROUTES:
+        m = regex.match(req.path)
+        if not m:
+            continue
+        path_matched = True
+        if method != req.method:
+            continue
+        req.params = {n: unquote(v) for n, v in zip(names, m.groups())}
+        if admin:
+            require_admin(req.token)
+        return handler(req)
+    raise HTTPException(405 if path_matched else 404, "Method Not Allowed" if path_matched else "Not Found")
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "TransferPortal/1.0"
+
+    def _handle(self) -> None:
+        url = urlsplit(self.path)
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_REQUEST_BYTES:
+                raise HTTPException(413, "업로드 용량이 너무 큽니다. (요청당 500MB 이하)")
+            body = b""
+            while len(body) < length:
+                chunk = self.rfile.read(min(1024 * 1024, length - len(body)))
+                if not chunk:
+                    break
+                body += chunk
+            req = Req(self.command, url.path, url.query, self.headers, body, self.client_address[0])
+            result = dispatch(req)
+            if isinstance(result, FileResp):
+                self._send_file(result)
+                return
+            if not isinstance(result, Resp):
+                result = json_resp(result)
+        except HTTPException as e:
+            result = json_resp({"detail": e.detail}, e.status)
+        except Exception:  # noqa: BLE001 - 서버가 죽지 않도록 모든 예외를 500 으로 응답
+            traceback.print_exc()
+            result = json_resp({"detail": "서버 내부 오류가 발생했습니다. 서버 콘솔 로그를 확인하세요."}, 500)
+        self._send(result)
+
+    def _send(self, r: Resp) -> None:
+        self.send_response(r.status)
+        self.send_header("Content-Type", r.content_type)
+        self.send_header("Content-Length", str(len(r.body)))
+        self.send_header("Cache-Control", "no-store")
+        for k, v in r.headers.items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(r.body)
+
+    def _send_file(self, f: FileResp) -> None:
+        ctype = mimetypes.guess_type(f.path.name)[0] or "application/octet-stream"
+        if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
+            ctype += "; charset=utf-8"
+        size = f.path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        if f.attachment:
+            self.send_header("Content-Disposition", content_disposition(f.filename))
+        self.end_headers()
+        with open(f.path, "rb") as fh:
+            shutil.copyfileobj(fh, self.wfile, 1024 * 1024)
+
+    do_GET = do_POST = do_PUT = do_DELETE = _handle
+
+    def log_message(self, fmt: str, *args: Any) -> None:  # 콘솔에는 오류 응답만 남긴다
+        if len(args) >= 2 and str(args[1])[:1] in ("4", "5"):
+            sys.stderr.write(f"[{now_str()}] {self.client_address[0]} {fmt % args}\n")
+
+
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    mimetypes.add_type("application/javascript", ".js")
+    mimetypes.add_type("text/css", ".css")
+    try:
+        httpd = ThreadingHTTPServer((HOST, PORT), Handler)
+    except OSError as e:
+        print(f"[오류] 포트 {PORT} 를 열 수 없습니다: {e}")
+        print("       이미 서버가 실행 중인지 확인하거나, 다른 프로그램이 8000 포트를 쓰는지 확인하세요.")
+        sys.exit(1)
+    httpd.daemon_threads = True
     print("=" * 64)
     print(" 양산이관 검증위원회 통합 관리 포털")
     print(f" 저장소 : {store.root} ({'공유폴더' if store.is_network else '로컬 폴백 - 공유폴더 접근 불가'})")
     print(f" 접속   : http://{lan_ip()}:{PORT}  (이 PC: http://localhost:{PORT})")
+    print(" 종료   : 이 창을 닫거나 Ctrl+C")
     print("=" * 64)
-    uvicorn.run(app, host=HOST, port=PORT, log_level="warning")
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\n서버를 종료합니다.")

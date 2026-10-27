@@ -1,28 +1,29 @@
 # 양산이관 검증위원회 통합 관리 포털
 
-내 PC에서 Python(FastAPI) 서버를 띄우면 사내망 사용자가 브라우저로 접속해 쓰는 웹 포털입니다.
+내 PC에서 Python 서버를 띄우면 사내망 사용자가 브라우저로 접속해 쓰는 웹 포털입니다.
 데이터와 첨부파일은 사내 공유폴더에 바로 저장됩니다. 프론트엔드는 외부 CDN 없이(폐쇄망 OK) 순수 HTML/CSS/JS로 만들었습니다.
 
 ## 1. 실행 방법 (Windows)
 
-1. Python 3.9 이상 설치 (설치 시 **Add python.exe to PATH** 체크)
+**추가 설치가 필요 없습니다.** 서버는 Python 표준 라이브러리만 쓰므로 pip 설치 과정이 없습니다.
+회사 방화벽이 PyPI를 막아도 그대로 동작합니다.
+
+1. Python 3.8 이상 설치 (설치 시 **Add python.exe to PATH** 체크)
 2. `transfer_portal` 폴더의 **`run_server.bat` 더블클릭**
-   - 처음 한 번은 `.venv` 가상환경을 만들고 패키지를 설치합니다.
-   - 설치가 끝나면 브라우저가 `http://localhost:8000` 으로 열립니다.
+   - 브라우저가 `http://localhost:8000` 으로 자동으로 열립니다.
 3. 다른 PC에서는 콘솔 창에 표시되는 주소 `http://<서버PC IP>:8000` 으로 접속합니다.
    - 접속이 안 되면 Windows 방화벽에서 **TCP 8000 인바운드**를 허용하세요.
 4. 서버를 끄려면 콘솔 창을 닫습니다.
 
 초기 관리자 비밀번호는 **`1234`** 입니다. 처음 접속한 뒤 [🔒 관리자 모드 → 비밀번호 변경]에서 반드시 바꾸세요.
 
-### 폐쇄망(인터넷 차단) PC에 설치하기
-인터넷이 되는 PC에서 패키지를 내려받아 `wheels` 폴더로 가져갑니다.
-
-```bat
-pip download -r requirements.txt -d wheels --platform win_amd64 --only-binary=:all: --python-version 3.11
-```
-
-`--python-version` 은 서버 PC의 Python 버전과 맞추세요. 이렇게 만든 `wheels` 폴더를 `transfer_portal` 안에 두면, `run_server.bat` 이 자동으로 오프라인 설치를 합니다.
+### 자주 나오는 문제
+| 증상 | 해결 |
+|---|---|
+| `Python 3 is not installed` | Python 설치 후 PATH 체크. 또는 `py` 런처가 있으면 자동으로 사용됩니다 |
+| `포트 8000 를 열 수 없습니다` | 서버가 이미 켜져 있는지 확인(검은 창이 2개?) |
+| 다른 PC에서 접속 불가 | 방화벽 TCP 8000 인바운드 허용, 서버 PC 절전 해제 |
+| 저장소가 "로컬 폴백"으로 표시 | 탐색기에서 `\\10.150.6.49\...` 경로가 열리는지·쓰기 권한이 있는지 확인 |
 
 ## 2. 저장소 (공유폴더 연동)
 
@@ -69,7 +70,7 @@ pip download -r requirements.txt -d wheels --platform win_amd64 --only-binary=:a
 ## 4. 메일
 
 **신규 신청 알림 (자동 발송)**
-- 서버 PC의 Outlook(`win32com`, `mail.Send()`)으로 먼저 보냅니다. 실패하면 `settings.json` 의 SMTP로 보냅니다.
+- 서버 PC의 Outlook으로 먼저 보냅니다. pywin32가 없으면 Windows 기본 PowerShell로 Outlook을 제어합니다. Outlook은 클래식 버전이어야 하고, '새 Outlook'은 연동되지 않습니다. 실패하면 `settings.json` 의 SMTP로 보냅니다.
 - 발송에 실패해도 안건은 정상 등록됩니다. 발송 결과는 상세 모달과 관리자 화면의 '알림메일' 칸에 표시됩니다.
 - 수신자는 [관리자 모드 → 신규 신청 알림 수신자]에서 등록합니다. 처음에는 비어 있어서 '발송 안 함'으로 기록됩니다.
 
@@ -91,17 +92,16 @@ pip download -r requirements.txt -d wheels --platform win_amd64 --only-binary=:a
 
 ```
 transfer_portal/
-├─ app.py               FastAPI 서버 (API, 저장소, 메일)
+├─ app.py               Python 서버 (표준 라이브러리만 사용: API, 저장소, 메일)
 ├─ templates/index.html SPA 골격
 ├─ static/style.css     스타일 (애니메이션, 반응형)
 ├─ static/app.js        화면 로직 (라우팅, 차트, 모달, CSV, 메일 패널)
-├─ requirements.txt
+├─ requirements.txt     필수 패키지 없음 (선택: pywin32)
 └─ run_server.bat       더블클릭 실행
 ```
 
 개발 및 테스트용으로 Linux나 Mac에서 실행할 수도 있습니다. 이때는 공유폴더 대신 자동으로 `./shared_data` 를 쓰고, Outlook 대신 SMTP를 씁니다.
 
 ```bash
-pip install -r requirements.txt
-python app.py
+python3 app.py
 ```

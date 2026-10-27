@@ -1,4 +1,5 @@
-fastapi>=0.110
-uvicorn>=0.27
-python-multipart>=0.0.9
-pywin32>=306; sys_platform == "win32"
+# 필수 패키지 없음 - Python 표준 라이브러리만으로 동작합니다. (pip 설치 불필요)
+#
+# 선택: 아래 패키지가 설치되어 있으면 Outlook 연동에 사용하고,
+#       없으면 Windows 기본 PowerShell 로 Outlook 을 제어합니다.
+# pywin32>=306; sys_platform == "win32"
