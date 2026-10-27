@@ -414,3 +414,13 @@ tbody tr.row-pending { background: #f5f3ff; }
 .team-row .check-line { font-size: 12px; gap: 3px; }
 .team-row .btn { padding: 3px 0; }
 @media (max-width: 1100px) { .team-grid, .team-rows { grid-template-columns: 1fr; } .team-head:nth-child(2) { display: none; } }
+
+/* ---------- v6: SMTP 진단 ---------- */
+.diag-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: #f8fafc; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.diag-title { font-weight: 800; }
+.diag-title.ok { color: var(--success); }
+.diag-title.bad { color: var(--danger); }
+.diag-step { display: grid; grid-template-columns: 130px 1fr; gap: 8px; padding: 5px 8px; border-radius: 6px; background: #fff; border-left: 4px solid var(--c-done); }
+.diag-step.bad { border-left-color: var(--c-delay); background: #fff5f5; }
+.diag-step span { word-break: break-all; color: var(--text-sub); }
+.diag-step.bad span { color: #991b1b; font-weight: 600; }

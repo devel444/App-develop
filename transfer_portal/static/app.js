@@ -1034,12 +1034,13 @@
       '<div class="field"><label>포트</label><input id="stSmtpPort" type="number" class="input" value="' + esc(smtp.port) + '" /></div>' +
       '<div class="field"><label>계정 (선택)</label><input id="stSmtpUser" class="input" value="' + esc(smtp.username) + '" autocomplete="off" /></div>' +
       '<div class="field"><label>비밀번호 ' + (smtp.hasPassword ? '<span class="badge badge-done">저장됨</span>' : "") + '</label><input id="stSmtpPw" type="password" class="input" placeholder="' + (smtp.hasPassword ? "변경 시에만 입력" : "") + '" autocomplete="new-password" /></div>' +
-      '<div class="field"><label>발신자 주소</label><input id="stSmtpSender" class="input" value="' + esc(smtp.sender) + '" placeholder="미입력 시 계정/간사 주소" /></div>' +
+      '<div class="field"><label>발신자 주소</label><input id="stSmtpSender" class="input" value="' + esc(smtp.sender) + '" placeholder="회사 메일 주소 (예: name@company.com)" /></div>' +
       '<div class="field"><label>&nbsp;</label><label class="check-line"><input type="checkbox" id="stSmtpTls" ' + (smtp.useTls ? "checked" : "") + " /> STARTTLS</label></div></div>" +
       '<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"><input id="stTestTo" class="input" style="flex:1;min-width:160px" placeholder="테스트 수신 주소 (비우면 간사)" />' +
       '<button class="btn btn-secondary btn-sm" data-action="mailTest" data-method="outlook">Outlook 테스트</button>' +
-      '<button class="btn btn-secondary btn-sm" data-action="mailTest" data-method="smtp">SMTP 테스트</button>' +
-      '<button class="btn btn-primary btn-sm" data-action="saveMailCfg">💾 저장</button></div></div>' +
+      '<button class="btn btn-secondary btn-sm" data-action="mailTest" data-method="smtp">🔍 SMTP 테스트 (단계별 진단)</button>' +
+      '<button class="btn btn-primary btn-sm" data-action="saveMailCfg">💾 저장</button></div>' +
+      '<div class="card-sub">테스트는 저장하지 않은 입력값으로도 바로 시험합니다. 성공하면 [💾 저장]을 누르세요.</div><div id="smtpDiag"></div></div>' +
 
       // 주소록
       '<div class="card full"><div class="card-title">📒 6대 부문별 검토자 주소록 <span class="card-sub">전문소위원 = 팀장급, 전문위원 = 담당/본부장급</span></div>' +
@@ -1795,9 +1796,25 @@
       }).then(function (s) { state.admin = s; renderAdmin(); toast("메일 발송 설정을 저장했습니다.", "ok"); }).catch(fail);
     },
     mailTest: function (el) {
-      toast("테스트 메일 발송 중…");
-      api("POST", "/api/mail/test", { method: el.getAttribute("data-method"), to: $("#stTestTo").value })
-        .then(function (r) { toast(r.message, "ok"); }).catch(fail);
+      var method = el.getAttribute("data-method");
+      var box = $("#smtpDiag");
+      if (method === "smtp" && box) box.innerHTML = '<div class="diag-box muted">SMTP 서버에 단계별로 접속해 보는 중… (최대 30초)</div>';
+      else toast("테스트 메일 발송 중…");
+      el.disabled = true;
+      api("POST", "/api/mail/test", {
+        method: method, to: $("#stTestTo").value,
+        smtp: { host: $("#stSmtpHost").value, port: $("#stSmtpPort").value, username: $("#stSmtpUser").value,
+          password: $("#stSmtpPw").value, sender: $("#stSmtpSender").value, useTls: $("#stSmtpTls").checked }
+      }).then(function (r) {
+        el.disabled = false;
+        if (method === "smtp" && box) {
+          box.innerHTML = '<div class="diag-box"><div class="diag-title ' + (r.ok ? "ok" : "bad") + '">' + (r.ok ? "✅ " : "❌ ") + esc(r.message) + "</div>" +
+            r.steps.map(function (st) {
+              return '<div class="diag-step ' + (st.ok ? "ok" : "bad") + '"><b>' + (st.ok ? "✔ " : "✖ ") + esc(st.step) + "</b><span>" + esc(st.detail) + "</span></div>";
+            }).join("") + "</div>";
+        }
+        toast(r.message, r.ok ? "ok" : "err");
+      }).catch(function (e) { el.disabled = false; if (box && method === "smtp") box.innerHTML = ""; fail(e); });
     },
     userApprove: function (el) { userAction(el.getAttribute("data-emp"), { action: "approve" }, "승인했습니다. 이제 로그인할 수 있습니다."); },
     userReject: function (el) {

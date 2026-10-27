@@ -957,14 +957,63 @@ def _outlook_powershell(to: List[str], cc: List[str], subject: str, html_body: s
             pass
 
 
+def smtp_sender(settings: Dict[str, Any]) -> str:
+    cfg = settings.get("smtp") or {}
+    for cand in (_s(cfg.get("sender")), _s(cfg.get("username")), *(settings.get("secretaryEmails") or [])):
+        if "@" in cand:
+            return cand
+    return ""
+
+
+def explain_smtp_error(e: Any, stage: str = "") -> str:
+    """SMTP 오류 → 원인과 해결 방법 (한국어)."""
+    code, text = None, str(e)
+    if isinstance(e, tuple):  # (code, message)
+        code, text = e[0], (e[1].decode("utf-8", "replace") if isinstance(e[1], bytes) else str(e[1]))
+    elif isinstance(e, smtplib.SMTPResponseException):
+        code, text = e.smtp_code, (e.smtp_error.decode("utf-8", "replace") if isinstance(e.smtp_error, bytes) else str(e.smtp_error))
+    elif isinstance(e, smtplib.SMTPRecipientsRefused):
+        first = next(iter(e.recipients.values()), None)
+        if first:
+            return explain_smtp_error(first, "rcpt")
+    low = text.lower()
+    raw = f" [서버 응답: {code} {text.strip()[:160]}]" if code else f" [{type(e).__name__}: {text[:160]}]"
+    if isinstance(e, (socket.timeout, TimeoutError)) or "timed out" in low:
+        return ("연결 시간 초과 - 서버 PC에서 SMTP 서버로 나가는 연결이 막혀 있습니다. 회사 백신의 '대량 메일 웜 차단' 기능이 "
+                "Outlook 외 프로그램(python.exe)의 25번 포트 사용을 막는 경우가 많습니다. IT팀에 '서버 PC의 python.exe 25번 포트 허용'을 요청하세요." + raw)
+    if isinstance(e, ConnectionRefusedError) or "refused" in low and code is None:
+        return "연결 거부 - 주소나 포트가 틀렸거나 SMTP 서버가 이 포트를 쓰지 않습니다. 주소·포트를 다시 확인하세요." + raw
+    if isinstance(e, smtplib.SMTPServerDisconnected):
+        return "서버가 연결을 끊었습니다 - 서버 PC IP가 SMTP 서버의 허용 목록에 없을 수 있습니다. IT팀에 서버 PC IP 등록을 요청하세요." + raw
+    if isinstance(e, smtplib.SMTPAuthenticationError) or code == 535:
+        return ("로그인 실패 - 계정 또는 비밀번호가 틀렸습니다. Exchange 메일이면 계정을 '도메인\\사번' 또는 '메일주소' 형식으로 "
+                "바꿔서 시도해 보세요." + raw)
+    if isinstance(e, smtplib.SMTPNotSupportedError) or "no suitable authentication" in low or "auth extension not supported" in low:
+        return ("이 SMTP 서버는 계정 로그인을 받지 않습니다(또는 지원하지 않는 방식). 계정·비밀번호 칸을 비우고 다시 시도하세요. "
+                "STARTTLS 를 켜야 로그인이 열리는 서버도 있습니다." + raw)
+    if code == 530 and "starttls" in low:
+        return "암호화 연결이 필요합니다 - [STARTTLS] 를 체크하고 다시 시도하세요." + raw
+    if code in (530, 550, 554) and ("auth" in low or "5.7.57" in low or "5.7.0" in low and stage != "connect"):
+        return "인증 필요 - 이 서버는 계정 로그인 후에만 보낼 수 있습니다. 계정(메일주소 또는 도메인\\사번)과 비밀번호를 입력하세요." + raw
+    if stage == "mail" or isinstance(e, smtplib.SMTPSenderRefused) or "5.7.60" in low or "send as" in low:
+        return ("발신자 주소 거부 - 발신자 주소를 실제 회사 메일 주소로 입력하세요. 로그인 없이 회사 주소로 보내는 것을 막는 서버면 "
+                "그 주소의 계정·비밀번호로 로그인해야 합니다." + raw)
+    if stage == "rcpt" or "relay" in low or "5.7.1" in low:
+        return ("수신자 거부(릴레이 불가) - 로그인 없이는 이 주소로 보낼 수 없습니다. 계정·비밀번호를 입력하거나, IT팀에 "
+                "'서버 PC IP의 SMTP 릴레이 허용'을 요청하세요." + raw)
+    if code == 421:
+        return "서버가 일시적으로 거부했습니다(연결 수 제한 등). 잠시 후 다시 시도하세요." + raw
+    return "SMTP 발송 실패" + raw
+
+
 def smtp_mail(settings: Dict[str, Any], to: List[str], cc: List[str], subject: str, html_body: str, text_body: str) -> None:
     cfg = settings.get("smtp") or {}
     host = _s(cfg.get("host"))
     if not host:
         raise RuntimeError("SMTP 서버가 설정되지 않았습니다.")
-    sender = _s(cfg.get("sender")) or _s(cfg.get("username")) or (settings.get("secretaryEmails") or [""])[0]
+    sender = smtp_sender(settings)
     if not sender:
-        raise RuntimeError("SMTP 발신자 주소가 설정되지 않았습니다.")
+        raise RuntimeError("SMTP 발신자 주소가 설정되지 않았습니다. (메일 발송 설정의 '발신자 주소'에 회사 메일 주소 입력)")
     msg = EmailMessage()
     msg["From"] = sender
     msg["To"] = ", ".join(to)
@@ -973,12 +1022,108 @@ def smtp_mail(settings: Dict[str, Any], to: List[str], cc: List[str], subject: s
     msg["Subject"] = subject
     msg.set_content(text_body)
     msg.add_alternative(html_body, subtype="html")
-    with smtplib.SMTP(host, int(cfg.get("port") or 25), timeout=15) as server:
+    try:
+        with smtplib.SMTP(host, int(cfg.get("port") or 25), timeout=15) as server:
+            if cfg.get("useTls"):
+                server.starttls()
+            if _s(cfg.get("username")) and cfg.get("password"):
+                server.login(_s(cfg.get("username")), str(cfg.get("password")))
+            server.send_message(msg)
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(explain_smtp_error(e))
+
+
+def smtp_diagnose(settings: Dict[str, Any], to: List[str]) -> Dict[str, Any]:
+    """SMTP 를 단계별로 시험해 어디서 막히는지 알려준다 (실제 테스트 메일 1통 발송)."""
+    cfg = settings.get("smtp") or {}
+    host, port = _s(cfg.get("host")), int(cfg.get("port") or 25)
+    steps: List[Dict[str, Any]] = []
+
+    def add(name: str, ok: bool, detail: str) -> bool:
+        steps.append({"step": name, "ok": ok, "detail": detail})
+        return ok
+
+    def result() -> Dict[str, Any]:
+        return {"ok": all(x["ok"] for x in steps), "steps": steps}
+
+    if not host:
+        add("설정 확인", False, "SMTP 호스트가 비어 있습니다.")
+        return result()
+    sender = smtp_sender(settings)
+    if not sender:
+        add("설정 확인", False, "발신자 주소가 없습니다. '발신자 주소'에 회사 메일 주소를 입력하세요.")
+        return result()
+    add("설정 확인", True, f"서버 {host}:{port} · 발신자 {sender} · 수신자 {', '.join(to)} · "
+                         f"로그인 {'사용 (' + _s(cfg.get('username')) + ')' if _s(cfg.get('username')) else '안 함'} · STARTTLS {'사용' if cfg.get('useTls') else '안 함'}")
+    server = smtplib.SMTP(timeout=10)
+    try:
+        try:
+            code, banner = server.connect(host, port)
+        except Exception as e:  # noqa: BLE001
+            add("1. 서버 연결", False, explain_smtp_error(e, "connect"))
+            return result()
+        add("1. 서버 연결", True, f"연결됨 - {code} {banner.decode('utf-8', 'replace')[:120] if isinstance(banner, bytes) else banner}")
+        try:
+            code, _ = server.ehlo()
+            if code != 250:
+                server.helo()
+        except Exception as e:  # noqa: BLE001
+            add("2. 인사(EHLO)", False, explain_smtp_error(e, "ehlo"))
+            return result()
+        auth = _s(server.esmtp_features.get("auth"))
+        add("2. 인사(EHLO)", True, f"STARTTLS 지원: {'예' if server.has_extn('starttls') else '아니오'} · "
+                                 f"지원 로그인 방식: {auth or '없음 (이 연결에서는 로그인 불가 → 계정 없이 보내는 서버일 가능성)'}")
         if cfg.get("useTls"):
-            server.starttls()
-        if _s(cfg.get("username")) and cfg.get("password"):
-            server.login(_s(cfg.get("username")), str(cfg.get("password")))
-        server.send_message(msg)
+            try:
+                server.starttls()
+                server.ehlo()
+                auth = _s(server.esmtp_features.get("auth"))
+                add("3. STARTTLS", True, f"암호화 연결 성공 · 로그인 방식: {auth or '없음'}")
+            except Exception as e:  # noqa: BLE001
+                add("3. STARTTLS", False, explain_smtp_error(e, "tls"))
+                return result()
+        if _s(cfg.get("username")):
+            if not cfg.get("password"):
+                add("4. 로그인", False, "계정은 입력했는데 비밀번호가 없습니다.")
+                return result()
+            try:
+                server.login(_s(cfg.get("username")), str(cfg.get("password")))
+                add("4. 로그인", True, "로그인 성공")
+            except Exception as e:  # noqa: BLE001
+                hint = ""
+                if auth and not re.search(r"\b(LOGIN|PLAIN|CRAM-MD5)\b", auth.upper()):
+                    hint = f" (서버가 지원하는 방식이 {auth} 뿐이라 일반 계정 로그인이 불가합니다 → 계정 칸을 비우고 시도하거나 IT팀에 릴레이 허용 요청)"
+                add("4. 로그인", False, explain_smtp_error(e, "login") + hint)
+                return result()
+        else:
+            add("4. 로그인", True, "계정 미입력 → 로그인 없이 진행")
+        code, resp = server.mail(sender)
+        if code != 250:
+            add("5. 발신자 확인", False, explain_smtp_error((code, resp), "mail"))
+            return result()
+        add("5. 발신자 확인", True, f"{code} 발신자 허용")
+        for r in to:
+            code, resp = server.rcpt(r)
+            if code not in (250, 251):
+                add("6. 수신자 확인", False, f"{r}: " + explain_smtp_error((code, resp), "rcpt"))
+                return result()
+        add("6. 수신자 확인", True, "수신자 허용")
+        msg = EmailMessage()
+        msg["From"], msg["To"], msg["Subject"] = sender, ", ".join(to), "[양산이관 검증위원회] SMTP 진단 테스트"
+        msg.set_content(f"SMTP 진단 테스트 메일입니다. ({now_str()})")
+        code, resp = server.data(msg.as_bytes())
+        if code != 250:
+            add("7. 메일 전송", False, explain_smtp_error((code, resp), "data"))
+            return result()
+        add("7. 메일 전송", True, f"{code} 전송 완료 - 받은편지함을 확인하세요")
+    except Exception as e:  # noqa: BLE001
+        add("진행 중 오류", False, explain_smtp_error(e))
+    finally:
+        try:
+            server.quit()
+        except Exception:  # noqa: BLE001
+            server.close()
+    return result()
 
 
 def send_mail(settings: Dict[str, Any], to: List[str], cc: List[str], subject: str, html_body: str, text_body: str) -> str:
@@ -1412,18 +1557,36 @@ def h_put_settings(req: Req):
     return h_get_settings()
 
 
+def _settings_with_form(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """[테스트] 버튼: 저장하지 않은 입력값으로도 시험할 수 있게 현재 설정에 덮어쓴다(저장은 안 함)."""
+    s = store.settings()
+    p = payload.get("smtp")
+    if isinstance(p, dict):
+        try:
+            port = int(p.get("port") or 25)
+        except ValueError:
+            raise HTTPException(400, "SMTP 포트는 숫자여야 합니다.")
+        s["smtp"].update({"host": _s(p.get("host")), "port": port, "useTls": bool(p.get("useTls")),
+                          "username": _s(p.get("username")), "sender": _s(p.get("sender"))})
+        if p.get("password"):
+            s["smtp"]["password"] = str(p["password"])
+    return s
+
+
 def h_mail_test(req: Req):
     payload = req.json()
-    s = store.settings()
+    s = _settings_with_form(payload)
     to = _emails(payload.get("to")) or _emails(s["secretaryEmails"])
     if not to:
-        raise HTTPException(400, "테스트 메일을 받을 주소를 입력하세요.")
+        raise HTTPException(400, "테스트 메일을 받을 주소를 입력하세요. (비우면 간사 이메일로 보냅니다)")
+    if payload.get("method") == "smtp":
+        diag = smtp_diagnose(s, to)
+        diag["message"] = (f"SMTP로 {', '.join(to)} 에 발송했습니다." if diag["ok"]
+                           else "SMTP 발송 실패 - 아래 진단 결과를 확인하세요.")
+        return diag
     subject = "[양산이관 검증위원회] 메일 발송 테스트"
     body = _mail_wrap("메일 발송 테스트", f"<p>포털 메일 발송 테스트입니다. ({now_str()})</p>")
     try:
-        if payload.get("method") == "smtp":
-            smtp_mail(s, to, [], subject, body, "포털 메일 발송 테스트입니다.")
-            return {"ok": True, "message": f"SMTP로 {', '.join(to)} 에 발송했습니다."}
         outlook_mail(to, [], subject, body, display=False)
         return {"ok": True, "message": f"Outlook으로 {', '.join(to)} 에 발송했습니다."}
     except Exception as e:  # noqa: BLE001
