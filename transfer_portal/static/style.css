@@ -342,3 +342,51 @@ tbody tr.row-delay:hover { background: #fee2e2; }
 .toast.err { background: #b91c1c; }
 .toast.out { opacity: 0; transform: translateY(-8px); transition: all 0.3s; }
 @keyframes toastIn { from { opacity: 0; transform: translateY(-12px) scale(0.96); } to { opacity: 1; transform: none; } }
+
+/* ---------- 접속자 (사이드바) ---------- */
+.presence { margin: -6px 4px 0; padding: 10px 12px; border-radius: 10px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14); font-size: 12px; color: #e2e8f0; }
+.pres-head { display: flex; align-items: center; gap: 7px; font-weight: 700; font-size: 12.5px; }
+.pres-head b { font-size: 15px; color: #fff; }
+.pres-dot { width: 9px; height: 9px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 0 rgba(34,197,94,0.6); animation: presPulse 2s infinite; }
+@keyframes presPulse { 0% { box-shadow: 0 0 0 0 rgba(34,197,94,0.55); } 70% { box-shadow: 0 0 0 7px rgba(34,197,94,0); } 100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); } }
+.pres-list { list-style: none; margin-top: 7px; display: flex; flex-direction: column; gap: 3px; max-height: 190px; overflow-y: auto; }
+.pres-list li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #f8fafc; }
+.pres-team { color: #93c5fd; margin-right: 5px; font-weight: 600; }
+.pres-admin { background: #f59e0b; color: #fff; font-size: 10px; padding: 0 5px; border-radius: 99px; margin-left: 2px; }
+.pres-extra { margin-top: 6px; color: #cbd5e1; font-size: 11.5px; }
+.team-badge { margin-left: auto; font-size: 10.5px; padding: 2px 7px; border-radius: 99px; background: #0d9488; color: #fff; max-width: 92px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 900px) { .presence { width: 100%; margin: 0; } }
+
+/* ---------- 부문 작성 현황 / 내 부문 행 ---------- */
+.sector-status { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.sec-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border-radius: 99px; font-size: 11.5px; font-weight: 700; background: #f1f5f9; color: var(--text-muted); border: 1px solid var(--border); }
+.sec-chip.done { background: var(--success-light); color: var(--success); border-color: #86efac; }
+.sec-chip .x { border: 0; background: none; cursor: pointer; color: var(--danger); font-weight: 800; padding: 0 2px; }
+.risk-table tr.mine td { background: #fefce8; }
+.risk-table tr.mine td:first-child { box-shadow: inset 4px 0 0 #f59e0b; }
+tbody tr.row-pending { background: #f5f3ff; }
+
+/* ---------- 양산이관 프로세스 (직선형) ---------- */
+.pl-wrap { overflow-x: auto; padding: 4px 2px 8px; }
+.pl-line, .pl-skips { display: grid; grid-template-columns: repeat(5, minmax(150px, 1fr) 24px) minmax(150px, 1fr); min-width: 1000px; }
+.pl-line { align-items: stretch; }
+.pl-arrow { display: flex; align-items: center; justify-content: center; color: var(--primary-2); font-size: 14px; }
+.pl-card { border: 2px solid #93c5fd; background: #fff; border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 6px; transition: transform 0.25s var(--ease-out), box-shadow 0.25s; }
+.pl-card:hover { transform: translateY(-4px) scale(1.03); box-shadow: var(--shadow-md); }
+.pl-card h4 { font-size: 14px; font-weight: 800; line-height: 1.3; }
+.pl-card ul { margin: 0; padding-left: 16px; font-size: 12px; color: var(--text-sub); display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.pl-who { font-size: 11.5px; font-weight: 700; color: var(--primary); }
+.pl-out { font-size: 11.5px; font-weight: 800; color: var(--text-main); border-top: 1px dashed var(--border-strong); padding-top: 6px; }
+.pl-no { white-space: nowrap; align-self: flex-start; font-size: 11px; font-weight: 800; color: #fff; background: var(--primary-2); border-radius: 99px; padding: 2px 10px; }
+.pl-no.sm { display: inline-block; }
+.pl-card.start { border-color: #c4b5fd; background: #faf5ff; }
+.pl-card.start .pl-no, .pl-no.start { background: #7c3aed; }
+.pl-card.final { border-color: #86efac; background: #f0fdf4; }
+.pl-card.final .pl-no, .pl-no.final { background: #16a34a; }
+.pl-skips { row-gap: 6px; margin-top: 10px; }
+.pl-skip { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 7px 12px; border-radius: 99px; font-size: 12px; border: 1.5px dashed; }
+.pl-skip b { font-size: 12.5px; }
+.pl-skip-path { margin-left: auto; font-weight: 800; }
+.pl-skip.fast { background: #fefce8; border-color: #eab308; color: #854d0e; }
+.pl-skip.sub { background: #f0f9ff; border-color: #38bdf8; color: #0369a1; }
+.pl-table td { vertical-align: top; font-size: 12.5px; }

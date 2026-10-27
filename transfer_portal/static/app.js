@@ -18,12 +18,19 @@
   var LEVELS = { sub: "전문소위원 검토 요청 (팀장급)", main: "전문위원 검토 요청 (담당/본부장급)" };
   var MAX_FILE_BYTES = 100 * 1024 * 1024;
   var POLL_MS = 30000;
+  var PRESENCE_MS = 20000;
 
   var state = {
     items: [], version: 0, criteria: {}, storage: {},
     token: safeSession("get", "portalAdminToken") || "",
     isAdmin: false,
     admin: null,            // 관리자 설정 (주소록 등)
+    userToken: safeLocal("get", "portalUserToken") || "",
+    user: null,             // 로그인한 회원 {empId, name, title, team, sector, canApply}
+    teams: [],
+    presence: null,
+    clientId: "",
+    adminUsers: null,
     route: "dashboard",
     f: {
       dashYear: "ALL",
@@ -53,6 +60,15 @@
       if (op === "get") return sessionStorage.getItem(key);
       if (op === "set") sessionStorage.setItem(key, val);
       if (op === "del") sessionStorage.removeItem(key);
+    } catch (e) { /* 저장소 차단 환경 */ }
+    return null;
+  }
+  // 회원 로그인은 브라우저를 닫아도 유지(localStorage), 관리자 인증은 탭 단위(sessionStorage)
+  function safeLocal(op, key, val) {
+    try {
+      if (op === "get") return localStorage.getItem(key);
+      if (op === "set") localStorage.setItem(key, val);
+      if (op === "del") localStorage.removeItem(key);
     } catch (e) { /* 저장소 차단 환경 */ }
     return null;
   }
@@ -143,6 +159,7 @@
     opts = opts || {};
     var headers = {};
     if (state.token) headers["X-Admin-Token"] = state.token;
+    if (state.userToken) headers["X-User-Token"] = state.userToken;
     var payload = body;
     if (body && !(body instanceof FormData)) {
       headers["Content-Type"] = "application/json";
@@ -234,6 +251,12 @@
       return '<option value="' + y + '"' + (selected === y ? " selected" : "") + ">" + y + "년</option>";
     }).join("");
   }
+  // ---- 권한 ----
+  function canApply() { return state.isAdmin || !!(state.user && state.user.canApply); }
+  function mySector() { return state.user && state.user.sector ? state.user.sector : ""; }
+  function userLabel(u) { return (u.team ? u.team + " " : "") + u.name + (u.title ? " " + u.title : ""); }
+  function canEditRow(r) { return state.isAdmin || (!!mySector() && r.sector === mySector()); }
+
   function emptyRisk(sector) {
     return { sector: sector || SECTORS[0], reviewer: "", noRisk: false, riskItem: "", isTask: "X", grade: "", planContent: "", org: "", schedule: "", status: "진행중" };
   }
@@ -244,10 +267,7 @@
   function loadAll() {
     return api("GET", "/api/bootstrap").then(function (d) {
       state.items = d.items; state.version = d.version;
-      state.criteria = d.settings.criteria; state.storage = d.storage;
-      var info = $("#storageInfo");
-      info.textContent = (d.storage.isNetwork ? "🗂 공유폴더 연동: " : "⚠ 로컬 저장(공유폴더 미연결): ") + d.storage.path;
-      info.classList.toggle("local", !d.storage.isNetwork);
+      state.criteria = d.settings.criteria; state.storage = d.storage; state.teams = d.settings.teams || [];
       updateNavBadges();
     });
   }
@@ -261,7 +281,7 @@
       return loadAll().then(function () {
         var editing = document.activeElement && $("#view").contains(document.activeElement) &&
           /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
-        if (state.detail || editing || ["apply", "admin", "criteria"].indexOf(state.route) !== -1) {
+        if (state.detail || editing || ["apply", "admin", "criteria", "account"].indexOf(state.route) !== -1) {
           if (state.detail) toast("다른 사용자가 데이터를 갱신했습니다. (저장 시 충돌 여부를 확인합니다)");
           return;
         }
@@ -271,8 +291,60 @@
   }
 
   // =====================================================================
-  // 관리자 상태
+  // 현재 접속자 (20초마다 heartbeat, 60초 응답 없으면 퇴장 처리)
   // =====================================================================
+  function newClientId() { return "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10); }
+  function presencePing() {
+    return api("POST", "/api/presence", { clientId: state.clientId }).then(function (p) {
+      state.presence = p;
+      var me = p.me || null;
+      if (state.userToken && !me) {  // 승인 취소/삭제 등으로 세션이 끊김
+        setUser(null, null, "로그인 세션이 종료되었습니다. 다시 로그인하세요.");
+      } else if (me && JSON.stringify(me) !== JSON.stringify(state.user)) {
+        state.user = me; updateNav();
+        if (!state.detail) render(false);
+      }
+      renderPresence();
+    }).catch(function () { /* 서버 일시 중단 */ });
+  }
+  function renderPresence() {
+    var p = state.presence, box = $("#presenceBox");
+    if (!box || !p) return;
+    var MAX = 8;
+    var names = p.users.slice(0, MAX).map(function (u) {
+      return '<li title="' + esc(userLabel(u)) + '"><span class="pres-team">' + esc(u.team) + "</span>" + esc(u.name) + (u.title ? " " + esc(u.title) : "") +
+        (u.admin ? ' <span class="pres-admin">관리자</span>' : "") + "</li>";
+    }).join("");
+    var extra = [];
+    if (p.users.length > MAX) extra.push("외 " + (p.users.length - MAX) + "명");
+    if (p.admins) extra.push("관리자 " + p.admins);
+    if (p.anonymous) extra.push("비로그인 " + p.anonymous);
+    box.innerHTML = '<div class="pres-head"><span class="pres-dot"></span>현재 접속 <b>' + p.count + "</b>명</div>" +
+      (names ? '<ul class="pres-list">' + names + "</ul>" : "") +
+      (extra.length ? '<div class="pres-extra">' + extra.join(" · ") + "</div>" : "");
+  }
+
+  // =====================================================================
+  // 회원 / 관리자 상태
+  // =====================================================================
+  function setUser(token, user, msg) {
+    state.userToken = token || ""; state.user = user || null;
+    if (token) safeLocal("set", "portalUserToken", token); else safeLocal("del", "portalUserToken");
+    updateNav();
+    if (msg) toast(msg, user ? "ok" : "");
+    if (state.detail) renderDetail();
+    render(false);
+    presencePing();
+  }
+  function updateNav() {
+    var u = state.user;
+    $("#navApply").style.display = canApply() ? "" : "none";
+    $("#navAccountLabel").textContent = u ? u.name + (u.title ? " " + u.title : "") : "로그인 / 가입";
+    var tb = $("#navAccountBadge");
+    tb.textContent = u ? u.team : "";
+    tb.style.display = u ? "" : "none";
+    if (state.route === "apply" && !canApply() && !state.apply.result) render(false);
+  }
   function setAdmin(on, msg) {
     state.isAdmin = on;
     if (!on) { state.token = ""; state.admin = null; safeSession("del", "portalAdminToken"); }
@@ -281,8 +353,11 @@
     b.classList.toggle("on", on);
     $(".nav-link[data-route=admin] .nav-ico").textContent = on ? "🔓" : "🔒";
     if (msg) toast(msg, on ? "ok" : "");
+    if (!on) state.adminUsers = null;
+    updateNav();
     if (state.detail) renderDetail();
     render(false);
+    presencePing();
   }
   function loadAdminSettings() {
     return api("GET", "/api/settings").then(function (s) { state.admin = s; return s; });
@@ -293,7 +368,7 @@
   // =====================================================================
   var VIEWS = {
     dashboard: renderDashboard, items: renderItems, tasks: renderTasks,
-    apply: renderApply, criteria: renderCriteria, admin: renderAdmin
+    apply: renderApply, criteria: renderCriteria, admin: renderAdmin, account: renderAccount
   };
   function onHash() {
     var parts = location.hash.replace(/^#\/?/, "").split("/");
@@ -302,7 +377,7 @@
     state.route = route;
     $all(".nav-link").forEach(function (a) { a.classList.toggle("active", a.getAttribute("data-route") === route); });
     render(true);
-    if (changed) window.scrollTo(0, 0);
+    if (changed) { window.scrollTo(0, 0); if (state.clientId) presencePing(); }
     if (route === "items" && parts[1]) openDetail(decodeURIComponent(parts[1]));
   }
   function go(route) {
@@ -496,7 +571,7 @@
       '<button class="btn btn-excel" data-action="csvSummary">📥 엑셀(요약 목록)</button>' +
       '<button class="btn btn-excel" data-action="csvRisk">📥 엑셀(Risk 상세표)</button>' +
       (state.isAdmin ? '<button class="btn btn-upload" data-action="csvUpload">📤 엑셀 일괄 업로드</button>' : "") +
-      '<button class="btn btn-primary" data-action="nav" data-route="apply">📝 신규 신청</button></div></div>' +
+      (canApply() ? '<button class="btn btn-primary" data-action="nav" data-route="apply">📝 신규 신청</button>' : "") + "</div></div>" +
       '<div class="card"><div class="toolbar"><div class="filter-group"><span class="filter-label">구분</span>' +
       cats.map(function (c) {
         return '<button class="chip-btn ' + (f.cat === c[0] ? "active" : "") + '" data-action="listCat" data-cat="' + c[0] + '">' + c[1] + "</button>";
@@ -634,9 +709,20 @@
       );
       return;
     }
+    if (!canApply()) {
+      setView(
+        '<div class="page-head"><div><h2>📝 양산이관 신청</h2></div></div>' +
+        '<div class="card success-box"><div class="big">🔒</div><h3 style="font-size:18px">개발팀 회원만 신청할 수 있습니다</h3>' +
+        "<p>결정성장개발팀 · EPI개발팀 · Wafering개발팀 · 제품개발팀 회원으로 로그인하면 신청 화면이 열립니다.</p>" +
+        (state.user ? '<p class="muted">현재 로그인: ' + esc(userLabel(state.user)) + " (신청 권한 없음)</p>" : "") +
+        '<div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-primary" data-action="nav" data-route="account">👤 로그인 / 가입</button></div></div>'
+      );
+      return;
+    }
+    var me = state.user || {};
     var isProd = a.category === "제품";
     setView(
-      '<div class="page-head"><div><h2>📝 양산이관 신청</h2><p>제품개발팀 실무자용 접수 화면 · 비밀번호 없이 신청할 수 있습니다</p></div></div>' +
+      '<div class="page-head"><div><h2>📝 양산이관 신청</h2><p>개발팀(결정성장·EPI·Wafering·제품개발팀) 접수 화면 · 요청자 정보는 로그인 정보로 자동 입력됩니다</p></div></div>' +
       '<div class="apply-layout"><div class="card"><div class="form-grid">' +
       '<div class="field full"><span class="lbl">구분 <span class="req">*</span></span><div class="level-toggle">' +
       '<div class="radio-card ' + (isProd ? "selected" : "") + '" data-action="applyCat" data-cat="제품">📦 제품 (Product)</div>' +
@@ -647,9 +733,9 @@
       "</select></div>" +
       '<div class="field"><label for="apDate">발제일</label><input id="apDate" type="date" class="input" value="' + today() + '" /></div>' +
       '<div class="field full"><label for="apTitle">제품 / 기술명 <span class="req">*</span></label><input id="apTitle" class="input" maxlength="200" placeholder="예) 차세대 SiC 전력반도체 모듈 Gen-4" /></div>' +
-      '<div class="field"><label for="apReq">요청자 성명 <span class="req">*</span></label><input id="apReq" class="input" maxlength="100" placeholder="예) 홍길동 책임" /></div>' +
-      '<div class="field"><label for="apDept">소속 부서 <span class="req">*</span></label><input id="apDept" class="input" maxlength="100" placeholder="예) 제품개발1팀" /></div>' +
-      '<div class="field full"><label for="apEmail">요청자 이메일 <span class="muted">(선택 · 검토 요청 메일 참조로 자동 포함)</span></label><input id="apEmail" type="email" class="input" placeholder="name@company.com" /></div>' +
+      '<div class="field"><label for="apReq">요청자 성명 <span class="req">*</span></label><input id="apReq" class="input" maxlength="100" placeholder="예) 홍길동 책임" value="' + esc(me.name ? me.name + (me.title ? " " + me.title : "") : "") + '" /></div>' +
+      '<div class="field"><label for="apDept">소속 부서 <span class="req">*</span></label><input id="apDept" class="input" maxlength="100" placeholder="예) 제품개발팀" value="' + esc(me.team || "") + '" /></div>' +
+      '<div class="field full"><label for="apEmail">요청자 이메일 <span class="muted">(선택 · 검토 요청 메일 참조로 자동 포함)</span></label><input id="apEmail" type="email" class="input" placeholder="name@company.com" value="' + esc(me.email || "") + '" /></div>' +
       '<div class="field full"><label for="apSummary">양산이관 주요 내용 및 변경점 요약</label><textarea id="apSummary" class="textarea" style="min-height:140px" maxlength="5000" placeholder="변경 내역(4M), 개발 검증 결과, 양산 적용 계획 등을 요약해 주세요."></textarea></div>' +
       '<div class="field full"><span class="lbl">첨부파일 (검증보고서, 도면 등 · 파일당 100MB 이하)</span>' +
       '<div class="dropzone" data-action="applyPick" data-drop="apply"><b>📎 파일을 끌어다 놓거나 클릭해서 선택</b>여러 개를 한 번에 올릴 수 있습니다</div>' +
@@ -705,6 +791,58 @@
   }
 
   // =====================================================================
+  // 로그인 / 가입 (아이디 = 사번, 관리자 승인 후 사용)
+  // =====================================================================
+  function teamOptions(selected) {
+    return '<option value="">팀 선택</option>' + state.teams.map(function (t) {
+      var tag = t.canApply ? " (신청 가능)" : t.sector ? " (" + t.sector + " 부문 검토)" : "";
+      return '<option value="' + esc(t.name) + '"' + (selected === t.name ? " selected" : "") + ">" + esc(t.name + tag) + "</option>";
+    }).join("");
+  }
+  function renderAccount() {
+    var u = state.user;
+    if (u) {
+      var perms = [];
+      if (u.canApply) perms.push("📝 양산이관 신청");
+      if (u.sector) perms.push("🖊 " + u.sector + " 부문 Risk 검토 작성 · 작성 완료 메일 발송");
+      perms.push("📊 전체 현황 열람");
+      setView(
+        '<div class="page-head"><div><h2>👤 내 정보</h2><p>로그인 상태는 이 브라우저에서 7일간 유지됩니다</p></div>' +
+        '<div class="page-actions"><button class="btn btn-secondary" data-action="userLogout">로그아웃</button></div></div>' +
+        '<div class="admin-grid"><div class="card"><div class="card-title">기본 정보</div><div class="kv">' +
+        "<b>사번</b><span>" + esc(u.empId) + "</span><b>이름</b><span>" + esc(u.name) + " " + esc(u.title) + "</span>" +
+        "<b>팀</b><span>" + esc(u.team) + "</span><b>이메일</b><span>" + esc(u.email) + "</span>" +
+        "<b>권한</b><span>" + perms.map(esc).join("<br>") + "</span></div>" +
+        '<div class="card-sub">팀 변경이 필요하면 관리자(간사)에게 요청하세요.</div></div>' +
+        '<div class="card"><div class="card-title">🔑 비밀번호 변경</div>' +
+        '<div class="field"><label>현재 비밀번호</label><input id="upCur" type="password" class="input" autocomplete="current-password" /></div>' +
+        '<div class="field"><label>새 비밀번호 (4자 이상)</label><input id="upNew" type="password" class="input" autocomplete="new-password" /></div>' +
+        '<div class="field"><label>새 비밀번호 확인</label><input id="upNew2" type="password" class="input" autocomplete="new-password" /></div>' +
+        '<div style="display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" data-action="userChangePw">변경</button></div></div></div>'
+      );
+      return;
+    }
+    setView(
+      '<div class="page-head"><div><h2>👤 로그인 / 가입</h2><p>아이디는 사번입니다 · 가입 신청 후 관리자(간사) 승인이 끝나면 로그인할 수 있습니다</p></div></div>' +
+      '<div class="admin-grid"><div class="card"><div class="card-title">🔐 로그인</div>' +
+      '<div class="field"><label>사번</label><input id="loginEmp" class="input" autocomplete="username" placeholder="예) 2015001" /></div>' +
+      '<div class="field"><label>비밀번호</label><input id="loginPw" type="password" class="input" autocomplete="current-password" /></div>' +
+      '<button class="btn btn-primary btn-lg" data-action="userLogin">로그인</button>' +
+      '<div class="card-sub">비밀번호를 잊었으면 관리자에게 임시 비밀번호 발급을 요청하세요.</div></div>' +
+      '<div class="card"><div class="card-title">📝 가입 신청</div><div class="info-grid" style="grid-template-columns:1fr 1fr">' +
+      '<div class="field"><label>사번 <span class="req">*</span></label><input id="suEmp" class="input" maxlength="20" placeholder="영문/숫자" /></div>' +
+      '<div class="field"><label>이름 <span class="req">*</span></label><input id="suName" class="input" maxlength="30" /></div>' +
+      '<div class="field"><label>직급</label><input id="suTitle" class="input" maxlength="20" placeholder="예) 팀장, 책임" /></div>' +
+      '<div class="field"><label>팀 <span class="req">*</span></label><select id="suTeam" class="select">' + teamOptions("") + "</select></div>" +
+      '<div class="field span2"><label>이메일 <span class="req">*</span> <span class="muted">(작성 완료·검토 요청 메일에 사용)</span></label><input id="suEmail" type="email" class="input" placeholder="name@company.com" /></div>' +
+      '<div class="field"><label>비밀번호 <span class="req">*</span></label><input id="suPw" type="password" class="input" autocomplete="new-password" /></div>' +
+      '<div class="field"><label>비밀번호 확인 <span class="req">*</span></label><input id="suPw2" type="password" class="input" autocomplete="new-password" /></div>' +
+      '</div><button class="btn btn-teal" data-action="userSignup">가입 신청</button>' +
+      '<div class="card-sub">· 개발팀(결정성장/EPI/Wafering/제품개발팀): 양산이관 신청 가능<br>· 6대 부문 검토팀: 담당 부문 Risk 검토 작성 및 작성 완료 처리</div></div></div>'
+    );
+  }
+
+  // =====================================================================
   // 메뉴 5: 양산이관 기준
   // =====================================================================
   function renderCriteria() {
@@ -718,30 +856,47 @@
     );
     if (c.tab === "forms" && c.forms === null) loadForms();
   }
-  function flowCard(cls, no, title, desc) {
-    return '<div class="flow-card ' + cls + '"><span class="no">' + no + "</span><h4>" + title + "</h4><p>" + desc + "</p></div>";
-  }
+  // 1~5단계를 한 줄로: 각 단계 카드(주관·검토자·주요 활동·결과) + 생략(Skip) 경로는 아래 띠로 표시
+  var PROCESS_STEPS = [
+    { no: "접수", cls: "start", title: "양산이관 신청", who: "개발팀 (신청) → 간사 (접수)",
+      act: ["양산이관 신청서·검증보고서 등록", "간사 접수 승인 (접수대기 → 접수)"], out: "6대 부문 검토 요청" },
+    { no: "1단계", title: "전문소위원 검토", who: "6대 부문 팀장 (서면검토)",
+      act: ["부문별 예상 Risk 항목 작성", "과제화 여부(O/X)·등급(상·중·하)", "보완 방안·담당조직·목표 일정"], out: "부문별 [작성 완료] → 간사 메일" },
+    { no: "2단계", title: "양산이관 검증소위원회", who: "간사 주관 · 부문 팀장 참석",
+      act: ["1단계 Risk 심의", "보완 과제 확정"], out: "소위 전결 또는 상정" },
+    { no: "3단계", title: "전문위원 검토", who: "담당 · 본부장급",
+      act: ["미결·중대 Risk 검토", "보완 방안 적정성 확인"], out: "검증위원회 상정" },
+    { no: "4단계", title: "검증위원회", who: "위원장 · 전문위원",
+      act: ["양산이관 가부 심의·의결"], out: "최종승인 요청" },
+    { no: "5단계", cls: "final", title: "최종승인", who: "위원장",
+      act: ["보완 과제 이행 확인", "양산이관 최종승인"], out: "양산이관 완료" }
+  ];
   function criteriaOverview() {
-    var arrow = function (ch) { return '<div class="flow-arrow">' + (ch || "→") + "</div>"; };
+    var line = PROCESS_STEPS.map(function (st, i) {
+      return (i ? '<div class="pl-arrow">▶</div>' : "") +
+        '<div class="pl-card ' + (st.cls || "") + '"><span class="pl-no">' + st.no + "</span><h4>" + st.title + "</h4>" +
+        '<div class="pl-who">👤 ' + st.who + "</div><ul>" + st.act.map(function (a) { return "<li>" + a + "</li>"; }).join("") + "</ul>" +
+        '<div class="pl-out">→ ' + st.out + "</div></div>";
+    }).join("");
+    var skip = function (cls, icon, title, from, to, cond, span) {
+      return '<div class="pl-skip ' + cls + '" style="grid-column:' + span + '"><b>' + icon + " " + title + "</b>" +
+        "<span>" + cond + "</span><span class=\"pl-skip-path\">" + from + " ➜ " + to + "</span></div>";
+    };
+    var rows = PROCESS_STEPS.map(function (st) {
+      return "<tr><td><span class=\"pl-no sm " + (st.cls || "") + '">' + st.no + "</span></td><td><b>" + st.title + "</b></td><td>" + st.who + "</td><td>" +
+        st.act.join("<br>") + "</td><td>" + st.out + "</td></tr>";
+    }).join("");
     return '<div class="section"><div class="section-title">🎯 목적</div><div class="pre" style="font-size:13px">' + esc(state.criteria.purpose || "") + "</div></div>" +
-      '<div class="section"><div class="section-title">🔀 5단계 검증 프로세스</div><div class="flow">' +
-      '<div class="flow-row">' + flowCard("start", "접수", "양산이관 신청", "제품개발팀 신청 → 간사 접수 (접수대기)") + arrow() +
-      flowCard("", "1단계", "전문소위원 검토", "6대 부문 팀장 서면검토<br>(품질/수율·장비·생산성·Process·제조·손익)") + "</div>" +
-      '<div class="flow-row">' + arrow("↓") + "</div>" +
-      '<div class="flow-row" style="align-items:flex-start">' +
-      '<div style="display:flex;flex-direction:column;gap:8px;align-items:center;flex:1;max-width:300px"><span class="flow-branch yes">특이사항 없음</span>' +
-      flowCard("fast", "⚡", "패스트트랙", "2·3·4단계 일괄 생략(Skip)<br>→ 5단계 최종승인으로 바로 이동") + "</div>" +
-      '<div style="display:flex;flex-direction:column;gap:8px;align-items:center;flex:2;min-width:300px"><span class="flow-branch no">특이사항 있음</span>' +
-      flowCard("", "2단계", "양산이관 검증소위원회", "Risk 항목 심의 · 보완 과제(상·중·하) 확정") +
-      '<div class="flow-row" style="width:100%;align-items:flex-start">' +
-      '<div style="display:flex;flex-direction:column;gap:6px;align-items:center;flex:1"><span class="flow-branch yes">소위 전결</span>' +
-      flowCard("fast", "📌", "3·4단계 생략", "소위원회에서 전결 처리") + "</div>" +
-      '<div style="display:flex;flex-direction:column;gap:6px;align-items:center;flex:2"><span class="flow-branch no">미결 · 중대 안건</span>' +
-      '<div class="flow-row" style="width:100%">' + flowCard("", "3단계", "전문위원 검토", "담당·본부장급 검토") + arrow() +
-      flowCard("", "4단계", "검증위원회", "위원회 심의 · 의결") + "</div></div></div></div></div>" +
-      '<div class="flow-row">' + arrow("↓") + "</div>" +
-      '<div class="flow-row">' + flowCard("final", "5단계", "최종승인", "보완 과제 이행 확인 후 양산이관 완료") + "</div></div></div>" +
-      '<div class="banner info">💡 각 단계는 일정(날짜)을 입력하면 \'일정 수립됨\', [완료 처리] 버튼을 눌러야 \'완료됨\'으로 바뀝니다.</div>';
+      '<div class="section"><div class="section-title">🔀 양산이관 검증 프로세스 (접수 → 1~5단계)</div>' +
+      '<div class="pl-wrap"><div class="pl-line">' + line + "</div>" +
+      '<div class="pl-skips">' +
+      skip("fast", "⚡", "패스트트랙", "1단계 완료", "5단계 최종승인", "1단계 6대 부문 모두 '특이사항 없음'", "3 / span 9") +
+      skip("sub", "📌", "소위 전결", "2단계 완료", "5단계 최종승인", "2단계에서 전결 처리 (중대 안건 없음)", "5 / span 7") +
+      "</div></div>" +
+      '<div class="card-sub">⚡ 패스트트랙: 2·3·4단계 생략 &nbsp;|&nbsp; 📌 소위 전결: 3·4단계 생략 &nbsp;|&nbsp; 그 외에는 1→2→3→4→5단계를 순서대로 진행합니다.</div></div>' +
+      '<div class="section"><div class="section-title">📋 단계별 정리</div><div class="table-wrap"><table class="pl-table"><thead><tr>' +
+      '<th style="width:70px">단계</th><th style="width:170px">명칭</th><th style="width:190px">주관 / 검토자</th><th>주요 활동</th><th style="width:200px">결과 / 다음 단계</th></tr></thead><tbody>' + rows + "</tbody></table></div></div>" +
+      '<div class="banner info">💡 포털에서는 각 단계에 일정(날짜)을 입력하면 \'일정 수립됨\', [완료 처리]를 눌러야 \'완료됨\'이 됩니다. 1단계 부문 검토는 각 부문 팀장이 로그인해 직접 작성합니다.</div>';
   }
   function criteriaStandard() {
     var c = state.criteria, ed = state.crit.editing && state.isAdmin;
@@ -832,6 +987,17 @@
             '<button class="btn btn-danger btn-sm" data-action="deleteItem" data-id="' + esc(i.id) + '">삭제</button></td></tr>';
         }).join("") + "</tbody></table></div>" : '<div class="muted">접수 대기 중인 신규 신청이 없습니다.</div>') + "</div>" +
 
+      // 회원 관리
+      '<div class="card full"><div class="card-title">👥 회원 관리 (가입 승인) <span id="userCounts" class="card-sub"></span></div>' +
+      '<div class="table-wrap" style="max-height:440px;overflow:auto"><table><thead><tr><th style="width:90px">상태</th><th style="width:100px">사번</th><th style="width:150px">이름 / 직급</th>' +
+      '<th style="width:190px">팀</th><th>권한</th><th style="width:180px">이메일</th><th style="width:130px">신청일</th><th style="width:250px"></th></tr></thead><tbody id="userBody"></tbody></table></div></div>' +
+
+      // 팀 관리
+      '<div class="card full"><div class="card-title">🏢 팀 관리 <span class="card-sub">신청 가능 = 양산이관 신청 메뉴 표시 · 검토 부문 = 해당 부문 Risk 행 작성 권한</span></div>' +
+      '<div class="table-wrap"><table><thead><tr><th>팀 이름</th><th style="width:170px">검토 부문</th><th style="width:130px">양산이관 신청</th><th style="width:60px"></th></tr></thead><tbody id="teamBody"></tbody></table></div>' +
+      '<div style="display:flex;justify-content:space-between;gap:6px"><button class="btn btn-secondary btn-sm" data-action="teamAdd">+ 팀 추가</button>' +
+      '<button class="btn btn-primary btn-sm" data-action="teamSave">💾 팀 목록 저장</button></div></div>' +
+
       // 알림 수신자
       '<div class="card"><div class="card-title">📨 신규 신청 알림 수신자</div>' +
       '<div class="field"><label>담당자(간사) 이메일 <span class="muted">(여러 명은 ; 또는 줄바꿈 구분)</span></label><textarea id="stSecretary" class="textarea" style="min-height:60px">' + esc(s.secretaryEmails.join("; ")) + "</textarea></div>" +
@@ -895,9 +1061,54 @@
       "</div>"
     );
     renderReviewerRows();
+    if (!state.teamDraft) state.teamDraft = clone(state.teams);
+    renderTeamRows();
+    if (state.adminUsers) renderUserRows();
+    else api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; renderUserRows(); }).catch(fail);
     var it = findItem(state.adminMailItemId);
     if (it && (!state.mail || state.mail.host !== "admin" || state.mail.itemId !== it.id)) initMail(it, "admin");
     renderMailPanel();
+  }
+
+  function renderUserRows() {
+    var body = $("#userBody");
+    if (!body) return;
+    var list = state.adminUsers || [];
+    var pending = list.filter(function (u) { return u.status === "pending"; }).length;
+    $("#userCounts").innerHTML = "전체 " + list.length + "명" + (pending ? ' · <span class="badge badge-wait">승인 대기 ' + pending + "명</span>" : "");
+    if (!list.length) { body.innerHTML = '<tr><td colspan="8" class="empty-state">가입 신청한 회원이 없습니다. [👤 로그인 / 가입] 메뉴에서 가입 신청할 수 있습니다.</td></tr>'; return; }
+    var ST = { pending: '<span class="badge badge-wait">승인 대기</span>', approved: '<span class="badge badge-done">승인</span>', rejected: '<span class="badge" style="background:#fee2e2;color:#b91c1c">반려</span>' };
+    body.innerHTML = list.map(function (u) {
+      var perm = [u.canApply ? "📝 신청" : "", u.sector ? "🖊 " + u.sector + " 검토" : ""].filter(Boolean).join(" · ") || '<span class="muted">열람</span>';
+      var teamSel = '<select class="select" data-user-team="' + esc(u.empId) + '">' + state.teams.map(function (t) {
+        return '<option value="' + esc(t.name) + '"' + (u.team === t.name ? " selected" : "") + ">" + esc(t.name) + "</option>";
+      }).join("") + (state.teams.some(function (t) { return t.name === u.team; }) ? "" : '<option selected value="' + esc(u.team) + '">' + esc(u.team) + " (삭제된 팀)</option>") + "</select>";
+      return '<tr class="' + (u.status === "pending" ? "row-pending" : "") + '"><td>' + (ST[u.status] || esc(u.status)) + "</td><td>" + esc(u.empId) + "</td>" +
+        '<td style="font-weight:700">' + esc(u.name) + ' <span class="muted">' + esc(u.title) + "</span></td><td>" + teamSel + "</td><td>" + perm + "</td>" +
+        '<td style="font-size:12px">' + esc(u.email) + '</td><td style="font-size:12px">' + esc(u.createdAt) + "</td>" +
+        '<td style="text-align:right">' +
+        (u.status !== "approved" ? '<button class="btn btn-primary btn-sm" data-action="userApprove" data-emp="' + esc(u.empId) + '">✓ 승인</button> ' : "") +
+        (u.status === "pending" ? '<button class="btn btn-secondary btn-sm" data-action="userReject" data-emp="' + esc(u.empId) + '">반려</button> ' : "") +
+        (u.status === "approved" ? '<button class="btn btn-secondary btn-sm" data-action="userResetPw" data-emp="' + esc(u.empId) + '">비번 초기화</button> ' : "") +
+        '<button class="btn btn-danger btn-sm" data-action="userDelete" data-emp="' + esc(u.empId) + '">삭제</button></td></tr>';
+    }).join("");
+  }
+  function renderTeamRows() {
+    var body = $("#teamBody");
+    if (!body) return;
+    body.innerHTML = state.teamDraft.map(function (t, i) {
+      return '<tr><td><input class="input" style="width:100%" data-team="' + i + '" data-teamf="name" value="' + esc(t.name) + '" /></td>' +
+        '<td><select class="select" data-team="' + i + '" data-teamf="sector"><option value="">(없음)</option>' + SECTORS.map(function (s) {
+          return '<option value="' + esc(s) + '"' + (t.sector === s ? " selected" : "") + ">" + esc(s) + "</option>";
+        }).join("") + "</select></td>" +
+        '<td><label class="check-line"><input type="checkbox" data-team="' + i + '" data-teamf="canApply"' + (t.canApply ? " checked" : "") + " /> 신청 가능</label></td>" +
+        '<td><button class="btn btn-danger btn-sm" data-action="teamDel" data-idx="' + i + '">✕</button></td></tr>';
+    }).join("");
+  }
+  function userAction(empId, body, msg) {
+    return api("POST", "/api/admin/users/" + encodeURIComponent(empId), body).then(function (list) {
+      state.adminUsers = list; renderUserRows(); if (msg) toast(msg, "ok");
+    }).catch(fail);
   }
 
   function renderReviewerRows() {
@@ -921,7 +1132,13 @@
   // =====================================================================
   // 상세 모달
   // =====================================================================
+  // 다른 사람이 방금 작성한 내용이 보이도록, 열기 전에 서버 버전을 확인해 필요하면 새로 불러온다.
   function openDetail(id) {
+    api("GET", "/api/version").then(function (v) { if (v.version !== state.version) return loadAll(); })
+      .catch(function () { /* 오프라인이면 캐시로 연다 */ })
+      .then(function () { openDetailNow(id); });
+  }
+  function openDetailNow(id) {
     var item = findItem(id);
     if (!item) { toast("안건을 찾을 수 없습니다: " + id, "err"); return; }
     state.detail = { id: id, orig: clone(item), draft: clone(item) };
@@ -934,7 +1151,7 @@
   function isDirty() { return state.detail && JSON.stringify(state.detail.draft) !== JSON.stringify(state.detail.orig); }
   function closeDetail(force) {
     if (!state.detail) return;
-    if (!force && state.isAdmin && isDirty() && !confirm("저장하지 않은 변경사항이 있습니다. 닫으시겠습니까?")) return;
+    if (!force && isDirty() && !confirm("저장하지 않은 변경사항이 있습니다. 닫으시겠습니까?")) return;
     state.detail = null;
     $("#detailModal").classList.remove("open");
     $("#detailModal").setAttribute("aria-hidden", "true");
@@ -954,6 +1171,15 @@
 
   function renderDetail() {
     var d = state.detail.draft, si = stageInfo(d), admin = state.isAdmin, dis = admin ? "" : "disabled";
+    var sec = admin ? "" : mySector(), editRisk = admin || !!sec;
+    var roleBanner = admin ? ""
+      : sec ? '<div class="banner info"><span>🖊 <b>' + esc(sec) + "</b> 부문 검토 작성 권한이 있습니다. 아래 [4] Risk 테이블에서 " + esc(sec) +
+        " 행만 작성하고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다.</span></div>"
+      : '<div class="banner warn"><span>🔒 열람 모드입니다. ' + (state.user ? "검토 작성은 6대 부문 검토팀 회원만 가능합니다." : "부문 검토 작성은 로그인 후, 전체 수정은 [관리자 모드]에서 가능합니다.") + "</span>" +
+        (state.user ? "" : '<button class="btn btn-secondary btn-sm" data-action="nav" data-route="account">👤 로그인</button>') + "</div>";
+    var sectorBtns = sec ? '<button class="btn btn-secondary btn-sm" data-action="riskAdd">+ ' + esc(sec) + ' 행 추가</button>' +
+      '<button class="btn btn-teal btn-sm" data-action="sectorSave">💾 임시 저장</button>' +
+      '<button class="btn btn-primary btn-sm" data-action="sectorComplete">✅ ' + esc(sec) + " 작성 완료</button>" : "";
     $("#detailHeader").innerHTML =
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3>' + esc(d.title || "(제목 없음)") + "</h3>" + catBadge(d) + trackBadges(si) +
       '<span class="muted" style="font-size:12.5px">' + esc(d.id) + " · 요청자 " + esc(d.requester) + " · 발제일 " + esc(d.proposalDate) + "</span></div>" +
@@ -968,7 +1194,7 @@
       (d.accepted === false ? '<div class="banner wait"><span>🆕 접수대기 안건입니다. 내용을 확인한 뒤 접수 승인하세요.</span>' +
         (admin ? '<button class="btn btn-primary btn-sm" data-action="acceptItem" data-id="' + esc(d.id) + '">✓ 접수 승인</button>' : "") + "</div>" : "") +
       notify +
-      (!admin ? '<div class="banner warn"><span>🔒 일반 열람 모드입니다. 수정하려면 [관리자 모드]에서 인증하세요.</span><button class="btn btn-secondary btn-sm" data-action="nav" data-route="admin">관리자 모드</button></div>' : "") +
+      roleBanner +
 
       '<div class="section"><div class="section-head"><div class="section-title">📌 기본 정보</div></div><div class="info-grid">' +
       '<div class="field"><label>구분</label><select class="select" data-dfield="category" ' + dis + '><option value="제품"' + (d.category === "제품" ? " selected" : "") + '>제품</option><option value="기술"' + (d.category === "기술" ? " selected" : "") + ">기술</option></select></div>" +
@@ -994,8 +1220,9 @@
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">4</span>전문(소)위원 검토 — 6대 부문 통합 Risk 테이블</div>' +
       (admin ? '<div style="display:flex;gap:6px"><button class="btn btn-secondary btn-sm" data-action="riskAddSix">+ 6대 부문 기본행</button><button class="btn btn-primary btn-sm" data-action="riskAdd">+ Risk 행 추가</button></div>' : "") +
-      '</div><div class="table-wrap"><table class="risk-table"><thead>' +
-      '<tr><th rowspan="2" style="width:110px">부문</th><th colspan="2">팀장 검토</th><th colspan="3">양산이관 시 예상되는 Risk 항목</th><th colspan="4">Risk 보완 방안 및 진행상태</th>' + (admin ? '<th rowspan="2" style="width:44px">삭제</th>' : "") + "</tr>" +
+      (sectorBtns ? '<div style="display:flex;gap:6px;flex-wrap:wrap">' + sectorBtns + "</div>" : "") +
+      '</div><div class="sector-status" id="sectorStatus"></div><div class="table-wrap"><table class="risk-table"><thead>' +
+      '<tr><th rowspan="2" style="width:110px">부문</th><th colspan="2">팀장 검토</th><th colspan="3">양산이관 시 예상되는 Risk 항목</th><th colspan="4">Risk 보완 방안 및 진행상태</th>' + (editRisk ? '<th rowspan="2" style="width:44px">삭제</th>' : "") + "</tr>" +
       '<tr><th style="width:110px">검토 팀장</th><th style="width:120px">특이사항 여부</th><th style="min-width:230px">예상 Risk 항목</th><th style="width:84px">과제화</th>' +
       '<th style="width:86px">Risk 등급</th><th style="min-width:230px">Risk 보완 방안 내용</th><th style="width:110px">담당조직</th><th style="width:128px">목표 일정</th><th style="width:90px">과제 상태</th></tr>' +
       '</thead><tbody id="riskBody"></tbody></table></div></div>';
@@ -1003,9 +1230,10 @@
     $("#detailFooter").innerHTML =
       (admin ? '<button class="btn btn-danger" data-action="deleteItem" data-id="' + esc(d.id) + '">🗑 이 안건 삭제</button>' : "<span></span>") +
       '<div style="display:flex;gap:8px;margin-left:auto"><button class="btn btn-secondary" data-action="closeDetail">닫기</button>' +
-      (admin ? '<button class="btn btn-primary" data-action="detailSave">💾 저장 (공유폴더 즉시 반영)</button>' : "") + "</div>";
+      (admin ? '<button class="btn btn-primary" data-action="detailSave">💾 저장 (공유폴더 즉시 반영)</button>' : "") +
+      (sec ? '<button class="btn btn-teal" data-action="sectorSave">💾 임시 저장</button><button class="btn btn-primary" data-action="sectorComplete">✅ ' + esc(sec) + " 작성 완료 (간사에게 메일)</button>" : "") + "</div>";
 
-    renderAttachments(); renderStepper(); renderMailPanel(); renderRiskTable();
+    renderAttachments(); renderStepper(); renderMailPanel(); renderRiskTable(); renderSectorStatus();
   }
 
   function renderAttachments() {
@@ -1044,14 +1272,15 @@
   }
 
   function renderRiskTable() {
-    var d = state.detail.draft, admin = state.isAdmin, body = $("#riskBody");
+    var d = state.detail.draft, admin = state.isAdmin, body = $("#riskBody"), delCol = admin || !!mySector();
     if (!d.risks.length) { body.innerHTML = '<tr><td colspan="11" class="empty-state">등록된 Risk 검토 행이 없습니다.' + (admin ? " [+ 6대 부문 기본행]을 눌러 추가하세요." : "") + "</td></tr>"; return; }
     body.innerHTML = d.risks.map(function (r, i) {
-      var noRisk = r.noRisk, task = !noRisk && r.isTask === "O";
-      var disA = admin ? "" : " disabled", disR = admin && !noRisk ? "" : " disabled", disT = admin && task ? "" : " disabled";
+      var noRisk = r.noRisk, task = !noRisk && r.isTask === "O", edit = canEditRow(r);
+      var disA = edit ? "" : " disabled", disR = edit && !noRisk ? "" : " disabled", disT = edit && task ? "" : " disabled";
+      var disSec = admin ? "" : " disabled";
       var attr = function (f) { return ' data-ri="' + i + '" data-rf="' + f + '"'; };
-      return '<tr class="' + (noRisk ? "no-risk" : "") + '">' +
-        '<td><select class="select"' + attr("sector") + disA + ">" + SECTORS.map(function (s) { return '<option value="' + esc(s) + '"' + (r.sector === s ? " selected" : "") + ">" + esc(s) + "</option>"; }).join("") + "</select></td>" +
+      return '<tr class="' + (noRisk ? "no-risk" : "") + (edit && !admin ? " mine" : "") + '">' +
+        '<td><select class="select"' + attr("sector") + disSec + ">" + SECTORS.map(function (s) { return '<option value="' + esc(s) + '"' + (r.sector === s ? " selected" : "") + ">" + esc(s) + "</option>"; }).join("") + "</select></td>" +
         '<td><input class="input" placeholder="팀장명"' + attr("reviewer") + ' value="' + esc(r.reviewer) + '"' + disA + " /></td>" +
         '<td><label class="risk-check ' + (noRisk ? "checked" : "") + '"><input type="checkbox"' + attr("noRisk") + (noRisk ? " checked" : "") + disA + " />" +
         (noRisk ? "✓ 특이사항 없음" : "⚠️ 특이사항 있음") + "</label></td>" +
@@ -1063,13 +1292,43 @@
         '<td><input type="date" class="input"' + attr("schedule") + ' value="' + esc(r.schedule) + '"' + disT + " />" +
         (delayDays(r) && task ? '<div style="margin-top:4px"><span class="badge badge-delay">🚨 +' + delayDays(r) + "일</span></div>" : "") + "</td>" +
         '<td><select class="select"' + attr("status") + disT + ">" + (task ? '<option value="진행중"' + (r.status !== "완료" ? " selected" : "") + '>진행중</option><option value="완료"' + (r.status === "완료" ? " selected" : "") + ">완료</option>" : '<option value="">-</option>') + "</select></td>" +
-        (admin ? '<td style="text-align:center"><button class="btn btn-danger btn-sm" data-action="riskDel" data-idx="' + i + '">✕</button></td>' : "") + "</tr>";
+        (delCol ? '<td style="text-align:center">' + (edit ? '<button class="btn btn-danger btn-sm" data-action="riskDel" data-idx="' + i + '">✕</button>' : "") + "</td>" : "") + "</tr>";
     }).join("");
+  }
+
+  function renderSectorStatus() {
+    var box = $("#sectorStatus");
+    if (!box) return;
+    var rv = state.detail.draft.sectorReviews || {};
+    box.innerHTML = '<span class="filter-label">부문 작성 현황</span>' + SECTORS.map(function (sec) {
+      var r = rv[sec];
+      if (!r) return '<span class="sec-chip">' + esc(sec) + " · 미작성</span>";
+      return '<span class="sec-chip done" title="' + esc(r.team + " " + r.name + " · " + r.at) + '">✓ ' + esc(sec) + " · " + esc(r.name) + " " + esc((r.at || "").slice(5, 10)) +
+        (state.isAdmin ? '<button class="x" data-action="sectorReopen" data-sector="' + esc(sec) + '" title="작성 완료 해제(재작성 요청)">✕</button>' : "") + "</span>";
+    }).join("");
+  }
+  function saveSector(complete) {
+    var sec = mySector(), d = state.detail.draft;
+    var rows = d.risks.filter(function (r) { return r.sector === sec; });
+    if (complete) {
+      var empty = rows.filter(function (r) { return !r.noRisk && !r.riskItem.trim(); });
+      if (!rows.length) { toast(sec + " 부문 행이 없습니다. [+ 행 추가] 후 작성하세요.", "err"); return; }
+      if (empty.length && !confirm("Risk 항목이 비어 있는 행이 " + empty.length + "개 있습니다. 그대로 작성 완료할까요?\n(특이사항이 없으면 '특이사항 없음'을 체크하세요)")) return;
+      if (!confirm(sec + " 부문 검토를 작성 완료하고 간사에게 메일을 보낼까요?")) return;
+    }
+    api("POST", "/api/items/" + encodeURIComponent(d.id) + "/sector/" + encodeURIComponent(sec), { rows: rows, complete: complete }).then(function (r) {
+      replaceItem(r.item); updateNavBadges();
+      state.detail.orig = clone(r.item); state.detail.draft = clone(r.item);
+      renderDetail();
+      if (!complete) toast("임시 저장했습니다.", "ok");
+      else if (r.mail === "sent") toast("작성 완료! 간사에게 메일을 발송합니다.", "ok");
+      else toast("작성 완료 처리했습니다. (간사 메일 주소가 설정되지 않아 메일은 보내지 않았습니다)", "ok");
+    }).catch(fail);
   }
 
   function onRiskField(el) {
     var d = state.detail.draft, r = d.risks[+el.getAttribute("data-ri")], f = el.getAttribute("data-rf");
-    if (!r) return;
+    if (!r || !canEditRow(r)) return;
     if (f === "noRisk") {
       r.noRisk = el.checked;
       if (r.noRisk) { r.riskItem = ""; r.planContent = ""; r.isTask = "X"; r.grade = ""; r.status = "완료"; } else { r.status = "진행중"; }
@@ -1455,6 +1714,35 @@
       }).catch(fail);
     },
     logout: function () { api("POST", "/api/logout").catch(function () { }); setAdmin(false, "관리자 모드를 종료했습니다."); },
+    // 회원
+    userLogin: function () {
+      var emp = $("#loginEmp").value.trim(), pw = $("#loginPw").value;
+      if (!emp || !pw) { toast("사번과 비밀번호를 입력하세요.", "err"); return; }
+      api("POST", "/api/users/login", { empId: emp, password: pw }).then(function (r) {
+        setUser(r.token, r.user, userLabel(r.user) + "님 환영합니다.");
+      }).catch(fail);
+    },
+    userLogout: function () {
+      api("POST", "/api/users/logout").catch(function () { });
+      setUser(null, null, "로그아웃했습니다.");
+    },
+    userSignup: function () {
+      var v = function (id) { return $("#" + id).value.trim(); };
+      if (!v("suEmp") || !v("suName") || !v("suTeam") || !v("suEmail") || !$("#suPw").value) { toast("필수 항목(*)을 모두 입력하세요.", "err"); return; }
+      if ($("#suPw").value !== $("#suPw2").value) { toast("비밀번호 확인이 일치하지 않습니다.", "err"); return; }
+      api("POST", "/api/users/signup", { empId: v("suEmp"), name: v("suName"), title: v("suTitle"), team: v("suTeam"), email: v("suEmail"), password: $("#suPw").value })
+        .then(function (r) {
+          toast(r.message, "ok");
+          ["suEmp", "suName", "suTitle", "suEmail", "suPw", "suPw2"].forEach(function (id) { $("#" + id).value = ""; });
+        }).catch(fail);
+    },
+    userChangePw: function () {
+      if ($("#upNew").value !== $("#upNew2").value) { toast("새 비밀번호가 서로 다릅니다.", "err"); return; }
+      api("POST", "/api/users/password", { current: $("#upCur").value, new: $("#upNew").value }).then(function () {
+        ["#upCur", "#upNew", "#upNew2"].forEach(function (id) { $(id).value = ""; });
+        toast("비밀번호를 변경했습니다.", "ok");
+      }).catch(fail);
+    },
     saveRecipients: function () {
       api("PUT", "/api/settings", { secretaryEmails: $("#stSecretary").value, leaderEmails: $("#stLeader").value, portalUrl: $("#stPortalUrl").value })
         .then(function (s) { state.admin = s; renderAdmin(); toast("알림 수신자를 저장했습니다.", "ok"); }).catch(fail);
@@ -1469,6 +1757,30 @@
       toast("테스트 메일 발송 중…");
       api("POST", "/api/mail/test", { method: el.getAttribute("data-method"), to: $("#stTestTo").value })
         .then(function (r) { toast(r.message, "ok"); }).catch(fail);
+    },
+    userApprove: function (el) { userAction(el.getAttribute("data-emp"), { action: "approve" }, "승인했습니다. 이제 로그인할 수 있습니다."); },
+    userReject: function (el) {
+      if (confirm(el.getAttribute("data-emp") + " 가입 신청을 반려할까요?")) userAction(el.getAttribute("data-emp"), { action: "reject" }, "반려했습니다.");
+    },
+    userResetPw: function (el) {
+      var pw = prompt("임시 비밀번호를 입력하세요 (4자 이상). 회원에게 전달 후 [내 정보]에서 변경하도록 안내하세요.");
+      if (pw) userAction(el.getAttribute("data-emp"), { action: "resetPassword", password: pw }, "비밀번호를 초기화했습니다.");
+    },
+    userDelete: function (el) {
+      var emp = el.getAttribute("data-emp");
+      if (!confirm(emp + " 회원을 삭제할까요?")) return;
+      api("DELETE", "/api/admin/users/" + encodeURIComponent(emp)).then(function (list) { state.adminUsers = list; renderUserRows(); toast("삭제했습니다.", "ok"); }).catch(fail);
+    },
+    teamAdd: function () { state.teamDraft.push({ name: "", sector: "", canApply: false }); renderTeamRows(); },
+    teamDel: function (el) { state.teamDraft.splice(+el.getAttribute("data-idx"), 1); renderTeamRows(); },
+    teamSave: function () {
+      var names = state.teamDraft.map(function (t) { return t.name.trim(); });
+      if (names.some(function (n) { return !n; })) { toast("팀 이름이 비어 있는 행이 있습니다.", "err"); return; }
+      if (names.some(function (n, i) { return names.indexOf(n) !== i; })) { toast("중복된 팀 이름이 있습니다.", "err"); return; }
+      api("PUT", "/api/admin/teams", { teams: state.teamDraft }).then(function (teams) {
+        state.teams = teams; state.teamDraft = clone(teams);
+        return api("GET", "/api/admin/users");
+      }).then(function (list) { state.adminUsers = list; renderAdmin(); toast("팀 목록을 저장했습니다.", "ok"); presencePing(); }).catch(fail);
     },
     rvAdd: function () { state.admin.reviewers.push({ sector: SECTORS[0], level: "sub", name: "", title: "팀장", email: "" }); renderReviewerRows(); },
     rvDel: function (el) { state.admin.reviewers.splice(+el.getAttribute("data-idx"), 1); renderReviewerRows(); },
@@ -1522,7 +1834,25 @@
       api("DELETE", "/api/items/" + encodeURIComponent(state.detail.id) + "/attachments/" + encodeURIComponent(name))
         .then(function (updated) { syncServerFields(updated); renderAttachments(); }).catch(fail);
     },
-    riskAdd: function () { state.detail.draft.risks.push(emptyRisk()); renderRiskTable(); },
+    riskAdd: function () {
+      var sec = state.isAdmin ? "" : mySector(), row = emptyRisk(sec || undefined);
+      if (sec && state.user) row.reviewer = state.user.name + (state.user.title ? " " + state.user.title : "");
+      var rs = state.detail.draft.risks, at = rs.length;
+      if (sec) {  // 내 부문 행 바로 아래에 추가
+        for (var i = rs.length - 1; i >= 0; i--) { if (rs[i].sector === sec) { at = i + 1; break; } }
+      }
+      rs.splice(at, 0, row); renderRiskTable();
+    },
+    sectorSave: function () { saveSector(false); },
+    sectorComplete: function () { saveSector(true); },
+    sectorReopen: function (el) {
+      var sec = el.getAttribute("data-sector");
+      if (!confirm(sec + " 부문 '작성 완료' 표시를 해제할까요? (재작성 요청)")) return;
+      api("POST", "/api/items/" + encodeURIComponent(state.detail.id) + "/sector/" + encodeURIComponent(sec) + "/reopen").then(function (updated) {
+        syncServerFields(updated); state.detail.draft.sectorReviews = clone(updated.sectorReviews); state.detail.orig.sectorReviews = clone(updated.sectorReviews);
+        renderSectorStatus(); toast(sec + " 부문 작성 완료를 해제했습니다.", "ok");
+      }).catch(fail);
+    },
     riskAddSix: function () { SECTORS.forEach(function (s) { state.detail.draft.risks.push(emptyRisk(s)); }); renderRiskTable(); },
     riskDel: function (el) { state.detail.draft.risks.splice(+el.getAttribute("data-idx"), 1); renderRiskTable(); }
   };
@@ -1547,7 +1877,7 @@
 
   function onField(el) {
     if (el.hasAttribute("data-filter")) { setFilter(el.getAttribute("data-filter"), el.value); return; }
-    if (!state.detail && !state.mail && !state.admin) return;
+    if (!state.detail && !state.mail && !state.admin && !state.teamDraft) return;
     if (el.hasAttribute("data-dfield")) {
       var d = state.detail.draft, f = el.getAttribute("data-dfield");
       d[f] = el.value;
@@ -1558,6 +1888,13 @@
     if (el.hasAttribute("data-rf")) { onRiskField(el); return; }
     if (el.hasAttribute("data-mf")) { state.mail[el.getAttribute("data-mf")] = el.value; state.mail.preview = null; var c = $("#mailCount"); if (c) c.textContent = mailRecipients().length; return; }
     if (el.hasAttribute("data-mail-email")) { state.mail.selected[el.getAttribute("data-mail-email")] = el.checked; state.mail.preview = null; $("#mailCount").textContent = mailRecipients().length; return; }
+    if (el.hasAttribute("data-team")) {
+      var t = state.teamDraft[+el.getAttribute("data-team")], tf = el.getAttribute("data-teamf");
+      t[tf] = tf === "canApply" ? el.checked : el.value; return;
+    }
+    if (el.hasAttribute("data-user-team")) {
+      userAction(el.getAttribute("data-user-team"), { action: "update", team: el.value }, "팀을 변경했습니다."); return;
+    }
     if (el.hasAttribute("data-rv")) { state.admin.reviewers[+el.getAttribute("data-rv")][el.getAttribute("data-rvf")] = el.value; return; }
     if (el.getAttribute("data-action-change") === "adminMailItem") {
       state.adminMailItemId = el.value; initMail(findItem(el.value), "admin"); renderMailPanel();
@@ -1587,6 +1924,7 @@
     document.addEventListener("keydown", function (e) {
       if (e.key === "Escape" && state.detail) closeDetail(false);
       if (e.key === "Enter" && e.target.id === "adminPw") ACTIONS.login();
+      if (e.key === "Enter" && (e.target.id === "loginEmp" || e.target.id === "loginPw")) ACTIONS.userLogin();
     });
     $("#detailModal").addEventListener("mousedown", function (e) { if (e.target === this) closeDetail(false); });
     // 드래그 앤 드롭 (신청 폼 / 상세 첨부)
@@ -1606,7 +1944,13 @@
       else if (state.isAdmin) uploadAttachments(e.dataTransfer.files);
     });
     window.addEventListener("hashchange", onHash);
-    window.addEventListener("beforeunload", function (e) { if (state.isAdmin && isDirty()) { e.preventDefault(); e.returnValue = ""; } });
+    window.addEventListener("beforeunload", function (e) { if (isDirty()) { e.preventDefault(); e.returnValue = ""; } });
+    // 탭을 닫으면 접속자 목록에서 즉시 제외
+    window.addEventListener("pagehide", function () {
+      if (navigator.sendBeacon && state.clientId) {
+        navigator.sendBeacon("/api/presence/leave", new Blob([JSON.stringify({ clientId: state.clientId })], { type: "text/plain" }));
+      }
+    });
   }
 
   // =====================================================================
@@ -1614,13 +1958,21 @@
   // =====================================================================
   function start() {
     bindEvents();
+    state.clientId = safeSession("get", "portalClientId") || newClientId();
+    safeSession("set", "portalClientId", state.clientId);
     var auth = state.token
       ? loadAdminSettings().then(function () { state.isAdmin = true; }).catch(function () { state.token = ""; safeSession("del", "portalAdminToken"); })
       : Promise.resolve();
-    Promise.all([loadAll(), auth]).then(function () {
+    var login = state.userToken
+      ? api("GET", "/api/users/me").then(function (u) { state.user = u; }).catch(function () { state.userToken = ""; safeLocal("del", "portalUserToken"); })
+      : Promise.resolve();
+    Promise.all([loadAll(), auth, login]).then(function () {
       if (state.isAdmin) { $("#adminBadge").textContent = "인증됨"; $("#adminBadge").classList.add("on"); $(".nav-link[data-route=admin] .nav-ico").textContent = "🔓"; }
+      updateNav();
       onHash();
+      presencePing();
       setInterval(poll, POLL_MS);
+      setInterval(presencePing, PRESENCE_MS);
     }).catch(function (e) {
       setView('<div class="card empty-state">서버에 연결할 수 없습니다. (' + esc(e.message) + ")<br>서버 PC에서 run_server.bat 이 실행 중인지 확인하세요.</div>");
     });

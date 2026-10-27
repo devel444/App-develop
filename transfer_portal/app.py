@@ -52,6 +52,25 @@ LEVEL_NAMES = {"sub": "전문소위원", "main": "전문위원"}
 LEVEL_DESC = {"sub": "전문소위원(팀장급)", "main": "전문위원(담당/본부장급)"}
 EMAIL_RE = re.compile(r"^[^@\s;,<>]+@[^@\s;,<>]+\.[^@\s;,<>]+$")
 ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+EMP_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{3,20}$")
+USER_TOKEN_TTL_SEC = 7 * 24 * 3600
+PRESENCE_TTL_SEC = 60
+
+# 팀 목록 (관리자 모드에서 이름/부문/신청권한 수정 가능)
+#  - canApply: 양산이관 신청 가능한 개발팀
+#  - sector  : 6대 부문 검토 담당 팀 (해당 부문 Risk 행 작성 권한)
+DEFAULT_TEAMS = [
+    {"name": "결정성장개발팀", "sector": "", "canApply": True},
+    {"name": "EPI개발팀", "sector": "", "canApply": True},
+    {"name": "Wafering개발팀", "sector": "", "canApply": True},
+    {"name": "제품개발팀", "sector": "", "canApply": True},
+    {"name": "품질보증팀", "sector": "품질/수율", "canApply": False},
+    {"name": "설비기술팀", "sector": "장비", "canApply": False},
+    {"name": "생산관리팀", "sector": "생산성", "canApply": False},
+    {"name": "공정기술팀", "sector": "Process", "canApply": False},
+    {"name": "제조팀", "sector": "제조", "canApply": False},
+    {"name": "경영기획팀", "sector": "손익", "canApply": False},
+]
 
 
 # ---------------------------------------------------------------------------
@@ -194,6 +213,16 @@ def normalize_attachment(a: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+def normalize_sector_reviews(v: Any) -> Dict[str, Dict[str, str]]:
+    """부문별 '작성 완료' 기록 {부문: {empId, name, team, at}}."""
+    out = {}
+    if isinstance(v, dict):
+        for sector, r in v.items():
+            if sector in SECTORS and isinstance(r, dict):
+                out[sector] = {k: _s(r.get(k)) for k in ("empId", "name", "team", "at")}
+    return out
+
+
 def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     category = "기술" if raw.get("category") == "기술" else "제품"
@@ -227,6 +256,8 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "risks": [normalize_risk(r) for r in (raw.get("risks") or [])],
         "attachments": attachments,
         "notify": raw.get("notify") if isinstance(raw.get("notify"), dict) else None,
+        "sectorReviews": normalize_sector_reviews(raw.get("sectorReviews")),
+        "applicantEmpId": _s(raw.get("applicantEmpId")),
         "createdAt": _s(raw.get("createdAt")) or now_str(),
         "updatedAt": _s(raw.get("updatedAt")) or now_str(),
         "rev": int(raw.get("rev") or 1),
@@ -401,7 +432,22 @@ def default_settings(with_password: bool = False) -> Dict[str, Any]:
             {"sector": "장비", "level": "main", "name": "조설비", "title": "본부장", "email": "equip.head@example.com"},
         ],
         "criteria": copy.deepcopy(DEFAULT_CRITERIA),
+        "teams": copy.deepcopy(DEFAULT_TEAMS),
     }
+
+
+def normalize_teams(v: Any) -> List[Dict[str, Any]]:
+    out, seen = [], set()
+    for t in v if isinstance(v, list) else []:
+        if not isinstance(t, dict):
+            continue
+        name = _s(t.get("name"))[:40]
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append({"name": name, "sector": t.get("sector") if t.get("sector") in SECTORS else "",
+                    "canApply": bool(t.get("canApply"))})
+    return out
 
 
 def normalize_reviewers(v: Any) -> List[Dict[str, str]]:
@@ -451,6 +497,7 @@ class Store:
         self.is_network = is_network
         self.data_path = root / "data.json"
         self.settings_path = root / "settings.json"
+        self.users_path = root / "users.json"
         self.att_dir = root / "attachments"
         self.forms_dir = root / "forms"
         self.backup_dir = root / "backups"
@@ -540,11 +587,27 @@ class Store:
                     base[k] = v
             for sector in SECTORS:
                 base["criteria"].setdefault("checklist", {}).setdefault(sector, "")
+            base["teams"] = normalize_teams(base.get("teams")) or copy.deepcopy(DEFAULT_TEAMS)
             return base
 
     def save_settings(self, s: Dict[str, Any]) -> None:
         with self.lock:
             self._write_json(self.settings_path, s)
+
+    # --- 회원 (users.json: {사번: 사용자}) ----------------------------------
+    def users(self) -> Dict[str, Dict[str, Any]]:
+        with self.lock:
+            if not self.users_path.exists():
+                return {}
+            data = self._read_json(self.users_path)
+            return data if isinstance(data, dict) else {}
+
+    def mutate_users(self, fn: Callable[[Dict[str, Dict[str, Any]]], Any]) -> Any:
+        with self.lock:
+            users = self.users()
+            result = fn(users)
+            self._write_json(self.users_path, users)
+            return result
 
     def item_dir(self, item_id: str) -> Path:
         if not ID_RE.match(item_id):
@@ -570,6 +633,46 @@ def require_admin(x_admin_token: str) -> str:
         raise HTTPException(401, "관리자 인증이 필요합니다.")
     TOKENS[x_admin_token] = time.time() + TOKEN_TTL_SEC
     return x_admin_token
+
+
+USER_TOKENS: Dict[str, Tuple[str, float]] = {}   # 토큰 → (사번, 만료시각)
+PRESENCE: Dict[str, Dict[str, Any]] = {}         # 브라우저 ID → {seen, empId, admin}
+PRESENCE_LOCK = threading.Lock()
+
+
+def team_info(settings: Dict[str, Any], team: str) -> Dict[str, Any]:
+    for t in settings["teams"]:
+        if t["name"] == team:
+            return t
+    return {"name": team, "sector": "", "canApply": False}
+
+
+def public_user(u: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    t = team_info(settings, u.get("team", ""))
+    return {
+        "empId": u["empId"], "name": u.get("name", ""), "title": u.get("title", ""), "team": u.get("team", ""),
+        "email": u.get("email", ""), "status": u.get("status", "pending"), "createdAt": u.get("createdAt", ""),
+        "approvedAt": u.get("approvedAt", ""), "sector": t["sector"], "canApply": t["canApply"],
+    }
+
+
+def current_user(user_token: str) -> Optional[Dict[str, Any]]:
+    """승인된 회원이면 공개 정보(팀·부문·신청권한 포함), 아니면 None."""
+    entry = USER_TOKENS.get(user_token) if user_token else None
+    if not entry or entry[1] < time.time():
+        USER_TOKENS.pop(user_token, None)
+        return None
+    u = store.users().get(entry[0])
+    if not u or u.get("status") != "approved":
+        USER_TOKENS.pop(user_token, None)
+        return None
+    USER_TOKENS[user_token] = (entry[0], time.time() + USER_TOKEN_TTL_SEC)
+    return public_user(u, store.settings())
+
+
+def is_admin_token(token: str) -> bool:
+    exp = TOKENS.get(token) if token else None
+    return bool(exp and exp > time.time())
 
 
 def find_item(data: Dict[str, Any], item_id: str) -> Dict[str, Any]:
@@ -811,6 +914,70 @@ def build_review_mail(item: Dict[str, Any], settings: Dict[str, Any], level: str
             "html": _mail_wrap(f"양산이관 {LEVEL_NAMES[level]} 검토 요청", inner), "text": text}
 
 
+def build_sector_done_mail(item: Dict[str, Any], sector: str, user: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    base = portal_base(settings)
+    link = f"{base}#items/{quote(item['id'])}"
+    who = f"{user['team']} {user['name']} {user.get('title', '')}".strip()
+    subject = f"[양산이관 검토완료] {sector} 부문 - {item['title']} ({who})"
+    rows = [r for r in item["risks"] if r["sector"] == sector]
+    th = 'style="background:#f1f5f9;border:1px solid #cbd5e1;padding:6px 8px;font-size:12.5px;text-align:left;"'
+    td = 'style="border:1px solid #cbd5e1;padding:6px 8px;font-size:12.5px;vertical-align:top;"'
+    body_rows = "".join(
+        f"<tr><td {td}>{'특이사항 없음' if r['noRisk'] else '특이사항 있음'}</td><td {td}>{_br(r['riskItem'])}</td>"
+        f"<td {td}>{html.escape(r['isTask'])}</td><td {td}>{html.escape(r['grade'] or '-')}</td>"
+        f"<td {td}>{_br(r['planContent'])}</td><td {td}>{html.escape(r['org'] or '-')}</td>"
+        f"<td {td}>{html.escape(r['schedule'] or '-')}</td></tr>"
+        for r in rows
+    ) or f'<tr><td {td} colspan="7">작성된 행이 없습니다.</td></tr>'
+    table = (
+        '<table style="border-collapse:collapse;width:100%;max-width:900px;margin:8px 0 16px;">'
+        f"<tr><th {th}>특이사항</th><th {th}>예상 Risk 항목</th><th {th}>과제화</th><th {th}>등급</th>"
+        f"<th {th}>보완 방안</th><th {th}>담당조직</th><th {th}>목표 일정</th></tr>{body_rows}</table>"
+    )
+    inner = (
+        f"<p><b>{html.escape(who)}</b> 님이 <b>{html.escape(sector)}</b> 부문 검토를 작성 완료했습니다.</p>"
+        + _mail_table([("안건 ID", html.escape(item["id"])), ("구분", html.escape(category_label(item))),
+                       ("제품/기술명", f"<b>{html.escape(item['title'])}</b>"), ("현재 단계", html.escape(stage_label(item)))])
+        + f'<p style="font-weight:bold;">■ {html.escape(sector)} 부문 검토 내용</p>' + table
+        + f'<p>▶ 안건 상세 보기: <a href="{html.escape(link)}">{html.escape(link)}</a></p>'
+    )
+    text = f"{who} 님이 {sector} 부문 검토를 작성 완료했습니다.\n안건: {item['title']} ({item['id']})\n{link}\n"
+    return {"to": _emails(settings.get("secretaryEmails")), "subject": subject,
+            "html": _mail_wrap("양산이관 부문 검토 작성 완료", inner), "text": text}
+
+
+def mail_to_secretary(subject: str, html_body: str, text: str, settings: Dict[str, Any]) -> Dict[str, str]:
+    to = _emails(settings.get("secretaryEmails"))
+    if not to:
+        return {"status": "skipped", "message": "관리자 설정에 간사 이메일이 없습니다."}
+    try:
+        method = send_mail(settings, to, [], subject, html_body, text)
+        return {"status": "sent", "message": f"{method}로 간사에게 발송"}
+    except Exception as e:  # noqa: BLE001
+        return {"status": "failed", "message": str(e)[:300]}
+
+
+def notify_sector_done(item_id: str, sector: str, user: Dict[str, Any]) -> None:
+    settings = store.settings()
+    try:
+        mail = build_sector_done_mail(find_item(store.load(), item_id), sector, user, settings)
+        result = mail_to_secretary(mail["subject"], mail["html"], mail["text"], settings)
+    except Exception as e:  # noqa: BLE001
+        result = {"status": "failed", "message": str(e)[:300]}
+    print(f"[mail] {item_id} {sector} 작성 완료 알림: {result['status']} - {result['message']}")
+
+
+def notify_signup(user: Dict[str, Any]) -> None:
+    settings = store.settings()
+    link = portal_base(settings) + "#admin"
+    who = f"{user['team']} {user['name']} {user.get('title', '')}".strip()
+    inner = (f"<p><b>{html.escape(who)}</b> (사번 {html.escape(user['empId'])}) 님이 포털 가입을 신청했습니다.</p>"
+             f'<p>▶ 관리자 모드에서 승인: <a href="{html.escape(link)}">{html.escape(link)}</a></p>')
+    result = mail_to_secretary(f"[양산이관 검증위원회] 가입 승인 요청 ({who})", _mail_wrap("포털 가입 승인 요청", inner),
+                               f"{who} (사번 {user['empId']}) 님이 가입을 신청했습니다.\n{link}\n", settings)
+    print(f"[mail] 가입 신청 알림 {user['empId']}: {result['status']} - {result['message']}")
+
+
 def notify_new_item(item_id: str) -> None:
     """신규 신청 알림 메일 (백그라운드). 실패해도 안건 등록에는 영향이 없다."""
     settings = store.settings()
@@ -860,6 +1027,17 @@ class Req:
     @property
     def token(self) -> str:
         return self.headers.get("X-Admin-Token", "") or ""
+
+    @property
+    def user_token(self) -> str:
+        return self.headers.get("X-User-Token", "") or ""
+
+    @property
+    def is_admin(self) -> bool:
+        return is_admin_token(self.token)
+
+    def user(self) -> Optional[Dict[str, Any]]:
+        return current_user(self.user_token)
 
     def json(self) -> Dict[str, Any]:
         try:
@@ -936,7 +1114,7 @@ def content_disposition(filename: str, attachment: bool = True) -> str:
 # API 핸들러
 # ---------------------------------------------------------------------------
 def public_settings(s: Dict[str, Any]) -> Dict[str, Any]:
-    return {"criteria": s["criteria"], "sectors": SECTORS}
+    return {"criteria": s["criteria"], "sectors": SECTORS, "teams": s["teams"]}
 
 
 def h_bootstrap(req: Req):
@@ -1072,7 +1250,10 @@ def save_uploads(folder: Path, files: List[Tuple[str, str, bytes]], by: str) -> 
 
 
 def h_apply(req: Req):
-    """메뉴 4: 제품개발팀 신규 신청 (비밀번호 불필요)."""
+    """메뉴 4: 신규 신청 - 신청 권한 팀(개발팀) 회원 또는 관리자만."""
+    user = req.user()
+    if not req.is_admin and not (user and user["canApply"]):
+        raise HTTPException(403, "양산이관 신청은 개발팀(결정성장/EPI/Wafering/제품개발팀) 회원으로 로그인해야 합니다.")
     f, files = req.form()
     title, requester, dept = _s(f.get("title")), _s(f.get("requester")), _s(f.get("requesterDept"))
     email = _s(f.get("requesterEmail"))
@@ -1091,6 +1272,7 @@ def h_apply(req: Req):
             "title": title[:200], "requester": requester[:100], "requesterDept": dept[:100],
             "requesterEmail": email, "proposalDate": p_date, "summary": (f.get("summary") or "")[:5000],
             "accepted": False, "source": "신청", "stages": {}, "risks": default_risk_rows(),
+            "applicantEmpId": user["empId"] if user else "",
             "notify": {"status": "pending", "message": "알림 메일 발송 대기", "at": now_str()},
         })
         data["items"].insert(0, item)
@@ -1119,7 +1301,7 @@ def h_update_item(req: Req):
         if not payload.get("force") and int(payload.get("rev") or 0) != cur["rev"]:
             raise HTTPException(409, {"message": "다른 사용자가 먼저 이 안건을 수정했습니다.", "item": cur})
         merged = normalize_item({**incoming, "id": item_id})
-        for keep in ("attachments", "notify", "createdAt", "source"):
+        for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId"):
             merged[keep] = cur[keep]
         merged["rev"] = cur["rev"] + 1
         merged["updatedAt"] = now_str()
@@ -1183,7 +1365,7 @@ def h_bulk_replace(req: Req):
             seen.add(it["id"])
             old = cur.get(it["id"])
             if old:
-                for keep in ("attachments", "notify", "createdAt", "source"):
+                for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId"):
                     it[keep] = old[keep]
                 it["rev"] = old["rev"] + 1
             it["updatedAt"] = now_str()
@@ -1311,6 +1493,259 @@ def h_review_outlook(req: Req):
     return {"ok": True}
 
 
+# --- 회원 (가입 신청 → 관리자 승인) ---------------------------------------
+def h_signup(req: Req):
+    p = req.json()
+    emp_id, name, team = _s(p.get("empId")), _s(p.get("name"))[:30], _s(p.get("team"))
+    email, password = (_emails(p.get("email")) or [""])[0], _s(p.get("password"))
+    if not EMP_ID_RE.match(emp_id):
+        raise HTTPException(400, "사번은 영문/숫자 3~20자로 입력하세요.")
+    if not name:
+        raise HTTPException(400, "이름을 입력하세요.")
+    if team not in [t["name"] for t in store.settings()["teams"]]:
+        raise HTTPException(400, "팀을 선택하세요.")
+    if not email:
+        raise HTTPException(400, "이메일을 올바르게 입력하세요.")
+    if len(password) < 4:
+        raise HTTPException(400, "비밀번호는 4자 이상이어야 합니다.")
+
+    def _add(users):
+        old = users.get(emp_id)
+        if old and old.get("status") != "rejected":
+            raise HTTPException(409, "이미 가입 신청된 사번입니다." if old.get("status") == "pending" else "이미 가입된 사번입니다.")
+        salt = secrets.token_hex(16)
+        users[emp_id] = {"empId": emp_id, "name": name, "title": _s(p.get("title"))[:20], "team": team, "email": email,
+                         "status": "pending", "pwSalt": salt, "pwHash": hash_password(password, salt),
+                         "createdAt": now_str(), "approvedAt": ""}
+        return users[emp_id]
+    user = store.mutate_users(_add)
+    threading.Thread(target=notify_signup, args=(user,), daemon=True).start()
+    return {"ok": True, "message": "가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다."}
+
+
+def h_user_login(req: Req):
+    p = req.json()
+    ip = req.client_host
+    recent = [t for t in LOGIN_FAILS.get(ip, []) if t > time.time() - 60]
+    if len(recent) >= 5:
+        raise HTTPException(429, "비밀번호를 여러 번 틀렸습니다. 1분 후 다시 시도하세요.")
+    u = store.users().get(_s(p.get("empId")))
+    if not u or not secrets.compare_digest(hash_password(_s(p.get("password")), u["pwSalt"]), u["pwHash"]):
+        LOGIN_FAILS[ip] = recent + [time.time()]
+        raise HTTPException(403, "사번 또는 비밀번호가 일치하지 않습니다.")
+    if u.get("status") == "pending":
+        raise HTTPException(403, "가입 승인 대기 중입니다. 관리자 승인 후 로그인할 수 있습니다.")
+    if u.get("status") != "approved":
+        raise HTTPException(403, "가입이 반려되었습니다. 관리자에게 문의하세요.")
+    LOGIN_FAILS.pop(ip, None)
+    token = secrets.token_urlsafe(24)
+    USER_TOKENS[token] = (u["empId"], time.time() + USER_TOKEN_TTL_SEC)
+    return {"token": token, "user": public_user(u, store.settings())}
+
+
+def h_user_me(req: Req):
+    user = req.user()
+    if not user:
+        raise HTTPException(401, "로그인이 필요합니다.")
+    return user
+
+
+def h_user_logout(req: Req):
+    USER_TOKENS.pop(req.user_token, None)
+    return {"ok": True}
+
+
+def h_user_password(req: Req):
+    user = req.user()
+    if not user:
+        raise HTTPException(401, "로그인이 필요합니다.")
+    p = req.json()
+    new = _s(p.get("new"))
+    if len(new) < 4:
+        raise HTTPException(400, "새 비밀번호는 4자 이상이어야 합니다.")
+
+    def _change(users):
+        u = users[user["empId"]]
+        if not secrets.compare_digest(hash_password(_s(p.get("current")), u["pwSalt"]), u["pwHash"]):
+            raise HTTPException(403, "현재 비밀번호가 일치하지 않습니다.")
+        u["pwSalt"] = secrets.token_hex(16)
+        u["pwHash"] = hash_password(new, u["pwSalt"])
+    store.mutate_users(_change)
+    return {"ok": True}
+
+
+def h_admin_users(req: Req):
+    settings = store.settings()
+    users = sorted(store.users().values(), key=lambda u: (u.get("status") != "pending", u.get("createdAt", "")), reverse=False)
+    return [public_user(u, settings) for u in users]
+
+
+def h_admin_user_action(req: Req):
+    emp_id = req.params["empId"]
+    p = req.json()
+    action = p.get("action")
+    teams = [t["name"] for t in store.settings()["teams"]]
+
+    def _act(users):
+        u = users.get(emp_id)
+        if not u:
+            raise HTTPException(404, "회원을 찾을 수 없습니다.")
+        if action == "approve":
+            u["status"], u["approvedAt"] = "approved", now_str()
+        elif action == "reject":
+            u["status"] = "rejected"
+        elif action == "update":
+            if "team" in p:
+                if p["team"] not in teams:
+                    raise HTTPException(400, "존재하지 않는 팀입니다.")
+                u["team"] = p["team"]
+            for k, limit in (("name", 30), ("title", 20)):
+                if k in p:
+                    u[k] = _s(p[k])[:limit]
+            if "email" in p:
+                u["email"] = (_emails(p["email"]) or [u.get("email", "")])[0]
+        elif action == "resetPassword":
+            new = _s(p.get("password"))
+            if len(new) < 4:
+                raise HTTPException(400, "임시 비밀번호는 4자 이상이어야 합니다.")
+            u["pwSalt"] = secrets.token_hex(16)
+            u["pwHash"] = hash_password(new, u["pwSalt"])
+        else:
+            raise HTTPException(400, "알 수 없는 작업입니다.")
+    store.mutate_users(_act)
+    if action in ("reject", "resetPassword"):  # 기존 로그인 세션 종료
+        for tok, (eid, _) in list(USER_TOKENS.items()):
+            if eid == emp_id:
+                USER_TOKENS.pop(tok, None)
+    return h_admin_users(req)
+
+
+def h_admin_user_delete(req: Req):
+    emp_id = req.params["empId"]
+    store.mutate_users(lambda users: users.pop(emp_id, None))
+    for tok, (eid, _) in list(USER_TOKENS.items()):
+        if eid == emp_id:
+            USER_TOKENS.pop(tok, None)
+    return h_admin_users(req)
+
+
+# --- 부문 검토 작성 (팀장: 자기 부문 행만) ----------------------------------
+def h_sector_save(req: Req):
+    item_id, sector = req.params["id"], req.params["sector"]
+    if sector not in SECTORS:
+        raise HTTPException(400, "알 수 없는 부문입니다.")
+    user = req.user()
+    if not req.is_admin and not (user and user["sector"] == sector):
+        raise HTTPException(403, f"{sector} 부문 작성 권한이 없습니다. (본인 팀의 담당 부문만 작성 가능)")
+    p = req.json()
+    complete = bool(p.get("complete"))
+    writer = user or {"empId": "admin", "name": "관리자", "title": "", "team": "간사"}
+    rows = []
+    for r in p.get("rows") or []:
+        r = normalize_risk({**(r if isinstance(r, dict) else {}), "sector": sector})
+        if not r["reviewer"]:
+            r["reviewer"] = f"{writer['name']} {writer.get('title', '')}".strip()
+        rows.append(r)
+
+    def _save(data):
+        cur = find_item(data, item_id)
+        others = [r for r in cur["risks"] if r["sector"] != sector]
+        merged = []
+        for sec in SECTORS:  # 부문 순서대로 정리
+            merged.extend(rows if sec == sector else [r for r in others if r["sector"] == sec])
+        cur["risks"] = merged
+        if complete:
+            cur["sectorReviews"][sector] = {"empId": writer["empId"], "name": writer["name"], "team": writer["team"], "at": now_str()}
+        cur["rev"] += 1
+        cur["updatedAt"] = now_str()
+        return cur
+    item = store.mutate(_save)
+    mail = None
+    if complete:
+        if _emails(store.settings().get("secretaryEmails")):
+            threading.Thread(target=notify_sector_done, args=(item_id, sector, writer), daemon=True).start()
+            mail = "sent"
+        else:
+            mail = "no_recipient"
+    return {"item": item, "mail": mail}
+
+
+def h_sector_reopen(req: Req):
+    """관리자: 부문 '작성 완료' 표시 해제 (재작성 요청)."""
+    item_id, sector = req.params["id"], req.params["sector"]
+
+    def _reopen(data):
+        cur = find_item(data, item_id)
+        cur["sectorReviews"].pop(sector, None)
+        cur["rev"] += 1
+        return cur
+    return store.mutate(_reopen)
+
+
+# --- 현재 접속자 ------------------------------------------------------------
+def _presence_snapshot() -> Dict[str, Any]:
+    now = time.time()
+    users, seen_emp, anon, admins = [], set(), 0, 0
+    all_users = store.users()
+    settings = store.settings()
+    with PRESENCE_LOCK:
+        for cid in [c for c, v in PRESENCE.items() if v["seen"] < now - PRESENCE_TTL_SEC]:
+            PRESENCE.pop(cid, None)
+        entries = list(PRESENCE.values())
+    for v in entries:
+        if v.get("empId") and v["empId"] in all_users:
+            if v["empId"] in seen_emp:
+                continue
+            seen_emp.add(v["empId"])
+            u = all_users[v["empId"]]
+            users.append({"name": u.get("name", ""), "title": u.get("title", ""), "team": u.get("team", ""),
+                          "admin": bool(v.get("admin"))})
+        elif v.get("admin"):
+            admins += 1
+        else:
+            anon += 1
+    users.sort(key=lambda u: (team_order(settings, u["team"]), u["name"]))
+    return {"count": len(users) + admins + anon, "users": users, "admins": admins, "anonymous": anon}
+
+
+def team_order(settings: Dict[str, Any], team: str) -> int:
+    names = [t["name"] for t in settings["teams"]]
+    return names.index(team) if team in names else len(names)
+
+
+def h_presence(req: Req):
+    p = req.json()
+    cid = _s(p.get("clientId"))[:64]
+    user = req.user()
+    if cid:
+        with PRESENCE_LOCK:
+            PRESENCE[cid] = {"seen": time.time(), "empId": user["empId"] if user else "", "admin": req.is_admin}
+    snap = _presence_snapshot()
+    snap["me"] = user  # 팀 변경 등 관리자 수정 사항을 화면에 바로 반영
+    snap["isAdmin"] = req.is_admin
+    return snap
+
+
+def h_presence_leave(req: Req):
+    try:
+        cid = _s(req.json().get("clientId"))
+    except HTTPException:
+        cid = ""
+    with PRESENCE_LOCK:
+        PRESENCE.pop(cid, None)
+    return {"ok": True}
+
+
+def h_put_teams(req: Req):
+    teams = normalize_teams(req.json().get("teams"))
+    if not teams:
+        raise HTTPException(400, "팀을 1개 이상 등록하세요.")
+    s = store.settings()
+    s["teams"] = teams
+    store.save_settings(s)
+    return teams
+
+
 # ---------------------------------------------------------------------------
 # 라우팅
 # ---------------------------------------------------------------------------
@@ -1349,6 +1784,19 @@ route("DELETE", "/api/forms/{name}", h_delete_form, admin=True)
 route("POST", "/api/mail/review/preview", h_review_preview, admin=True)
 route("POST", "/api/mail/review/eml", h_review_eml, admin=True)
 route("POST", "/api/mail/review/outlook", h_review_outlook, admin=True)
+route("POST", "/api/users/signup", h_signup)
+route("POST", "/api/users/login", h_user_login)
+route("GET", "/api/users/me", h_user_me)
+route("POST", "/api/users/logout", h_user_logout)
+route("POST", "/api/users/password", h_user_password)
+route("GET", "/api/admin/users", h_admin_users, admin=True)
+route("POST", "/api/admin/users/{empId}", h_admin_user_action, admin=True)
+route("DELETE", "/api/admin/users/{empId}", h_admin_user_delete, admin=True)
+route("PUT", "/api/admin/teams", h_put_teams, admin=True)
+route("POST", "/api/items/{id}/sector/{sector}", h_sector_save)
+route("POST", "/api/items/{id}/sector/{sector}/reopen", h_sector_reopen, admin=True)
+route("POST", "/api/presence", h_presence)
+route("POST", "/api/presence/leave", h_presence_leave)
 
 STATIC_DIR = (BASE_DIR / "static").resolve()
 
