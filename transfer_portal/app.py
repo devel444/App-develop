@@ -219,6 +219,113 @@ def default_risk_rows() -> List[Dict[str, Any]]:
     return [normalize_risk({"sector": s, "noRisk": False, "isTask": "X"}) for s in SECTORS]
 
 
+# ---------------------------------------------------------------------------
+# 안건 → 부문 검토 의견(reviews) → 보완 과제(tasks)
+#  - 팀장은 부문별로 '이상 없음' 또는 'Risk 있음 + Risk 목록' 을 작성
+#  - 간사(관리자)는 2단계에서 Risk 마다 [과제 등록] 또는 [수용(사유)] 을 결정
+#  - 과제는 중요도(상: 이관 전 완료 필수 / 중·하: 조건부 승인 가능)·담당·목표일·상태를 관리
+# ---------------------------------------------------------------------------
+IMPORTANCE = ["상", "중", "하"]
+RISK_ID_RE = re.compile(r"^R(\d+)$")
+TASK_ID_RE = re.compile(r"^T(\d+)$")
+
+
+def empty_reviews() -> Dict[str, Dict[str, Any]]:
+    return {sec: {"result": "", "reviewer": "", "risks": []} for sec in SECTORS}
+
+
+def normalize_review_risk(r: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(r, dict):
+        return None
+    content, proposal = _text(r.get("content"))[:3000], _text(r.get("proposal"))[:3000]
+    decision = r.get("decision") if r.get("decision") in ("task", "accept") else ""
+    if not content and not proposal and not decision:
+        return None
+    return {"id": _s(r.get("id"))[:12], "content": content, "proposal": proposal, "decision": decision,
+            "reason": _text(r.get("reason"))[:1000] if decision == "accept" else "",
+            "taskId": _s(r.get("taskId"))[:12] if decision == "task" else ""}
+
+
+def normalize_reviews(v: Any) -> Dict[str, Dict[str, Any]]:
+    out = empty_reviews()
+    v = v if isinstance(v, dict) else {}
+    for sec in SECTORS:
+        r = v.get(sec) if isinstance(v.get(sec), dict) else {}
+        risks = [x for x in (normalize_review_risk(x) for x in (r.get("risks") or [])) if x]
+        result = r.get("result") if r.get("result") in ("ok", "risk") else ""
+        if result == "ok" and any(x["decision"] for x in risks):
+            result = "risk"  # 이미 결정된 Risk 가 있으면 '이상 없음' 으로 바꿀 수 없다
+        if result == "ok":
+            risks = []
+        out[sec] = {"result": result, "reviewer": _s(r.get("reviewer"))[:40], "risks": risks}
+    return out
+
+
+def normalize_task(t: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(t, dict) or not TASK_ID_RE.match(_s(t.get("id"))):
+        return None
+    st = normalize_stage("task", {"target": t.get("target"), "targetOriginal": t.get("targetOriginal"),
+                                  "extensions": t.get("extensions"), "done": t.get("status") == "완료", "doneAt": t.get("doneAt")})
+    return {
+        "id": _s(t.get("id")), "riskId": _s(t.get("riskId"))[:12],
+        "sector": t.get("sector") if t.get("sector") in SECTORS else SECTORS[0],
+        "title": _text(t.get("title"))[:3000], "plan": _text(t.get("plan"))[:3000],
+        "importance": t.get("importance") if t.get("importance") in IMPORTANCE else "중",
+        "org": _s(t.get("org"))[:60],
+        "ownerName": _s(t.get("ownerName"))[:40], "ownerEmpId": _s(t.get("ownerEmpId"))[:20],
+        "ownerEmail": (_emails(t.get("ownerEmail")) or [""])[0],
+        "target": st["target"], "targetOriginal": st["targetOriginal"], "extensions": st["extensions"],
+        "status": "완료" if t.get("status") == "완료" else "진행중",
+        "doneAt": st["doneAt"], "createdAt": _s(t.get("createdAt"))[:19] or today_str(),
+    }
+
+
+def migrate_legacy_risks(raw_risks: List[Any]) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+    """v1~v7 의 Risk 테이블 행 → 부문 검토 의견 + 보완 과제."""
+    reviews, tasks, rn = empty_reviews(), [], 0
+    for r in (normalize_risk(x) for x in raw_risks or []):
+        rv = reviews[r["sector"]]
+        if r["reviewer"] and not rv["reviewer"]:
+            rv["reviewer"] = r["reviewer"]
+        if r["noRisk"]:
+            rv["result"] = rv["result"] or "ok"
+            continue
+        if not r["riskItem"] and not r["planContent"] and r["isTask"] != "O":
+            continue  # 빈 행
+        rv["result"] = "risk"
+        rn += 1
+        risk = {"id": f"R{rn:02d}", "content": r["riskItem"] or r["planContent"], "proposal": r["planContent"],
+                "decision": "", "reason": "", "taskId": ""}
+        if r["isTask"] == "O":
+            tid = f"T{len(tasks) + 1:02d}"
+            risk.update(decision="task", taskId=tid)
+            tasks.append(normalize_task({
+                "id": tid, "riskId": risk["id"], "sector": r["sector"], "title": risk["content"], "plan": r["planContent"],
+                "importance": r["grade"] or "중", "org": r["org"], "target": r["schedule"], "status": r["status"],
+                "doneAt": r["schedule"] if r["status"] == "완료" else "",
+            }))
+        else:
+            risk.update(decision="accept", reason="(기존 데이터 이관: 과제화 X)")
+        rv["risks"].append(risk)
+    for rv in reviews.values():
+        if rv["result"] == "ok" and rv["risks"]:
+            rv["result"] = "risk"
+    return reviews, tasks
+
+
+def next_seq_id(prefix: str, ids: List[str]) -> str:
+    nums = [int(m.group(1)) for m in (re.match(rf"^{prefix}(\d+)$", i or "") for i in ids) if m]
+    return f"{prefix}{(max(nums) + 1) if nums else 1:02d}"
+
+
+def all_risk_ids(item: Dict[str, Any]) -> List[str]:
+    return [r["id"] for rv in item["reviews"].values() for r in rv["risks"]]
+
+
+def open_tasks(item: Dict[str, Any], importance: Optional[str] = None) -> List[Dict[str, Any]]:
+    return [t for t in item["tasks"] if t["status"] != "완료" and (importance is None or t["importance"] == importance)]
+
+
 def normalize_attachment(a: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(a, dict) or not _s(a.get("name")):
         return None
@@ -307,6 +414,27 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw_stages = raw.get("stages") if isinstance(raw.get("stages"), dict) else {}
     stages = {k: normalize_stage(k, raw_stages.get(k)) for k in STAGE_KEYS}
     item_id = re.sub(r"[^A-Za-z0-9_\-]", "_", _s(raw.get("id")))[:64] or ("TR-" + secrets.token_hex(4))
+    if isinstance(raw.get("reviews"), dict):
+        reviews = normalize_reviews(raw.get("reviews"))
+        seen, tasks = set(), []
+        for t in (normalize_task(x) for x in (raw.get("tasks") or [])):
+            if t and t["id"] not in seen:
+                seen.add(t["id"])
+                tasks.append(t)
+        # 결정은 '과제' 인데 과제가 없으면 결정 취소 상태로 되돌린다 (데이터 정합성)
+        for rv in reviews.values():
+            for r in rv["risks"]:
+                if r["decision"] == "task" and r["taskId"] not in seen:
+                    r.update(decision="", taskId="")
+        # 같은 Risk ID 가 중복되면 새 번호 부여
+        used: List[str] = []
+        for rv in reviews.values():
+            for r in rv["risks"]:
+                if not RISK_ID_RE.match(r["id"]) or r["id"] in used:
+                    r["id"] = next_seq_id("R", used + [x["id"] for v in reviews.values() for x in v["risks"]])
+                used.append(r["id"])
+    else:
+        reviews, tasks = migrate_legacy_risks(raw.get("risks") or [])
     attachments = [a for a in (normalize_attachment(x) for x in (raw.get("attachments") or [])) if a]
     return {
         "id": item_id,
@@ -324,7 +452,8 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "acceptedAt": _date(raw.get("acceptedAt")),
         "source": _s(raw.get("source")) or "관리자",
         "stages": stages,
-        "risks": [normalize_risk(r) for r in (raw.get("risks") or [])],
+        "reviews": reviews,
+        "tasks": tasks,
         "attachments": attachments,
         "notify": raw.get("notify") if isinstance(raw.get("notify"), dict) else None,
         "sectorReviews": normalize_sector_reviews(raw.get("sectorReviews")),
@@ -1314,21 +1443,21 @@ def build_sector_done_mail(item: Dict[str, Any], sector: str, user: Dict[str, An
     link = f"{base}#items/{quote(item['id'])}"
     who = f"{user['team']} {user['name']} {user.get('title', '')}".strip()
     subject = f"[양산이관 검토완료] {sector} 부문 - {item['title']} ({who})"
-    rows = [r for r in item["risks"] if r["sector"] == sector]
+    rv = item["reviews"][sector]
     th = 'style="background:#f1f5f9;border:1px solid #cbd5e1;padding:6px 8px;font-size:12.5px;text-align:left;"'
     td = 'style="border:1px solid #cbd5e1;padding:6px 8px;font-size:12.5px;vertical-align:top;"'
-    body_rows = "".join(
-        f"<tr><td {td}>{'특이사항 없음' if r['noRisk'] else '특이사항 있음'}</td><td {td}>{_br(r['riskItem'])}</td>"
-        f"<td {td}>{html.escape(r['isTask'])}</td><td {td}>{html.escape(r['grade'] or '-')}</td>"
-        f"<td {td}>{_br(r['planContent'])}</td><td {td}>{html.escape(r['org'] or '-')}</td>"
-        f"<td {td}>{html.escape(r['schedule'] or '-')}</td></tr>"
-        for r in rows
-    ) or f'<tr><td {td} colspan="7">작성된 행이 없습니다.</td></tr>'
-    table = (
-        '<table style="border-collapse:collapse;width:100%;max-width:900px;margin:8px 0 16px;">'
-        f"<tr><th {th}>특이사항</th><th {th}>예상 Risk 항목</th><th {th}>과제화</th><th {th}>등급</th>"
-        f"<th {th}>보완 방안</th><th {th}>담당조직</th><th {th}>목표 일정</th></tr>{body_rows}</table>"
-    )
+    if rv["result"] == "ok":
+        table = '<p style="font-size:14px;color:#15803d;font-weight:bold;">✅ 이상 없음 (특이사항 없음)</p>'
+    else:
+        body_rows = "".join(
+            f"<tr><td {td}>{i + 1}</td><td {td}>{_br(r['content'])}</td><td {td}>{_br(r['proposal'])}</td></tr>"
+            for i, r in enumerate(rv["risks"])
+        ) or f'<tr><td {td} colspan="3">작성된 Risk 가 없습니다.</td></tr>'
+        table = (
+            '<p style="font-size:14px;color:#b91c1c;font-weight:bold;">⚠️ Risk 있음</p>'
+            '<table style="border-collapse:collapse;width:100%;max-width:900px;margin:8px 0 16px;">'
+            f"<tr><th {th}>#</th><th {th}>예상 Risk</th><th {th}>제안 보완 방안</th></tr>{body_rows}</table>"
+        )
     inner = (
         f"<p><b>{html.escape(who)}</b> 님이 <b>{html.escape(sector)}</b> 부문 검토를 작성 완료했습니다.</p>"
         + _mail_table([("안건 ID", html.escape(item["id"])), ("구분", html.escape(category_label(item))),
@@ -1699,7 +1828,7 @@ def h_apply(req: Req):
             "id": next_item_id(data["items"], p_date[:4]), "category": f.get("category", "제품"), "npSp": f.get("npSp", "NP"),
             "title": title[:200], "requester": requester[:100], "requesterDept": dept[:100],
             "requesterEmail": email, "proposalDate": p_date, "summary": (f.get("summary") or "")[:5000],
-            "accepted": False, "source": "신청", "stages": {}, "risks": default_risk_rows(),
+            "accepted": False, "source": "신청", "stages": {}, "reviews": empty_reviews(), "tasks": [],
             "applicantEmpId": user["empId"] if user else "",
             "notify": {"status": "pending", "message": "알림 메일 발송 대기", "at": now_str()},
         })
@@ -1736,6 +1865,8 @@ def h_update_item(req: Req):
         if not merged["accepted"]:
             merged["acceptedAt"] = ""
         apply_stage_targets(merged, holiday_set())
+        if merged["stages"]["step5"]["done"] and not cur["stages"]["step5"]["done"] and open_tasks(merged, "상"):
+            raise HTTPException(400, f"중요도 '상' 과제 {len(open_tasks(merged, '상'))}건이 완료되지 않아 최종승인할 수 없습니다.")
         merged["rev"] = cur["rev"] + 1
         merged["updatedAt"] = now_str()
         data["items"][data["items"].index(cur)] = merged
@@ -1769,15 +1900,16 @@ def h_accept_item(req: Req):
     return store.mutate(_accept)
 
 
-def h_toggle_risk(req: Req):
-    idx = int(req.params["idx"])
-
+def h_toggle_task(req: Req):
     def _toggle(data):
         cur = find_item(data, req.params["id"])
-        if not 0 <= idx < len(cur["risks"]):
+        t = next((x for x in cur["tasks"] if x["id"] == req.params["taskId"]), None)
+        if not t:
             raise HTTPException(404, "과제를 찾을 수 없습니다.")
-        r = cur["risks"][idx]
-        r["status"] = "진행중" if r["status"] == "완료" else "완료"
+        if t["status"] == "완료":
+            t.update(status="진행중", doneAt="")
+        else:
+            t.update(status="완료", doneAt=today_str())
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
         return cur
@@ -2081,20 +2213,38 @@ def h_sector_save(req: Req):
     p = req.json()
     complete = bool(p.get("complete"))
     writer = user or {"empId": "admin", "name": "관리자", "title": "", "team": "간사"}
-    rows = []
-    for r in p.get("rows") or []:
-        r = normalize_risk({**(r if isinstance(r, dict) else {}), "sector": sector})
-        if not r["reviewer"]:
-            r["reviewer"] = f"{writer['name']} {writer.get('title', '')}".strip()
-        rows.append(r)
+    result = p.get("result") if p.get("result") in ("ok", "risk") else ""
+    incoming = [x for x in (p.get("risks") or []) if isinstance(x, dict)]
 
     def _save(data):
         cur = find_item(data, item_id)
-        others = [r for r in cur["risks"] if r["sector"] != sector]
-        merged = []
-        for sec in SECTORS:  # 부문 순서대로 정리
-            merged.extend(rows if sec == sector else [r for r in others if r["sector"] == sec])
-        cur["risks"] = merged
+        rv = cur["reviews"][sector]
+        decided = {r["id"]: r for r in rv["risks"] if r["decision"]}
+        risks: List[Dict[str, Any]] = []
+        for x in incoming:
+            rid = _s(x.get("id"))
+            if rid in decided:  # 위원회가 결정한 Risk 는 내용 변경·삭제 불가
+                risks.append(decided.pop(rid))
+                continue
+            content, proposal = _text(x.get("content"))[:3000], _text(x.get("proposal"))[:3000]
+            if not content and not proposal:
+                continue
+            known = {r["id"] for r in rv["risks"]}
+            if rid not in known:
+                rid = next_seq_id("R", all_risk_ids(cur) + [r["id"] for r in risks])
+            risks.append({"id": rid, "content": content or proposal, "proposal": proposal, "decision": "", "reason": "", "taskId": ""})
+        risks.extend(decided.values())
+        res = result
+        if res == "ok" and any(r["decision"] for r in risks):
+            raise HTTPException(400, "위원회가 이미 결정한 Risk 가 있어 '이상 없음'으로 바꿀 수 없습니다.")
+        if res == "ok":
+            risks = []
+        if complete and not res:
+            raise HTTPException(400, "검토 결과(✅ 이상 없음 / ⚠️ Risk 있음)를 선택하세요.")
+        if complete and res == "risk" and not risks:
+            raise HTTPException(400, "'Risk 있음'이면 Risk 내용을 1개 이상 입력하세요.")
+        rv.update(result=res, risks=risks,
+                  reviewer=_s(p.get("reviewer"))[:40] or rv["reviewer"] or f"{writer['name']} {writer.get('title', '')}".strip())
         if complete:
             cur["sectorReviews"][sector] = {"empId": writer["empId"], "name": writer["name"], "team": writer["team"], "at": now_str()}
         cur["rev"] += 1
@@ -2195,7 +2345,7 @@ route("POST", "/api/items/bulk", h_bulk_replace, admin=True)
 route("PUT", "/api/items/{id}", h_update_item, admin=True)
 route("DELETE", "/api/items/{id}", h_delete_item, admin=True)
 route("POST", "/api/items/{id}/accept", h_accept_item, admin=True)
-route("POST", "/api/items/{id}/risks/{idx}/toggle", h_toggle_risk, admin=True)
+route("POST", "/api/items/{id}/tasks/{taskId}/toggle", h_toggle_task, admin=True)
 route("POST", "/api/items/{id}/attachments", h_upload_attachments, admin=True)
 route("GET", "/api/items/{id}/attachments/{name}", h_download_attachment)
 route("DELETE", "/api/items/{id}/attachments/{name}", h_delete_attachment, admin=True)

@@ -443,3 +443,51 @@ tbody tr.row-pending { background: #f5f3ff; }
 .ext-hist { margin-top: 4px; padding: 8px 12px; border-radius: 8px; background: #fffbeb; border: 1px solid #fde68a; font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
 .ext-hist .lbl { font-weight: 800; color: #92400e; }
 .admin-section { border-color: #fcd34d; background: #fffdf5; }
+
+/* ---------- v8: 부문 검토 카드 / 보완 과제 ---------- */
+.review-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+@media (max-width: 1200px) { .review-grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 760px) { .review-grid { grid-template-columns: 1fr; } }
+.rv-card { border: 2px solid var(--border); border-radius: 12px; padding: 12px; background: #fff; display: flex; flex-direction: column; gap: 8px; transition: border-color 0.2s, box-shadow 0.2s; }
+.rv-card.ok { border-color: #86efac; background: #f7fef9; }
+.rv-card.risk { border-color: #fca5a5; background: #fffafa; }
+.rv-card.none { border-style: dashed; }
+.rv-card.mine { box-shadow: 0 0 0 3px #fde68a; }
+.rv-head { display: flex; justify-content: space-between; align-items: center; gap: 6px; font-size: 14px; }
+.rv-chip { font-size: 11.5px; font-weight: 800; padding: 3px 9px; border-radius: 99px; white-space: nowrap; }
+.rv-chip.ok { background: var(--success-light); color: var(--success); }
+.rv-chip.risk { background: var(--danger-light); color: var(--danger); }
+.rv-chip.none { background: #f1f5f9; color: var(--text-muted); }
+.rv-done { font-size: 11.5px; font-weight: 700; color: var(--success); }
+.rv-done .x, .rv-risk .x { border: 0; background: none; cursor: pointer; color: var(--danger); font-weight: 800; }
+.rv-pending { font-size: 11.5px; color: var(--text-muted); }
+.rv-reviewer { width: 100%; padding: 5px 8px; font-size: 12.5px; }
+.rv-toggle { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.rv-opt { padding: 10px 6px; border-radius: 8px; border: 2px solid var(--border-strong); background: #fff; font-weight: 800; font-size: 13px; cursor: pointer; color: var(--text-sub); transition: all 0.16s var(--ease-out); }
+.rv-opt:hover { transform: translateY(-1px); }
+.rv-opt.ok.on { background: #16a34a; border-color: #16a34a; color: #fff; }
+.rv-opt.risk.on { background: #dc2626; border-color: #dc2626; color: #fff; }
+.rv-opt.ok:not(.on):hover { border-color: #16a34a; color: #16a34a; }
+.rv-opt.risk:not(.on):hover { border-color: #dc2626; color: #dc2626; }
+.rv-ok-text { font-size: 13px; font-weight: 700; color: var(--success); text-align: center; padding: 6px; }
+.rv-risk { border: 1px solid #fecaca; border-radius: 8px; padding: 8px; background: #fff; display: flex; flex-direction: column; gap: 5px; }
+.rv-risk.locked { background: #f8fafc; border-color: var(--border); }
+.rv-risk-top { display: flex; justify-content: space-between; align-items: center; }
+.rv-risk-no { font-size: 11px; font-weight: 800; color: #fff; background: #ef4444; border-radius: 99px; padding: 1px 8px; }
+.rv-risk .textarea { min-height: 60px; font-size: 12.5px; padding: 6px 8px; }
+.textarea.sm { min-height: 46px; font-size: 12px; padding: 5px 8px; }
+.rv-risk-text { font-size: 12.5px; font-weight: 700; white-space: pre-wrap; }
+.rv-risk-prop { font-size: 12px; color: var(--text-sub); white-space: pre-wrap; }
+.rv-dec { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; border-top: 1px dashed var(--border); padding-top: 5px; }
+.dec { font-size: 11.5px; font-weight: 800; padding: 2px 8px; border-radius: 6px; }
+.dec.task { background: #dbeafe; color: #1d4ed8; }
+.dec.accept { background: #dcfce7; color: #15803d; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dec.none { background: #ede9fe; color: #6d28d9; }
+.link-btn { border: 0; background: none; color: var(--text-muted); font-size: 11.5px; cursor: pointer; text-decoration: underline; }
+.accept-form { display: flex; gap: 4px; width: 100%; flex-wrap: wrap; }
+.accept-form .input { flex: 1; min-width: 160px; padding: 5px 8px; font-size: 12px; }
+.rv-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: auto; }
+.task-table td { vertical-align: top; }
+.task-table .input, .task-table .select { width: 100%; padding: 5px 7px; font-size: 12px; margin-bottom: 4px; }
+.task-table .textarea.sm { margin-bottom: 4px; }
+.badge-cond { background: #ccfbf1; color: #0f766e; border: 1px solid #5eead4; }

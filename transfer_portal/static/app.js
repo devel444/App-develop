@@ -224,7 +224,10 @@
     var subDecision = !!(!g("step2").skipped && g("step3").skipped && g("step4").skipped);
     var base = { fastTrack: fastTrack, subDecision: subDecision };
     if (item.accepted === false) return Object.assign(base, { phase: "WAIT", col: 0, isDone: false, name: "접수대기" });
-    if (g("step5").done) return Object.assign(base, { phase: "DONE", col: 5, isDone: true, name: "최종승인 완료" });
+    if (g("step5").done) {
+      var rest = openTaskCount(item);
+      return Object.assign(base, { phase: "DONE", col: 5, isDone: true, conditional: rest > 0, openTasks: rest, name: rest ? "조건부 승인 (잔여 과제 " + rest + ")" : "최종승인 완료" });
+    }
     var idx = 0;
     while (idx < 4 && (g(STAGES[idx].key).done || g(STAGES[idx].key).skipped)) idx++;
     var cur = g(STAGES[idx].key), delay = stageDelayOf(cur);
@@ -233,20 +236,43 @@
       name: (idx + 1) + ". " + STAGES[idx].name + (cur.target ? " (목표 " + fmtDay(cur.target) + ")" : " (목표일 없음)")
     });
   }
-  function delayDays(r) {
-    if (r.status === "완료" || !r.schedule) return 0;
-    var d = daysBetween(r.schedule, today());
-    return d > 0 ? d : 0;
-  }
+  // ---- 보완 과제 / 부문 검토 의견 ----
+  function taskDelay(t) { return t.status !== "완료" && t.target && t.target < today() ? daysBetween(t.target, today()) : 0; }
   function tasksOf(items) {
     var arr = [];
     items.forEach(function (item) {
-      (item.risks || []).forEach(function (r, idx) {
-        if (!r.noRisk && r.isTask === "O") arr.push({ item: item, risk: r, idx: idx, delay: delayDays(r) });
-      });
+      (item.tasks || []).forEach(function (t) { arr.push({ item: item, task: t, delay: taskDelay(t) }); });
     });
     return arr;
   }
+  function allRisks(item) {
+    var arr = [];
+    SECTORS.forEach(function (sec) { (item.reviews[sec].risks || []).forEach(function (r) { arr.push({ sector: sec, risk: r }); }); });
+    return arr;
+  }
+  function reviewSummary(item) {
+    var risks = allRisks(item), completed = Object.keys(item.sectorReviews || {}).length;
+    return {
+      completed: completed, pending: SECTORS.filter(function (s) { return !(item.sectorReviews || {})[s]; }),
+      allOk: SECTORS.every(function (s) { return item.reviews[s].result === "ok"; }),
+      riskCount: risks.length,
+      undecided: risks.filter(function (x) { return !x.risk.decision; }).length
+    };
+  }
+  function openTaskCount(item, imp) {
+    return (item.tasks || []).filter(function (t) { return t.status !== "완료" && (!imp || t.importance === imp); }).length;
+  }
+  function nextSeqId(prefix, ids) {
+    var max = 0;
+    ids.forEach(function (id) { var m = String(id || "").match(new RegExp("^" + prefix + "(\\d+)$")); if (m) max = Math.max(max, +m[1]); });
+    return prefix + pad2(max + 1);
+  }
+  function findRisk(item, id) {
+    var hit = null;
+    SECTORS.forEach(function (sec) { item.reviews[sec].risks.forEach(function (r) { if (r.id === id) hit = { sector: sec, risk: r }; }); });
+    return hit;
+  }
+  function findTask(item, id) { return (item.tasks || []).filter(function (t) { return t.id === id; })[0]; }
   function catBadge(item) {
     return item.category === "제품"
       ? '<span class="badge badge-product">제품</span><span class="badge badge-npsp">' + esc(item.npSp || "NP") + "</span>"
@@ -255,7 +281,7 @@
   function catText(item) { return item.category === "제품" ? "제품(" + (item.npSp || "NP") + ")" : "기술"; }
   function statusBadge(si) {
     if (si.phase === "WAIT") return '<span class="badge badge-wait">접수대기</span>';
-    if (si.isDone) return '<span class="badge badge-done">최종승인완료</span>';
+    if (si.isDone) return si.conditional ? '<span class="badge badge-cond" title="중·하 과제가 남아 있는 상태로 승인">조건부 승인 · 잔여 ' + si.openTasks + "</span>" : '<span class="badge badge-done">최종승인완료</span>';
     return '<span class="badge badge-ing">검토진행중</span>';
   }
   function trackBadges(si) {
@@ -288,10 +314,11 @@
   function canApply() { return state.isAdmin || !!(state.user && state.user.canApply); }
   function mySector() { return state.user && state.user.sector ? state.user.sector : ""; }
   function userLabel(u) { return (u.team ? u.team + " " : "") + u.name + (u.title ? " " + u.title : ""); }
-  function canEditRow(r) { return state.isAdmin || (!!mySector() && r.sector === mySector()); }
-
-  function emptyRisk(sector) {
-    return { sector: sector || SECTORS[0], reviewer: "", noRisk: false, riskItem: "", isTask: "X", grade: "", planContent: "", org: "", schedule: "", status: "진행중" };
+  function canEditSector(sec) { return state.isAdmin || (!!mySector() && sec === mySector()); }
+  function emptyReviews() {
+    var o = {};
+    SECTORS.forEach(function (s) { o[s] = { result: "", reviewer: "", risks: [] }; });
+    return o;
   }
 
   // =====================================================================
@@ -473,10 +500,10 @@
     var gStat = {}; GRADES.forEach(function (g) { gStat[g] = { ing: 0, done: 0 }; });
     var sStat = {}; SECTORS.forEach(function (s) { sStat[s] = { ing: 0, delay: 0, done: 0 }; });
     tasks.forEach(function (t) {
-      var g = normGrade(t.risk.grade) || "중";
-      var isDone = t.risk.status === "완료";
+      var g = t.task.importance || "중";
+      var isDone = t.task.status === "완료";
       gStat[g][isDone ? "done" : "ing"]++;
-      var ss = sStat[t.risk.sector] || sStat[SECTORS[0]];
+      var ss = sStat[t.task.sector] || sStat[SECTORS[0]];
       if (isDone) ss.done++; else if (t.delay > 0) ss.delay++; else ss.ing++;
     });
 
@@ -526,7 +553,7 @@
     var gradeRows = GRADES.map(function (g) {
       var s = gStat[g];
       return '<div class="bar-row" data-action="gradeGo" data-grade="' + g + '">' +
-        '<div class="bar-label"><span class="grade-chip ' + GRADE_CLS[g] + '">' + g + "</span>" + g + " 등급</div>" +
+        '<div class="bar-label"><span class="grade-chip ' + GRADE_CLS[g] + '">' + g + "</span>중요도 " + g + "</div>" +
         '<div class="bar-track">' + seg(s.ing, maxG, "var(--c-ing)", "진행중") + seg(s.done, maxG, "var(--c-done)", "완료") + "</div>" +
         '<div class="bar-count">진행 ' + s.ing + " / 완료 " + s.done + "</div></div>";
     }).join("");
@@ -562,7 +589,7 @@
       '<div class="kpi-card delay ' + (delayed.length ? "has-delay" : "") + '" data-action="delayGo" title="클릭 시 지연 과제 목록으로 이동">' +
       '<div class="kpi-label"><span>🚨 지연 과제</span><span class="badge" style="background:#fee2e2;color:#b91c1c">목표일 경과 · 진행중</span></div>' +
       '<div class="kpi-value">' + delayed.length + '건</div><div class="kpi-sub"><span class="kpi-pill">전체 과제 ' + tasks.length + "건</span>" +
-      '<span class="kpi-pill">진행중 ' + tasks.filter(function (t) { return t.risk.status !== "완료"; }).length + "</span>" +
+      '<span class="kpi-pill">진행중 ' + tasks.filter(function (t) { return t.task.status !== "완료"; }).length + "</span>" +
       (maxDelay ? '<span class="kpi-pill" style="color:#b91c1c">최장 +' + maxDelay + "일</span>" : "") +
       '</div><div class="kpi-hint">클릭 → 보완 과제 현황(지연 필터)</div></div></section>' +
 
@@ -627,7 +654,7 @@
       '<div class="card-sub">검색 결과 <b id="itemsCount">0</b>건</div>' +
       '<div class="table-wrap"><table><thead><tr><th style="width:52px">번호</th><th style="width:110px">구분</th><th>제품 / 기술명</th>' +
       '<th style="width:150px">요청자</th><th style="width:100px">발제일</th><th style="width:270px">현재 진행 단계</th>' +
-      '<th style="width:170px">도출 과제 (상·중·하)</th><th style="width:60px">첨부</th><th style="width:105px">상태</th></tr></thead>' +
+      '<th style="width:180px">보완 과제 (중요도)</th><th style="width:60px">첨부</th><th style="width:105px">상태</th></tr></thead>' +
       '<tbody id="itemsBody"></tbody></table></div></div>'
     );
     renderItemsTable();
@@ -642,7 +669,8 @@
       var si = stageInfo(item);
       var tasks = tasksOf([item]);
       var gc = { "상": 0, "중": 0, "하": 0 }, dn = 0, dl = 0;
-      tasks.forEach(function (t) { gc[normGrade(t.risk.grade) || "중"]++; if (t.risk.status === "완료") dn++; if (t.delay) dl++; });
+      tasks.forEach(function (t) { gc[t.task.importance || "중"]++; if (t.task.status === "완료") dn++; if (t.delay) dl++; });
+      var rsum = reviewSummary(item);
       var chips = GRADES.filter(function (g) { return gc[g]; }).map(function (g) {
         return '<span class="grade-chip ' + GRADE_CLS[g] + '">' + g + ":" + gc[g] + "</span>";
       }).join("");
@@ -654,7 +682,9 @@
         '<td><div style="display:flex;align-items:center;flex-wrap:wrap;gap:3px">' + miniDots(item) + '<span style="font-size:12px;font-weight:700">' + esc(si.name) + "</span>" +
         (si.delay ? '<span class="badge badge-delay">🚨 +' + si.delay + "일</span>" : "") + "</div></td>" +
         "<td>" + (tasks.length ? '<span style="font-weight:700;font-size:12px;margin-right:4px">완료 ' + dn + "/" + tasks.length + "</span>" + chips +
-          (dl ? '<span class="badge badge-delay">지연 ' + dl + "</span>" : "") : '<span class="muted" style="font-size:12px">없음</span>') + "</td>" +
+          (dl ? '<span class="badge badge-delay">지연 ' + dl + "</span>" : "") : '<span class="muted" style="font-size:12px">없음</span>') +
+          (rsum.undecided ? '<div><span class="badge badge-wait" title="2단계에서 과제 등록/수용 결정 필요">결정 대기 Risk ' + rsum.undecided + "</span></div>" : "") +
+          (item.accepted !== false && rsum.completed < 6 && !stageInfo(item).isDone ? '<div class="muted" style="font-size:11px">부문 검토 ' + rsum.completed + "/6</div>" : "") + "</td>" +
         "<td>" + (item.attachments.length ? '<span title="' + esc(item.attachments.map(function (a) { return a.name; }).join("\n")) + '">📎 ' + item.attachments.length + "</span>" : '<span class="muted">-</span>') + "</td>" +
         "<td>" + statusBadge(si) + "</td></tr>";
     }).join("");
@@ -665,21 +695,21 @@
   // =====================================================================
   function filteredTasks() {
     var f = state.f.task, q = f.q.trim().toLowerCase();
-    return tasksOf(state.items).filter(function (t) {
-      var r = t.risk;
-      if (f.grade !== "ALL" && normGrade(r.grade) !== f.grade) return false;
-      if (f.sector !== "ALL" && r.sector !== f.sector) return false;
-      if (f.status === "DELAY" && !t.delay) return false;
-      if ((f.status === "진행중" || f.status === "완료") && r.status !== f.status) return false;
-      if (q && [r.riskItem, r.planContent, r.org, r.reviewer, t.item.title].join(" ").toLowerCase().indexOf(q) === -1) return false;
+    return tasksOf(state.items).filter(function (x) {
+      var t = x.task;
+      if (f.grade !== "ALL" && t.importance !== f.grade) return false;
+      if (f.sector !== "ALL" && t.sector !== f.sector) return false;
+      if (f.status === "DELAY" && !x.delay) return false;
+      if ((f.status === "진행중" || f.status === "완료") && t.status !== f.status) return false;
+      if (q && [t.id, t.title, t.plan, t.org, t.ownerName, x.item.title].join(" ").toLowerCase().indexOf(q) === -1) return false;
       return true;
     }).sort(function (a, b) {
       // 지연(지연일 큰 순) → 진행중(목표일 빠른 순, 미정은 뒤) → 완료(최근 순)
-      var ra = a.delay ? 0 : a.risk.status === "완료" ? 2 : 1, rb = b.delay ? 0 : b.risk.status === "완료" ? 2 : 1;
+      var ra = a.delay ? 0 : a.task.status === "완료" ? 2 : 1, rb = b.delay ? 0 : b.task.status === "완료" ? 2 : 1;
       if (ra !== rb) return ra - rb;
       if (ra === 0) return b.delay - a.delay;
-      if (ra === 1) return (a.risk.schedule || "9999").localeCompare(b.risk.schedule || "9999");
-      return (b.risk.schedule || "").localeCompare(a.risk.schedule || "");
+      if (ra === 1) return (a.task.target || "9999").localeCompare(b.task.target || "9999");
+      return (b.task.doneAt || "").localeCompare(a.task.doneAt || "");
     });
   }
 
@@ -688,11 +718,11 @@
     var all = tasksOf(state.items);
     var delayCnt = all.filter(function (t) { return t.delay; }).length;
     setView(
-      '<div class="page-head"><div><h2>🛠️ 보완 과제 현황</h2><p>과제화(O)된 Risk 보완 과제 통합 추적 · 목표일이 지난 진행중 과제는 최상단에 표시됩니다</p></div>' +
+      '<div class="page-head"><div><h2>🛠️ 보완 과제 현황</h2><p>2단계 검증소위원회에서 확정된 보완 과제 통합 추적 · 목표일이 지난 진행중 과제는 최상단에 표시됩니다</p></div>' +
       '<div class="page-actions"><span class="badge badge-gray">전체 ' + all.length + '건</span><span class="badge badge-delay">🚨 지연 ' + delayCnt + "건</span>" +
       '<button class="btn btn-excel" data-action="csvRisk">📥 엑셀(Risk 상세표)</button></div></div>' +
-      '<div class="card"><div class="toolbar"><div class="filter-group"><span class="filter-label">등급</span>' +
-      [["ALL", "전체"], ["상", "상"], ["중", "중"], ["하", "하"]].map(function (g) {
+      '<div class="card"><div class="toolbar"><div class="filter-group"><span class="filter-label">중요도</span>' +
+      [["ALL", "전체"], ["상", "상 (이관 전 필수)"], ["중", "중"], ["하", "하"]].map(function (g) {
         return '<button class="chip-btn ' + (f.grade === g[0] ? "active" : "") + '" data-action="taskGrade" data-grade="' + g[0] + '">' + g[1] + "</button>";
       }).join("") +
       '<span class="filter-label" style="margin-left:8px">상태</span>' +
@@ -703,11 +733,11 @@
       ['<option value="ALL">전체 부문</option>'].concat(SECTORS.map(function (s) {
         return '<option value="' + esc(s) + '"' + (f.sector === s ? " selected" : "") + ">" + esc(s) + "</option>";
       })).join("") + "</select>" +
-      '<input class="input" style="width:200px" placeholder="담당조직, Risk, 보완방안 검색" data-filter="task.q" value="' + esc(f.q) + '" />' +
+      '<input class="input" style="width:200px" placeholder="과제ID, 내용, 담당 검색" data-filter="task.q" value="' + esc(f.q) + '" />' +
       '<button class="btn btn-secondary btn-sm" data-action="taskReset">초기화</button></div></div>' +
       '<div class="card-sub">검색 결과 <b id="tasksCount">0</b>건' + (state.isAdmin ? " · 상태 버튼을 누르면 진행중 ⇄ 완료가 즉시 저장됩니다" : " · 상태 변경은 관리자 모드에서 가능합니다") + "</div>" +
       '<div class="table-wrap"><table><thead><tr><th style="width:52px">번호</th><th style="width:90px">구분</th><th style="width:200px">제품 / 기술명</th>' +
-      '<th style="width:90px">부문</th><th style="width:70px">등급</th><th>예상 Risk 항목 및 보완 방안</th><th style="width:140px">담당조직 (팀장)</th>' +
+      '<th style="width:90px">부문</th><th style="width:70px">중요도</th><th>과제 내용 및 보완 방안</th><th style="width:150px">담당조직 / 담당자</th>' +
       '<th style="width:130px">목표 일정</th><th style="width:110px">과제 상태</th></tr></thead><tbody id="tasksBody"></tbody></table></div></div>'
     );
     renderTasksTable();
@@ -718,18 +748,19 @@
     $("#tasksCount").textContent = list.length;
     var body = $("#tasksBody");
     if (!list.length) { body.innerHTML = '<tr><td colspan="9" class="empty-state">조건에 해당하는 보완 과제가 없습니다.</td></tr>'; return; }
-    body.innerHTML = list.map(function (t, idx) {
-      var r = t.risk, g = normGrade(r.grade) || "중", isDone = r.status === "완료";
-      return '<tr class="' + (t.delay ? "row-delay" : "") + '">' +
-        '<td class="muted" style="font-weight:700">' + (list.length - idx) + "</td><td>" + catBadge(t.item) + "</td>" +
-        '<td><span class="link-text" data-action="openDetail" data-id="' + esc(t.item.id) + '">' + esc(t.item.title) + "</span></td>" +
-        '<td><span class="badge badge-gray">' + esc(r.sector) + "</span></td>" +
-        '<td><span class="grade-chip ' + GRADE_CLS[g] + '">' + g + "</span></td>" +
-        '<td><div class="pre" style="font-weight:700">⚠️ ' + esc(r.riskItem || "-") + "</div>" +
-        '<div class="pre" style="font-size:12px;color:var(--text-sub);margin-top:3px">💡 보완: ' + esc(r.planContent || "-") + "</div></td>" +
-        '<td><div style="font-weight:700">' + esc(r.org || "-") + "</div>" + (r.reviewer ? '<div class="muted" style="font-size:11px">팀장: ' + esc(r.reviewer) + "</div>" : "") + "</td>" +
-        '<td style="font-weight:600">' + esc(r.schedule || "미정") + (t.delay ? '<div><span class="badge badge-delay">🚨 지연 (+' + t.delay + "일)</span></div>" : "") + "</td>" +
-        '<td><button class="btn btn-sm ' + (isDone ? "btn-teal" : "btn-secondary") + '" data-action="taskToggle" data-id="' + esc(t.item.id) + '" data-idx="' + t.idx + '"' +
+    body.innerHTML = list.map(function (x, idx) {
+      var t = x.task, isDone = t.status === "완료";
+      return '<tr class="' + (x.delay ? "row-delay" : "") + '">' +
+        '<td class="muted" style="font-weight:700">' + (list.length - idx) + "</td><td>" + catBadge(x.item) + "</td>" +
+        '<td><span class="link-text" data-action="openDetail" data-id="' + esc(x.item.id) + '">' + esc(x.item.title) + '</span><div class="muted" style="font-size:11px">' + esc(x.item.id) + " · " + esc(t.id) + "</div></td>" +
+        '<td><span class="badge badge-gray">' + esc(t.sector) + "</span></td>" +
+        '<td><span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span></td>" +
+        '<td><div class="pre" style="font-weight:700">⚠️ ' + esc(t.title || "-") + "</div>" +
+        '<div class="pre" style="font-size:12px;color:var(--text-sub);margin-top:3px">💡 보완: ' + esc(t.plan || "-") + "</div></td>" +
+        '<td><div style="font-weight:700">' + esc(t.org || "-") + "</div>" + (t.ownerName || t.ownerEmail ? '<div class="muted" style="font-size:11px">' + esc(t.ownerName || t.ownerEmail) + "</div>" : "") + "</td>" +
+        '<td style="font-weight:600">' + esc(t.target || "미정") + (t.extensions.length ? ' <span class="badge badge-ext">연장 ' + t.extensions.length + "</span>" : "") +
+        (x.delay ? '<div><span class="badge badge-delay">🚨 지연 (+' + x.delay + "일)</span></div>" : "") + (isDone && t.doneAt ? '<div class="muted" style="font-size:11px">완료 ' + esc(t.doneAt) + "</div>" : "") + "</td>" +
+        '<td><button class="btn btn-sm ' + (isDone ? "btn-teal" : "btn-secondary") + '" data-action="taskToggle" data-id="' + esc(x.item.id) + '" data-task="' + esc(t.id) + '"' +
         (state.isAdmin ? "" : ' disabled title="관리자 모드에서 변경 가능"') + ">" + (isDone ? "✓ 완료" : "⏳ 진행중") + "</button></td></tr>";
     }).join("");
   }
@@ -913,15 +944,15 @@
     { no: "접수", cls: "start", title: "양산이관 신청", who: "개발팀 (신청) → 간사 (접수)",
       act: ["양산이관 신청서·검증보고서 등록", "간사 접수 승인 (접수대기 → 접수)"], out: "6대 부문 검토 요청" },
     { no: "1단계", title: "전문소위원 검토", who: "6대 부문 팀장 (서면검토)",
-      act: ["부문별 예상 Risk 항목 작성", "과제화 여부(O/X)·등급(상·중·하)", "보완 방안·담당조직·목표 일정"], out: "부문별 [작성 완료] → 간사 메일" },
+      act: ["부문별 ✅ 이상 없음 / ⚠️ Risk 있음 작성", "Risk 내용과 제안 보완 방안"], out: "부문별 [작성 완료] → 간사 메일" },
     { no: "2단계", title: "양산이관 검증소위원회", who: "간사 주관 · 부문 팀장 참석",
-      act: ["1단계 Risk 심의", "보완 과제 확정"], out: "소위 전결 또는 상정" },
+      act: ["Risk 별 [과제 등록] 또는 [수용(사유)] 결정", "과제 중요도(상·중·하)·담당·목표일 지정"], out: "소위 전결 또는 상정" },
     { no: "3단계", title: "전문위원 검토", who: "담당 · 본부장급",
       act: ["미결·중대 Risk 검토", "보완 방안 적정성 확인"], out: "검증위원회 상정" },
     { no: "4단계", title: "검증위원회", who: "위원장 · 전문위원",
       act: ["양산이관 가부 심의·의결"], out: "최종승인 요청" },
     { no: "5단계", cls: "final", title: "최종승인", who: "위원장",
-      act: ["보완 과제 이행 확인", "양산이관 최종승인"], out: "양산이관 완료" }
+      act: ["중요도 '상' 과제 완료 확인 (미완료 시 승인 불가)", "중·하 과제 잔여 시 조건부 승인"], out: "양산이관 완료" }
   ];
   function criteriaOverview() {
     var line = PROCESS_STEPS.map(function (st, i) {
@@ -1218,11 +1249,12 @@
   function openDetailNow(id) {
     var item = findItem(id);
     if (!item) { toast("안건을 찾을 수 없습니다: " + id, "err"); return; }
-    state.detail = { id: id, orig: clone(item), draft: clone(item), ext: null };
+    state.detail = { id: id, orig: clone(item), draft: clone(item), ext: null, taskExt: null, acceptFor: null };
     initMail(item, "detail");
     renderDetail();
     $("#detailModal").classList.add("open");
     $("#detailModal").setAttribute("aria-hidden", "false");
+    if (state.isAdmin && !state.adminUsers) api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; if (state.detail) renderTaskBox(); }).catch(function () { });
     if (state.isAdmin && !state.admin) loadAdminSettings().then(function () { if (state.detail) { initMail(findItem(id) || item, "detail"); renderMailPanel(); } }).catch(fail);
   }
   function isDirty() { return state.detail && JSON.stringify(state.detail.draft) !== JSON.stringify(state.detail.orig); }
@@ -1248,15 +1280,12 @@
 
   function renderDetail() {
     var d = state.detail.draft, si = stageInfo(d), admin = state.isAdmin, dis = admin ? "" : "disabled";
-    var sec = admin ? "" : mySector(), editRisk = admin || !!sec;
+    var sec = admin ? "" : mySector();
     var roleBanner = admin ? ""
-      : sec ? '<div class="banner info"><span>🖊 <b>' + esc(sec) + "</b> 부문 검토 작성 권한이 있습니다. 아래 [4] Risk 테이블에서 " + esc(sec) +
-        " 행만 작성하고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다.</span></div>"
+      : sec ? '<div class="banner info"><span>🖊 <b>' + esc(sec) + "</b> 부문 검토 의견 작성 권한이 있습니다. 아래 [3]의 " + esc(sec) +
+        " 카드에서 <b>✅ 이상 없음</b> 또는 <b>⚠️ Risk 있음</b>을 고르고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다.</span></div>"
       : '<div class="banner warn"><span>🔒 열람 모드입니다. ' + (state.user ? "검토 작성은 6대 부문 검토팀 회원만 가능합니다." : "부문 검토 작성은 로그인 후, 전체 수정은 [관리자 모드]에서 가능합니다.") + "</span>" +
         (state.user ? "" : '<button class="btn btn-secondary btn-sm" data-action="nav" data-route="account">👤 로그인</button>') + "</div>";
-    var sectorBtns = sec ? '<button class="btn btn-secondary btn-sm" data-action="riskAdd">+ ' + esc(sec) + ' 행 추가</button>' +
-      '<button class="btn btn-teal btn-sm" data-action="sectorSave">💾 임시 저장</button>' +
-      '<button class="btn btn-primary btn-sm" data-action="sectorComplete">✅ ' + esc(sec) + " 작성 완료</button>" : "";
     $("#detailHeader").innerHTML =
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3>' + esc(d.title || "(제목 없음)") + "</h3>" + catBadge(d) + trackBadges(si) +
       '<span class="muted" style="font-size:12.5px">' + esc(d.id) + " · 요청자 " + esc(d.requester) + " · 발제일 " + esc(d.proposalDate) + "</span></div>" +
@@ -1292,16 +1321,16 @@
       '<span id="stageBadge"></span></div><div class="stepper" id="stepperBox"></div><div id="extHistory"></div>' +
       '<div class="card-sub">목표일은 자동 지정됩니다 (1단계: 접수 승인일 + ' + state.leadDays.step1 + '영업일, 이후: 앞 단계 완료일 + 7영업일, 주말·휴일 제외) · 목표일 변경은 관리자가 [⏰ 연장]으로만 · ⚡/📌 버튼은 다시 누르면 원복됩니다</div></div>' +
 
-      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">3</span>전문(소)위원 검토 — 6대 부문 통합 Risk 테이블</div>' +
-      (admin ? '<div style="display:flex;gap:6px"><button class="btn btn-secondary btn-sm" data-action="riskAddSix">+ 6대 부문 기본행</button><button class="btn btn-primary btn-sm" data-action="riskAdd">+ Risk 행 추가</button></div>' : "") +
-      (sectorBtns ? '<div style="display:flex;gap:6px;flex-wrap:wrap">' + sectorBtns + "</div>" : "") +
-      '</div><div class="sector-status" id="sectorStatus"></div><div class="table-wrap"><table class="risk-table"><thead>' +
-      '<tr><th rowspan="2" style="width:110px">부문</th><th colspan="2">팀장 검토</th><th colspan="3">양산이관 시 예상되는 Risk 항목</th><th colspan="4">Risk 보완 방안 및 진행상태</th>' + (editRisk ? '<th rowspan="2" style="width:44px">삭제</th>' : "") + "</tr>" +
-      '<tr><th style="width:110px">검토 팀장</th><th style="width:120px">특이사항 여부</th><th style="min-width:230px">예상 Risk 항목</th><th style="width:84px">과제화</th>' +
-      '<th style="width:86px">Risk 등급</th><th style="min-width:230px">Risk 보완 방안 내용</th><th style="width:110px">담당조직</th><th style="width:128px">목표 일정</th><th style="width:90px">과제 상태</th></tr>' +
-      '</thead><tbody id="riskBody"></tbody></table></div></div>' +
+      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">3</span>전문소위원 검토 의견 — 6대 부문</div>' +
+      '<span id="reviewSummary"></span></div>' +
+      '<div class="card-sub">각 부문 팀장이 ✅ 이상 없음 / ⚠️ Risk 있음을 작성합니다. Risk 는 2단계 검증소위원회에서 간사가 <b>[🛠 과제 등록]</b> 또는 <b>[✔ 수용]</b>으로 결정합니다.</div>' +
+      '<div class="review-grid" id="reviewGrid"></div></div>' +
 
-      (admin ? '<div class="section admin-section"><div class="section-head"><div class="section-title"><span class="section-num">4</span>전문(소)위원 · 전문위원 검토 요청 메일 발송 <span class="badge badge-gray">관리자 전용</span></div>' +
+      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">4</span>🛠 보완 과제</div><span id="taskSummary"></span></div>' +
+      '<div class="card-sub">중요도 <b>상</b> = 양산이관 전 완료 필수(미완료 시 최종승인 불가) · <b>중·하</b> = 남아 있어도 조건부 승인 가능 · 목표일 변경은 [⏰ 연장](사유 필수)</div>' +
+      '<div id="taskBox"></div></div>' +
+
+      (admin ? '<div class="section admin-section"><div class="section-head"><div class="section-title"><span class="section-num">5</span>전문(소)위원 · 전문위원 검토 요청 메일 발송 <span class="badge badge-gray">관리자 전용</span></div>' +
         '<span class="card-sub">저장된 안건 내용 기준으로 작성됩니다</span></div><div id="mailHost-detail"></div></div>' : "");
 
     $("#detailFooter").innerHTML =
@@ -1310,7 +1339,7 @@
       (admin ? '<button class="btn btn-primary" data-action="detailSave">💾 저장 (공유폴더 즉시 반영)</button>' : "") +
       (sec ? '<button class="btn btn-teal" data-action="sectorSave">💾 임시 저장</button><button class="btn btn-primary" data-action="sectorComplete">✅ ' + esc(sec) + " 작성 완료 (간사에게 메일)</button>" : "") + "</div>";
 
-    renderAttachments(); renderStepper(); renderMailPanel(); renderRiskTable(); renderSectorStatus();
+    renderAttachments(); renderStepper(); renderMailPanel(); renderReviews(); renderTaskBox();
   }
 
   function renderAttachments() {
@@ -1374,52 +1403,128 @@
   }
 
 
-  function renderRiskTable() {
-    var d = state.detail.draft, admin = state.isAdmin, body = $("#riskBody"), delCol = admin || !!mySector();
-    if (!d.risks.length) { body.innerHTML = '<tr><td colspan="11" class="empty-state">등록된 Risk 검토 행이 없습니다.' + (admin ? " [+ 6대 부문 기본행]을 눌러 추가하세요." : "") + "</td></tr>"; return; }
-    body.innerHTML = d.risks.map(function (r, i) {
-      var noRisk = r.noRisk, task = !noRisk && r.isTask === "O", edit = canEditRow(r);
-      var disA = edit ? "" : " disabled", disR = edit && !noRisk ? "" : " disabled", disT = edit && task ? "" : " disabled";
-      var disSec = admin ? "" : " disabled";
-      var attr = function (f) { return ' data-ri="' + i + '" data-rf="' + f + '"'; };
-      return '<tr class="' + (noRisk ? "no-risk" : "") + (edit && !admin ? " mine" : "") + '">' +
-        '<td><select class="select"' + attr("sector") + disSec + ">" + SECTORS.map(function (s) { return '<option value="' + esc(s) + '"' + (r.sector === s ? " selected" : "") + ">" + esc(s) + "</option>"; }).join("") + "</select></td>" +
-        '<td><input class="input" placeholder="팀장명"' + attr("reviewer") + ' value="' + esc(r.reviewer) + '"' + disA + " /></td>" +
-        '<td><label class="risk-check ' + (noRisk ? "checked" : "") + '"><input type="checkbox"' + attr("noRisk") + (noRisk ? " checked" : "") + disA + " />" +
-        (noRisk ? "✓ 특이사항 없음" : "⚠️ 특이사항 있음") + "</label></td>" +
-        '<td><textarea class="textarea" placeholder="예상되는 Risk 항목을 상세히 입력"' + attr("riskItem") + disR + ">" + esc(r.riskItem) + "</textarea></td>" +
-        '<td><select class="select"' + attr("isTask") + disR + '><option value="O"' + (task ? " selected" : "") + '>O</option><option value="X"' + (!task ? " selected" : "") + ">X</option></select></td>" +
-        '<td><select class="select"' + attr("grade") + disT + ">" + (task ? GRADES.map(function (g) { return '<option value="' + g + '"' + ((normGrade(r.grade) || "중") === g ? " selected" : "") + ">" + g + "</option>"; }).join("") : '<option value="">-</option>') + "</select></td>" +
-        '<td><textarea class="textarea" placeholder="Risk 보완 방안을 상세히 입력"' + attr("planContent") + disR + ">" + esc(r.planContent) + "</textarea></td>" +
-        '<td><input class="input" placeholder="담당조직"' + attr("org") + ' value="' + esc(r.org) + '"' + disR + " /></td>" +
-        '<td><input type="date" class="input"' + attr("schedule") + ' value="' + esc(r.schedule) + '"' + disT + " />" +
-        (delayDays(r) && task ? '<div style="margin-top:4px"><span class="badge badge-delay">🚨 +' + delayDays(r) + "일</span></div>" : "") + "</td>" +
-        '<td><select class="select"' + attr("status") + disT + ">" + (task ? '<option value="진행중"' + (r.status !== "완료" ? " selected" : "") + '>진행중</option><option value="완료"' + (r.status === "완료" ? " selected" : "") + ">완료</option>" : '<option value="">-</option>') + "</select></td>" +
-        (delCol ? '<td style="text-align:center">' + (edit ? '<button class="btn btn-danger btn-sm" data-action="riskDel" data-idx="' + i + '">✕</button>' : "") + "</td>" : "") + "</tr>";
+  // ---- [3] 부문 검토 의견 카드 ----
+  function renderReviews() {
+    var d = state.detail.draft, grid = $("#reviewGrid"), admin = state.isAdmin;
+    if (!grid) return;
+    var done = d.sectorReviews || {};
+    grid.innerHTML = SECTORS.map(function (sec) {
+      var rv = d.reviews[sec], edit = canEditSector(sec), cr = done[sec];
+      var status = rv.result === "ok" ? '<span class="rv-chip ok">✅ 이상 없음</span>'
+        : rv.result === "risk" ? '<span class="rv-chip risk">⚠️ Risk ' + rv.risks.length + "건</span>" : '<span class="rv-chip none">⬜ 미작성</span>';
+      var compl = cr ? '<div class="rv-done" title="' + esc(cr.team + " " + cr.name + " · " + cr.at) + '">✓ 작성 완료 · ' + esc(cr.name) + " " + esc((cr.at || "").slice(5, 10)) +
+          (admin ? ' <button class="x" data-action="sectorReopen" data-sector="' + esc(sec) + '" title="작성 완료 해제(재작성 요청)">✕</button>' : "") + "</div>"
+        : '<div class="rv-pending">작성 완료 전</div>';
+      var reviewer = edit ? '<input class="input rv-reviewer" data-rv-sector="' + esc(sec) + '" data-rvf="reviewer" placeholder="검토 팀장 이름" value="' + esc(rv.reviewer) + '" />'
+        : rv.reviewer ? '<div class="muted" style="font-size:12px">검토: ' + esc(rv.reviewer) + "</div>" : "";
+      var toggle = edit ? '<div class="rv-toggle">' +
+        '<button class="rv-opt ok' + (rv.result === "ok" ? " on" : "") + '" data-action="rvResult" data-sector="' + esc(sec) + '" data-val="ok">✅ 이상 없음</button>' +
+        '<button class="rv-opt risk' + (rv.result === "risk" ? " on" : "") + '" data-action="rvResult" data-sector="' + esc(sec) + '" data-val="risk">⚠️ Risk 있음</button></div>' : "";
+      var body = "";
+      if (rv.result === "risk") {
+        body = rv.risks.map(function (r) { return riskHtml(sec, r, edit); }).join("") +
+          (edit ? '<button class="btn btn-secondary btn-sm" data-action="riskAdd" data-sector="' + esc(sec) + '">+ Risk 추가</button>' : "");
+      } else if (rv.result === "ok") {
+        body = '<div class="rv-ok-text">특이사항 없음</div>';
+      } else if (!edit) {
+        body = '<div class="muted" style="font-size:12px">아직 작성되지 않았습니다.</div>';
+      }
+      var actions = !admin && edit ? '<div class="rv-actions"><button class="btn btn-teal btn-sm" data-action="sectorSave">💾 임시 저장</button>' +
+        '<button class="btn btn-primary btn-sm" data-action="sectorComplete">✅ 작성 완료</button></div>' : "";
+      return '<div class="rv-card ' + (rv.result || "none") + (edit && !admin ? " mine" : "") + '"><div class="rv-head"><b>' + esc(sec) + "</b>" + status + "</div>" +
+        compl + reviewer + toggle + body + actions + "</div>";
     }).join("");
+    var sm = reviewSummary(d);
+    $("#reviewSummary").innerHTML = '<span class="badge badge-gray">작성 완료 ' + sm.completed + "/6</span>" +
+      (sm.riskCount ? ' <span class="badge badge-gray">Risk ' + sm.riskCount + "건</span>" : "") +
+      (sm.undecided ? ' <span class="badge badge-wait">결정 대기 ' + sm.undecided + "건</span>" : "");
+  }
+  function riskHtml(sec, r, edit) {
+    var admin = state.isAdmin, d = state.detail.draft, locked = !!r.decision, acc = state.detail.acceptFor;
+    var content = edit && !locked
+      ? '<textarea class="textarea" data-risk-id="' + esc(r.id) + '" data-rkf="content" placeholder="예상되는 Risk">' + esc(r.content) + "</textarea>" +
+        '<textarea class="textarea sm" data-risk-id="' + esc(r.id) + '" data-rkf="proposal" placeholder="제안 보완 방안 (선택)">' + esc(r.proposal) + "</textarea>"
+      : '<div class="rv-risk-text">' + esc(r.content || "-") + "</div>" + (r.proposal ? '<div class="rv-risk-prop">💡 ' + esc(r.proposal) + "</div>" : "");
+    var dec;
+    if (r.decision === "task") {
+      var t = findTask(d, r.taskId) || {};
+      dec = '<span class="dec task">🛠 과제 ' + esc(r.taskId) + " · 중요도 " + esc(t.importance || "-") + " · " + esc(t.status || "-") + "</span>" +
+        (admin ? '<button class="link-btn" data-action="riskUndecide" data-risk-id="' + esc(r.id) + '">결정 취소</button>' : "");
+    } else if (r.decision === "accept") {
+      dec = '<span class="dec accept" title="' + esc(r.reason) + '">✔ 수용 — ' + esc(r.reason) + "</span>" +
+        (admin ? '<button class="link-btn" data-action="riskUndecide" data-risk-id="' + esc(r.id) + '">결정 취소</button>' : "");
+    } else if (admin && acc && acc.id === r.id) {
+      dec = '<div class="accept-form"><input class="input" data-accept="reason" placeholder="수용 사유 (필수) 예) 현 수준 관리 가능" value="' + esc(acc.reason) + '" />' +
+        '<button class="btn btn-secondary btn-sm" data-action="riskAcceptCancel">취소</button><button class="btn btn-primary btn-sm" data-action="riskAcceptOk">수용 확정</button></div>';
+    } else if (admin) {
+      dec = '<span class="dec none">결정 대기</span><button class="btn btn-primary btn-sm" data-action="riskToTask" data-risk-id="' + esc(r.id) + '">🛠 과제 등록</button>' +
+        '<button class="btn btn-secondary btn-sm" data-action="riskAccept" data-risk-id="' + esc(r.id) + '">✔ 수용</button>';
+    } else {
+      dec = '<span class="dec none">위원회 결정 대기</span>';
+    }
+    return '<div class="rv-risk' + (locked ? " locked" : "") + '"><div class="rv-risk-top"><span class="rv-risk-no">' + esc(r.id) + "</span>" +
+      (edit && !locked ? '<button class="x" data-action="riskDel" data-risk-id="' + esc(r.id) + '" title="삭제">✕</button>' : "") + "</div>" +
+      content + '<div class="rv-dec">' + dec + "</div></div>";
   }
 
-  function renderSectorStatus() {
-    var box = $("#sectorStatus");
-    if (!box) return;
-    var rv = state.detail.draft.sectorReviews || {};
-    box.innerHTML = '<span class="filter-label">부문 작성 현황</span>' + SECTORS.map(function (sec) {
-      var r = rv[sec];
-      if (!r) return '<span class="sec-chip">' + esc(sec) + " · 미작성</span>";
-      return '<span class="sec-chip done" title="' + esc(r.team + " " + r.name + " · " + r.at) + '">✓ ' + esc(sec) + " · " + esc(r.name) + " " + esc((r.at || "").slice(5, 10)) +
-        (state.isAdmin ? '<button class="x" data-action="sectorReopen" data-sector="' + esc(sec) + '" title="작성 완료 해제(재작성 요청)">✕</button>' : "") + "</span>";
+  // ---- [4] 보완 과제 표 ----
+  function memberOptions(t) {
+    var users = (state.adminUsers || []).filter(function (u) { return u.status === "approved"; });
+    return '<option value="">회원 선택</option>' + users.map(function (u) {
+      return '<option value="' + esc(u.empId) + '"' + (t.ownerEmpId === u.empId ? " selected" : "") + ">" + esc(u.team + " " + u.name + " " + u.title) + "</option>";
     }).join("");
   }
+  function renderTaskBox() {
+    var d = state.detail.draft, box = $("#taskBox"), admin = state.isAdmin, ext = state.detail.taskExt;
+    if (!box) return;
+    var tasks = d.tasks || [];
+    var open = tasks.filter(function (t) { return t.status !== "완료"; });
+    $("#taskSummary").innerHTML = tasks.length ? '<span class="badge badge-gray">과제 ' + tasks.length + "건</span> " +
+      '<span class="badge badge-ing">진행 ' + open.length + "</span> " +
+      (openTaskCount(d, "상") ? '<span class="badge badge-delay">상 미완료 ' + openTaskCount(d, "상") + "</span> " : "") +
+      '<span class="badge badge-done">완료 ' + (tasks.length - open.length) + "</span>" : "";
+    if (!tasks.length) { box.innerHTML = '<div class="empty-state" style="padding:18px">등록된 보완 과제가 없습니다.' + (admin ? " [3]의 Risk 에서 [🛠 과제 등록]을 누르면 여기에 추가됩니다." : "") + "</div>"; return; }
+    box.innerHTML = '<div class="table-wrap"><table class="task-table"><thead><tr><th style="width:62px">과제</th><th style="width:84px">중요도</th><th>과제 내용 / 보완 방안</th>' +
+      '<th style="width:220px">담당조직 / 담당자</th><th style="width:170px">목표일</th><th style="width:100px">상태</th></tr></thead><tbody>' +
+      tasks.map(function (t) {
+        var delay = taskDelay(t), a = function (f) { return ' data-task-id="' + esc(t.id) + '" data-tkf="' + f + '"'; };
+        var target = '<div class="step-dates">' + (t.target ? '<div><b>' + fmtDay(t.target) + "</b>" + (delay ? ' <span class="badge badge-delay">+' + delay + "일</span>" : "") + "</div>" : '<div class="muted">미지정</div>') +
+          (t.extensions.length ? '<div class="muted" title="' + esc(t.extensions.map(function (e) { return e.from + " → " + e.to + " : " + e.reason; }).join("\n")) + '"><s>' + fmtDay(t.targetOriginal) + '</s> <span class="badge badge-ext">연장 ' + t.extensions.length + "회</span></div>" : "") +
+          (t.status === "완료" && t.doneAt ? '<div class="muted">완료 ' + fmtDay(t.doneAt) + "</div>" : "") + "</div>";
+        if (admin && t.status !== "완료") {
+          target += ext && ext.id === t.id
+            ? '<div class="ext-form"><input type="date" class="input mini" data-task-ext="date" value="' + esc(ext.date) + '" />' +
+              '<textarea class="textarea" data-task-ext="reason" placeholder="' + (t.target ? "연장 사유 (필수)" : "사유 (선택)") + '">' + esc(ext.reason) + "</textarea>" +
+              '<div class="ext-btns"><button class="btn btn-secondary btn-sm" data-action="taskExtCancel">취소</button><button class="btn btn-primary btn-sm" data-action="taskExtApply">적용</button></div></div>'
+            : '<button class="step-btn ext" data-action="taskExtOpen" data-task-id="' + esc(t.id) + '">' + (t.target ? "⏰ 연장" : "📅 목표일 지정") + "</button>";
+        }
+        return '<tr class="' + (delay ? "row-delay" : "") + '"><td><b>' + esc(t.id) + '</b><div class="muted" style="font-size:11px">' + esc(t.sector) + "</div></td>" +
+          "<td>" + (admin ? '<select class="select"' + a("importance") + ">" + GRADES.map(function (g) { return '<option value="' + g + '"' + (t.importance === g ? " selected" : "") + ">" + g + "</option>"; }).join("") + "</select>"
+            : '<span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span>") + "</td>" +
+          "<td>" + (admin ? '<textarea class="textarea sm"' + a("title") + ' placeholder="과제 내용">' + esc(t.title) + '</textarea><textarea class="textarea sm"' + a("plan") + ' placeholder="보완 방안">' + esc(t.plan) + "</textarea>"
+            : '<div class="pre" style="font-weight:700">' + esc(t.title) + '</div><div class="pre muted">💡 ' + esc(t.plan || "-") + "</div>") + "</td>" +
+          "<td>" + (admin ? '<input class="input"' + a("org") + ' placeholder="담당조직" value="' + esc(t.org) + '" />' +
+              '<select class="select" data-task-owner="' + esc(t.id) + '">' + memberOptions(t) + "</select>" +
+              '<input class="input"' + a("ownerEmail") + ' placeholder="담당자 이메일 (직접 입력 가능)" value="' + esc(t.ownerEmail) + '" />'
+            : '<div style="font-weight:700">' + esc(t.org || "-") + '</div><div class="muted">' + esc(t.ownerName || t.ownerEmail || "") + "</div>") + "</td>" +
+          "<td>" + target + "</td>" +
+          "<td>" + (admin ? '<select class="select"' + a("status") + '><option value="진행중"' + (t.status !== "완료" ? " selected" : "") + '>진행중</option><option value="완료"' + (t.status === "완료" ? " selected" : "") + ">완료</option></select>"
+            : (t.status === "완료" ? '<span class="badge badge-done">완료</span>' : '<span class="badge badge-ing">진행중</span>')) + "</td></tr>";
+      }).join("") + "</tbody></table></div>";
+  }
+
+  // ---- 팀장: 내 부문 저장 ----
   function saveSector(complete) {
-    var sec = mySector(), d = state.detail.draft;
-    var rows = d.risks.filter(function (r) { return r.sector === sec; });
+    var sec = mySector(), d = state.detail.draft, rv = d.reviews[sec];
     if (complete) {
-      var empty = rows.filter(function (r) { return !r.noRisk && !r.riskItem.trim(); });
-      if (!rows.length) { toast(sec + " 부문 행이 없습니다. [+ 행 추가] 후 작성하세요.", "err"); return; }
-      if (empty.length && !confirm("Risk 항목이 비어 있는 행이 " + empty.length + "개 있습니다. 그대로 작성 완료할까요?\n(특이사항이 없으면 '특이사항 없음'을 체크하세요)")) return;
+      if (!rv.result) { toast("✅ 이상 없음 또는 ⚠️ Risk 있음을 선택하세요.", "err"); return; }
+      if (rv.result === "risk" && !rv.risks.some(function (r) { return (r.content || "").trim(); })) { toast("Risk 내용을 1개 이상 입력하세요.", "err"); return; }
       if (!confirm(sec + " 부문 검토를 작성 완료하고 간사에게 메일을 보낼까요?")) return;
     }
-    api("POST", "/api/items/" + encodeURIComponent(d.id) + "/sector/" + encodeURIComponent(sec), { rows: rows, complete: complete }).then(function (r) {
+    api("POST", "/api/items/" + encodeURIComponent(d.id) + "/sector/" + encodeURIComponent(sec), {
+      result: rv.result, reviewer: rv.reviewer, complete: complete,
+      risks: rv.risks.map(function (r) { return { id: r.id, content: r.content, proposal: r.proposal }; })
+    }).then(function (r) {
       replaceItem(r.item); updateNavBadges();
       state.detail.orig = clone(r.item); state.detail.draft = clone(r.item);
       renderDetail();
@@ -1429,24 +1534,70 @@
     }).catch(fail);
   }
 
-  function onRiskField(el) {
-    var d = state.detail.draft, r = d.risks[+el.getAttribute("data-ri")], f = el.getAttribute("data-rf");
-    if (!r || !canEditRow(r)) return;
-    if (f === "noRisk") {
-      r.noRisk = el.checked;
-      if (r.noRisk) { r.riskItem = ""; r.planContent = ""; r.isTask = "X"; r.grade = ""; r.status = "완료"; } else { r.status = "진행중"; }
-      renderRiskTable();
-    } else if (f === "isTask") {
-      r.isTask = el.value; r.grade = el.value === "O" ? "중" : "";
-      if (el.value === "O") r.status = "진행중";
-      renderRiskTable();
-    } else {
-      r[f] = el.value;
-      if (f === "schedule" || f === "status") renderRiskTable();
+  // ---- 검토 의견 / 과제 편집 이벤트 ----
+  function onReviewField(el) {
+    var d = state.detail.draft;
+    if (el.hasAttribute("data-rv-sector")) {
+      var sec = el.getAttribute("data-rv-sector");
+      if (canEditSector(sec)) d.reviews[sec][el.getAttribute("data-rvf")] = el.value;
+      return true;
     }
+    if (el.hasAttribute("data-risk-id") && el.hasAttribute("data-rkf")) {
+      var hit = findRisk(d, el.getAttribute("data-risk-id"));
+      if (hit && canEditSector(hit.sector) && !hit.risk.decision) hit.risk[el.getAttribute("data-rkf")] = el.value;
+      return true;
+    }
+    if (el.hasAttribute("data-accept")) { if (state.detail.acceptFor) state.detail.acceptFor.reason = el.value; return true; }
+    if (el.hasAttribute("data-task-ext")) { if (state.detail.taskExt) state.detail.taskExt[el.getAttribute("data-task-ext")] = el.value; return true; }
+    if (!state.isAdmin) return false;
+    if (el.hasAttribute("data-task-owner")) {
+      var t0 = findTask(d, el.getAttribute("data-task-owner"));
+      var u = (state.adminUsers || []).filter(function (x) { return x.empId === el.value; })[0];
+      if (t0) {
+        t0.ownerEmpId = u ? u.empId : ""; t0.ownerName = u ? u.team + " " + u.name + " " + u.title : "";
+        if (u) { t0.ownerEmail = u.email; if (!t0.org) t0.org = u.team; }
+        renderTaskBox();
+      }
+      return true;
+    }
+    if (el.hasAttribute("data-task-id") && el.hasAttribute("data-tkf")) {
+      var t = findTask(d, el.getAttribute("data-task-id")), f = el.getAttribute("data-tkf");
+      if (!t) return true;
+      t[f] = el.value;
+      if (f === "ownerEmail") { t.ownerEmpId = ""; t.ownerName = ""; }
+      if (f === "status") { t.doneAt = el.value === "완료" ? (t.doneAt || today()) : ""; renderTaskBox(); renderReviews(); }
+      if (f === "importance") { renderTaskBox(); renderReviews(); }
+      return true;
+    }
+    return false;
   }
 
+
+  // 단계 진행 규칙: 완료(또는 생략 경로) 처리 전에 확인. false 면 처리하지 않는다.
+  function stageGate(action, key) {
+    var d = state.detail.draft, st = d.stages, sm = reviewSummary(d);
+    var marking = (action === "stDone" && !st[key].done) ||
+      (action === "stFast" && !(st.step2.skipped && st.step3.skipped && st.step4.skipped)) ||
+      (action === "stSub" && !(!st.step2.skipped && st.step3.skipped && st.step4.skipped));
+    if (!marking) return true;
+    if (action === "stFast") {
+      if (!sm.allOk) { toast("⚡ 패스트트랙은 6개 부문이 모두 '✅ 이상 없음'일 때만 가능합니다.", "err"); return false; }
+    }
+    if ((action === "stDone" && key === "step1") || action === "stFast") {
+      if (sm.completed < 6 && !confirm("6개 부문 중 " + sm.pending.join(", ") + " 부문이 아직 작성 완료되지 않았습니다.\n그래도 1단계를 완료 처리할까요?")) return false;
+    }
+    if ((action === "stDone" && key === "step2") || action === "stSub") {
+      if (sm.undecided) { toast("결정 대기 Risk " + sm.undecided + "건이 있습니다. [3]에서 모두 [과제 등록] 또는 [수용]으로 결정한 뒤 2단계를 완료하세요.", "err"); return false; }
+    }
+    if (action === "stDone" && key === "step5") {
+      var hi = openTaskCount(d, "상"), rest = openTaskCount(d);
+      if (hi) { toast("중요도 '상' 과제 " + hi + "건이 완료되지 않아 최종승인할 수 없습니다.", "err"); return false; }
+      if (rest && !confirm("미완료 과제(중·하) " + rest + "건이 남아 있습니다.\n조건부 승인으로 최종승인할까요? (남은 과제는 계속 추적됩니다)")) return false;
+    }
+    return true;
+  }
   function stageAction(action, key) {
+    if (!stageGate(action, key)) return;
     var d = state.detail.draft, st = d.stages, o = st[key];
     var mark = function (k) { st[k].done = true; st[k].skipped = false; if (!st[k].doneAt) st[k].doneAt = today(); };
     var skip = function (k) { st[k].skipped = true; st[k].done = false; st[k].doneAt = ""; st[k].target = ""; st[k].targetAuto = false; };
@@ -1656,24 +1807,37 @@
     });
     downloadCsv("양산이관_요약목록_" + today() + ".csv", rows);
   }
-  var RISK_HEAD = ["부문", "검토팀장", "특이사항여부", "Risk항목", "과제화", "등급", "보완방안", "담당조직", "일정", "과제상태", "지연일수"];
-  function riskCells(r) {
-    return [r.sector, r.reviewer, r.noRisk ? "특이사항 없음" : "특이사항 있음", r.riskItem, r.isTask, r.grade, r.planContent, r.org, r.schedule, r.isTask === "O" ? r.status : "", delayDays(r) && r.isTask === "O" ? delayDays(r) : ""];
+  var RISK_HEAD = ["부문", "검토결과", "검토팀장", "작성완료", "RiskID", "예상Risk", "제안보완방안", "결정", "수용사유",
+    "과제ID", "중요도", "과제보완방안", "담당조직", "담당자", "담당자이메일", "목표일", "연장횟수", "과제상태", "완료일", "지연일수"];
+  // 안건 1건 → 부문 검토 의견·Risk·과제를 한 줄씩 (Risk 가 없는 부문도 1줄)
+  function reviewRows(item) {
+    var rows = [];
+    SECTORS.forEach(function (sec) {
+      var rv = item.reviews[sec], cr = (item.sectorReviews || {})[sec];
+      var base = [sec, rv.result === "ok" ? "이상 없음" : rv.result === "risk" ? "Risk 있음" : "미작성", rv.reviewer, cr ? cr.name + " " + cr.at : ""];
+      if (!rv.risks.length) { rows.push(base.concat(RISK_HEAD.slice(4).map(function () { return ""; }))); return; }
+      rv.risks.forEach(function (r) {
+        var t = r.decision === "task" ? findTask(item, r.taskId) : null;
+        rows.push(base.concat([r.id, r.content, r.proposal, r.decision === "task" ? "과제" : r.decision === "accept" ? "수용" : "결정 대기", r.reason,
+          t ? t.id : "", t ? t.importance : "", t ? t.plan : "", t ? t.org : "", t ? t.ownerName : "", t ? t.ownerEmail : "",
+          t ? t.target : "", t && t.extensions.length ? t.extensions.length : "", t ? t.status : "", t ? t.doneAt : "", t && taskDelay(t) ? taskDelay(t) : ""]));
+      });
+    });
+    return rows;
   }
   function exportRisk(list) {
     var rows = [["ID", "구분", "NP/SP", "제품/기술명", "요청자", "발제일"].concat(RISK_HEAD).concat(["비고"])];
     list.forEach(function (i) {
       var base = [i.id, i.category, i.npSp, i.title, i.requester, i.proposalDate];
-      if (!i.risks.length) rows.push(base.concat(RISK_HEAD.map(function () { return ""; })).concat([i.note]));
-      i.risks.forEach(function (r) { rows.push(base.concat(riskCells(r)).concat([i.note])); });
+      reviewRows(i).forEach(function (r) { rows.push(base.concat(r).concat([i.note])); });
     });
-    downloadCsv("양산이관_Risk상세표_" + today() + ".csv", rows);
+    downloadCsv("양산이관_검토의견_과제_" + today() + ".csv", rows);
   }
   function exportSingle() {
     var d = state.detail.draft;
     var rows = [["ID", d.id], ["구분", catText(d)], ["제품/기술명", d.title], ["요청자", d.requester + " " + d.requesterDept], ["발제일", d.proposalDate],
       ["진행상태", stageInfo(d).name], ["주요내용", d.summary], ["비고", d.note], [], RISK_HEAD];
-    d.risks.forEach(function (r) { rows.push(riskCells(r)); });
+    reviewRows(d).forEach(function (r) { rows.push(r); });
     downloadCsv("양산이관_상세_" + d.title.replace(/[\\/:*?"<>|]/g, "_").slice(0, 60) + ".csv", rows);
   }
 
@@ -1703,10 +1867,12 @@
       for (var i = 0; i < names.length; i++) { var k = col[names[i].replace(/\s+/g, "")]; if (k !== undefined && row[k] !== undefined) return row[k].trim(); }
       return "";
     };
-    var hasRisk = ["부문", "Risk항목", "예상Risk항목"].some(function (k) { return col[k] !== undefined; });
+    // 위험 상세 형식: new = 검토결과/결정 열(현재), legacy = 특이사항/과제화 열(예전) → 서버가 자동 변환
+    var riskFmt = col["검토결과"] !== undefined ? "new" : ["부문", "Risk항목", "예상Risk항목", "과제화"].some(function (k) { return col[k] !== undefined; }) ? "legacy" : "";
+    var hasRisk = !!riskFmt;
     var map = {}, order = [], byKey = {};
     var put = function (it) { map[it.id] = it; order.push(it.id); byKey[it.category + "||" + it.title] = it.id; };
-    if (merge) state.items.forEach(function (it) { var c = clone(it); c._reset = hasRisk; put(c); });
+    if (merge) state.items.forEach(function (it) { var c = clone(it); c._reset = true; put(c); });
     var count = 0;
     for (var r = 1; r < rows.length; r++) {
       var row = rows[r];
@@ -1718,7 +1884,7 @@
       var t = (id && map[id]) || map[byKey[cat + "||" + title]];
       if (!t) {
         t = { id: id || ("TR-IMP-" + Date.now() + "-" + r), category: cat, npSp: npSp, title: title, requester: "", requesterDept: "", requesterEmail: "",
-          proposalDate: "", summary: "", note: "", accepted: true, stages: {}, risks: hasRisk ? [] : SECTORS.map(emptyRisk), attachments: [] };
+          proposalDate: "", summary: "", note: "", accepted: true, stages: {}, reviews: emptyReviews(), tasks: [], attachments: [] };
         STAGES.forEach(function (s) { t.stages[s.key] = { target: "", doneAt: "", done: false, skipped: false, targetAuto: false, targetOriginal: "", extensions: [] }; });
         put(t);
       }
@@ -1731,7 +1897,11 @@
       if (acc) t.accepted = acc !== "접수대기";
       var accAt = normDate(get(row, ["접수일"]));
       if (accAt) t.acceptedAt = accAt;
-      if (hasRisk && t._reset) { t.risks = []; delete t._reset; }
+      if (hasRisk && t._reset !== false) {  // 이 파일에 처음 나온 안건이면 검토 의견을 파일 내용으로 교체
+        if (riskFmt === "new") { t.reviews = emptyReviews(); t.tasks = []; delete t.risks; }
+        else { t.risks = []; delete t.reviews; delete t.tasks; }
+        t._reset = false;
+      }
       STAGES.forEach(function (s, si) {
         var n = si + 1, o = t.stages[s.key];
         var tv = get(row, [n + "단계목표일"]), dav = get(row, [n + "단계완료일"]), legacy = get(row, [n + "단계일정", n + "단계"]);
@@ -1744,7 +1914,37 @@
       });
       var ft = get(row, ["패스트트랙"]).toUpperCase();
       if (ft === "O") { t.stages.step1.done = true; ["step2", "step3", "step4"].forEach(function (k) { t.stages[k].skipped = true; t.stages[k].done = false; }); }
-      if (hasRisk) {
+      if (riskFmt === "new") {
+        var sec = get(row, ["부문"]);
+        if (SECTORS.indexOf(sec) !== -1) {
+          var rv = t.reviews[sec], res = get(row, ["검토결과"]), rev = get(row, ["검토팀장"]);
+          if (res.indexOf("없음") !== -1) rv.result = rv.result || "ok";
+          else if (res.indexOf("Risk") !== -1 || res.indexOf("있음") !== -1) rv.result = "risk";
+          if (rev) rv.reviewer = rev;
+          var content = get(row, ["예상Risk", "Risk내용"]);
+          if (content) {
+            rv.result = "risk";
+            var ids = allRisks(t).map(function (x) { return x.risk.id; });
+            var rid = get(row, ["RiskID"]);
+            if (!rid || ids.indexOf(rid) !== -1) rid = nextSeqId("R", ids);
+            var risk = { id: rid, content: content, proposal: get(row, ["제안보완방안"]), decision: "", reason: "", taskId: "" };
+            var dec = get(row, ["결정"]);
+            if (dec.indexOf("과제") !== -1) {
+              var tids = t.tasks.map(function (x) { return x.id; }), tid = get(row, ["과제ID"]);
+              if (!/^T\d+$/.test(tid) || tids.indexOf(tid) !== -1) tid = nextSeqId("T", tids);
+              var imp = get(row, ["중요도"]);
+              t.tasks.push({ id: tid, riskId: rid, sector: sec, title: content, plan: get(row, ["과제보완방안"]) || risk.proposal,
+                importance: GRADES.indexOf(imp) !== -1 ? imp : "중", org: get(row, ["담당조직"]), ownerName: get(row, ["담당자"]), ownerEmpId: "",
+                ownerEmail: get(row, ["담당자이메일"]), target: normDate(get(row, ["목표일"])), targetOriginal: "", extensions: [],
+                status: get(row, ["과제상태"]) === "완료" ? "완료" : "진행중", doneAt: normDate(get(row, ["완료일"])), createdAt: today() });
+              risk.decision = "task"; risk.taskId = tid;
+            } else if (dec.indexOf("수용") !== -1) {
+              risk.decision = "accept"; risk.reason = get(row, ["수용사유"]) || "(엑셀 업로드)";
+            }
+            rv.risks.push(risk);
+          }
+        }
+      } else if (riskFmt === "legacy") {
         var sec = get(row, ["부문"]), rItem = get(row, ["Risk항목", "예상Risk항목"]), rev = get(row, ["검토팀장", "팀장"]);
         if (sec || rItem || rev) {
           var nr = get(row, ["특이사항여부", "특이사항"]);
@@ -1803,7 +2003,7 @@
     taskReset: function () { state.f.task = { grade: "ALL", sector: "ALL", status: "ALL", q: "" }; renderTasks(); },
     taskToggle: function (el) {
       el.disabled = true;
-      api("POST", "/api/items/" + encodeURIComponent(el.getAttribute("data-id")) + "/risks/" + el.getAttribute("data-idx") + "/toggle")
+      api("POST", "/api/items/" + encodeURIComponent(el.getAttribute("data-id")) + "/tasks/" + encodeURIComponent(el.getAttribute("data-task")) + "/toggle")
         .then(function (updated) { replaceItem(updated); updateNavBadges(); renderTasksTable(); toast("과제 상태를 변경했습니다.", "ok"); })
         .catch(function (e) { el.disabled = false; fail(e); });
     },
@@ -1990,14 +2190,79 @@
       api("DELETE", "/api/items/" + encodeURIComponent(state.detail.id) + "/attachments/" + encodeURIComponent(name))
         .then(function (updated) { syncServerFields(updated); renderAttachments(); }).catch(fail);
     },
-    riskAdd: function () {
-      var sec = state.isAdmin ? "" : mySector(), row = emptyRisk(sec || undefined);
-      if (sec && state.user) row.reviewer = state.user.name + (state.user.title ? " " + state.user.title : "");
-      var rs = state.detail.draft.risks, at = rs.length;
-      if (sec) {  // 내 부문 행 바로 아래에 추가
-        for (var i = rs.length - 1; i >= 0; i--) { if (rs[i].sector === sec) { at = i + 1; break; } }
+    rvResult: function (el) {
+      var d = state.detail.draft, sec = el.getAttribute("data-sector"), val = el.getAttribute("data-val"), rv = d.reviews[sec];
+      if (!canEditSector(sec)) return;
+      if (val === "ok") {
+        if (rv.risks.some(function (r) { return r.decision; })) { toast("위원회가 이미 결정한 Risk 가 있어 '이상 없음'으로 바꿀 수 없습니다.", "err"); return; }
+        if (rv.risks.some(function (r) { return (r.content || "").trim(); }) && !confirm("작성한 Risk " + rv.risks.length + "건이 지워집니다. '이상 없음'으로 바꿀까요?")) return;
+        rv.risks = [];
       }
-      rs.splice(at, 0, row); renderRiskTable();
+      if (val === "risk" && !rv.risks.length) rv.risks.push({ id: nextSeqId("R", allRisks(d).map(function (x) { return x.risk.id; })), content: "", proposal: "", decision: "", reason: "", taskId: "" });
+      rv.result = val;
+      if (!rv.reviewer && state.user && !state.isAdmin) rv.reviewer = state.user.name + " " + state.user.title;
+      renderReviews();
+    },
+    riskAdd: function (el) {
+      var d = state.detail.draft, sec = el.getAttribute("data-sector");
+      d.reviews[sec].risks.push({ id: nextSeqId("R", allRisks(d).map(function (x) { return x.risk.id; })), content: "", proposal: "", decision: "", reason: "", taskId: "" });
+      renderReviews();
+    },
+    riskDel: function (el) {
+      var d = state.detail.draft, hit = findRisk(d, el.getAttribute("data-risk-id"));
+      if (!hit || hit.risk.decision) return;
+      d.reviews[hit.sector].risks = d.reviews[hit.sector].risks.filter(function (r) { return r !== hit.risk; });
+      renderReviews();
+    },
+    riskToTask: function (el) {
+      var d = state.detail.draft, hit = findRisk(d, el.getAttribute("data-risk-id"));
+      if (!hit) return;
+      if (!(hit.risk.content || "").trim()) { toast("Risk 내용이 비어 있습니다.", "err"); return; }
+      var id = nextSeqId("T", (d.tasks || []).map(function (t) { return t.id; }));
+      d.tasks = d.tasks || [];
+      d.tasks.push({ id: id, riskId: hit.risk.id, sector: hit.sector, title: hit.risk.content, plan: hit.risk.proposal, importance: "중",
+        org: "", ownerName: "", ownerEmpId: "", ownerEmail: "", target: "", targetOriginal: "", extensions: [], status: "진행중", doneAt: "", createdAt: today() });
+      hit.risk.decision = "task"; hit.risk.taskId = id; hit.risk.reason = "";
+      renderReviews(); renderTaskBox();
+      toast("과제 " + id + " 를 등록했습니다. [4]에서 중요도·담당·목표일을 지정하고 저장하세요.", "ok");
+    },
+    riskAccept: function (el) { state.detail.acceptFor = { id: el.getAttribute("data-risk-id"), reason: "" }; renderReviews(); },
+    riskAcceptCancel: function () { state.detail.acceptFor = null; renderReviews(); },
+    riskAcceptOk: function () {
+      var d = state.detail.draft, acc = state.detail.acceptFor, hit = acc && findRisk(d, acc.id);
+      if (!hit) return;
+      if (!acc.reason.trim()) { toast("수용 사유를 입력하세요.", "err"); return; }
+      hit.risk.decision = "accept"; hit.risk.reason = acc.reason.trim(); hit.risk.taskId = "";
+      state.detail.acceptFor = null; renderReviews();
+    },
+    riskUndecide: function (el) {
+      var d = state.detail.draft, hit = findRisk(d, el.getAttribute("data-risk-id"));
+      if (!hit) return;
+      if (hit.risk.decision === "task") {
+        var t = findTask(d, hit.risk.taskId);
+        if (!confirm("과제 " + hit.risk.taskId + (t && t.status === "완료" ? " (완료된 과제)" : "") + " 를 삭제하고 결정 대기로 되돌릴까요?")) return;
+        d.tasks = d.tasks.filter(function (x) { return x.id !== hit.risk.taskId; });
+      }
+      hit.risk.decision = ""; hit.risk.taskId = ""; hit.risk.reason = "";
+      renderReviews(); renderTaskBox();
+    },
+    taskExtOpen: function (el) {
+      var t = findTask(state.detail.draft, el.getAttribute("data-task-id"));
+      state.detail.taskExt = { id: t.id, date: t.target ? addBusinessDays(t.target, 5) : addBusinessDays(today(), 10), reason: "" };
+      renderTaskBox();
+    },
+    taskExtCancel: function () { state.detail.taskExt = null; renderTaskBox(); },
+    taskExtApply: function () {
+      var ext = state.detail.taskExt, t = ext && findTask(state.detail.draft, ext.id);
+      if (!t) return;
+      if (!ext.date) { toast("날짜를 선택하세요.", "err"); return; }
+      if (t.target && ext.date === t.target) { toast("현재 목표일과 같은 날짜입니다.", "err"); return; }
+      if (t.target && !ext.reason.trim()) { toast("연장 사유를 입력하세요.", "err"); return; }
+      if (t.target) {
+        if (!t.targetOriginal) t.targetOriginal = t.target;
+        t.extensions.push({ from: t.target, to: ext.date, reason: ext.reason.trim(), by: "관리자", at: today() });
+      }
+      t.target = ext.date; state.detail.taskExt = null; renderTaskBox();
     },
     stExtOpen: function (el) {
       var key = el.getAttribute("data-step"), o = state.detail.draft.stages[key];
@@ -2013,11 +2278,9 @@
       if (!confirm(sec + " 부문 '작성 완료' 표시를 해제할까요? (재작성 요청)")) return;
       api("POST", "/api/items/" + encodeURIComponent(state.detail.id) + "/sector/" + encodeURIComponent(sec) + "/reopen").then(function (updated) {
         syncServerFields(updated); state.detail.draft.sectorReviews = clone(updated.sectorReviews); state.detail.orig.sectorReviews = clone(updated.sectorReviews);
-        renderSectorStatus(); toast(sec + " 부문 작성 완료를 해제했습니다.", "ok");
+        renderReviews(); toast(sec + " 부문 작성 완료를 해제했습니다.", "ok");
       }).catch(fail);
     },
-    riskAddSix: function () { SECTORS.forEach(function (s) { state.detail.draft.risks.push(emptyRisk(s)); }); renderRiskTable(); },
-    riskDel: function (el) { state.detail.draft.risks.splice(+el.getAttribute("data-idx"), 1); renderRiskTable(); }
   };
   ["stDone", "stSkip", "stFast", "stSub"].forEach(function (a) { ACTIONS[a] = function (el) { stageAction(a, el.getAttribute("data-step")); }; });
   ["mailLevel", "mailAll", "mailNone", "mailSector", "mailOpen", "mailEml", "mailPreview", "mailMailto", "mailCopyTo", "mailCopyBody"]
@@ -2053,7 +2316,7 @@
       return;
     }
     if (el.hasAttribute("data-ext")) { if (state.detail.ext) state.detail.ext[el.getAttribute("data-ext")] = el.value; return; }
-    if (el.hasAttribute("data-rf")) { onRiskField(el); return; }
+    if (state.detail && onReviewField(el)) return;
     if (el.hasAttribute("data-mf")) { state.mail[el.getAttribute("data-mf")] = el.value; state.mail.preview = null; var c = $("#mailCount"); if (c) c.textContent = mailRecipients().length; return; }
     if (el.hasAttribute("data-mail-email")) { state.mail.selected[el.getAttribute("data-mail-email")] = el.checked; state.mail.preview = null; $("#mailCount").textContent = mailRecipients().length; return; }
     if (el.hasAttribute("data-team")) {
