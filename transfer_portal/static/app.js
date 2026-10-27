@@ -31,6 +31,8 @@
     presence: null,
     clientId: "",
     adminUsers: null,
+    holidays: [],
+    leadDays: { step1: 5, step2: 7, step3: 7, step4: 7, step5: 7 },
     route: "dashboard",
     f: {
       dashYear: "ALL",
@@ -186,6 +188,35 @@
   // =====================================================================
   // 도메인 로직
   // =====================================================================
+  // ---- 단계 목표일 (영업일 기준, 서버 app.py apply_stage_targets 와 같은 규칙) ----
+  var WEEKDAY = ["일", "월", "화", "수", "목", "금", "토"];
+  function addBusinessDays(start, n) {
+    var d = new Date(start + "T00:00:00Z"), count = 0;
+    while (count < n) {
+      d.setUTCDate(d.getUTCDate() + 1);
+      var iso = d.toISOString().slice(0, 10), wd = d.getUTCDay();
+      if (wd !== 0 && wd !== 6 && state.holidays.indexOf(iso) === -1) count++;
+    }
+    return d.toISOString().slice(0, 10);
+  }
+  function applyStageTargets(item) {
+    if (item.accepted === false) return;
+    var base = item.acceptedAt || "";
+    STAGES.forEach(function (s) {
+      var st = item.stages[s.key];
+      if (st.skipped) return;
+      if (st.done) { base = st.doneAt || ""; return; }
+      if (st.targetAuto || !st.target) {
+        if (base) { st.target = addBusinessDays(base, state.leadDays[s.key]); st.targetAuto = true; }
+        else if (st.targetAuto) { st.target = ""; st.targetAuto = false; }
+      }
+      base = "";
+    });
+  }
+  function fmtDay(d) { return d ? d.slice(5).replace("-", "/") + "(" + WEEKDAY[new Date(d + "T00:00:00Z").getUTCDay()] + ")" : ""; }
+  // 현재 진행 단계의 지연 일수 (목표일이 지났는데 미완료)
+  function stageDelayOf(o) { return o && !o.done && !o.skipped && o.target && o.target < today() ? daysBetween(o.target, today()) : 0; }
+
   function stageInfo(item) {
     var st = item.stages || {};
     var g = function (k) { return st[k] || {}; };
@@ -196,10 +227,10 @@
     if (g("step5").done) return Object.assign(base, { phase: "DONE", col: 5, isDone: true, name: "최종승인 완료" });
     var idx = 0;
     while (idx < 4 && (g(STAGES[idx].key).done || g(STAGES[idx].key).skipped)) idx++;
-    var cur = g(STAGES[idx].key);
+    var cur = g(STAGES[idx].key), delay = stageDelayOf(cur);
     return Object.assign(base, {
-      phase: "ING", col: idx + 1, idx: idx, isDone: false,
-      name: (idx + 1) + ". " + STAGES[idx].name + (cur.date ? " (" + cur.date.slice(5) + " 예정)" : " (일정 미수립)")
+      phase: "ING", col: idx + 1, idx: idx, isDone: false, delay: delay, target: cur.target || "",
+      name: (idx + 1) + ". " + STAGES[idx].name + (cur.target ? " (목표 " + fmtDay(cur.target) + ")" : " (목표일 없음)")
     });
   }
   function delayDays(r) {
@@ -235,8 +266,8 @@
   function miniDots(item) {
     return '<span class="mini-steps">' + STAGES.map(function (s, i) {
       var o = (item.stages || {})[s.key] || {};
-      var cls = o.skipped ? "skipped" : o.done ? (i === 4 ? "final-done" : "done") : o.date ? "scheduled" : "";
-      var tip = s.name + (o.skipped ? " - 생략" : o.done ? " - 완료" : o.date ? " - " + o.date + " 예정" : " - 미수립");
+      var cls = o.skipped ? "skipped" : o.done ? (i === 4 ? "final-done" : "done") : stageDelayOf(o) ? "delayed" : o.target ? "scheduled" : "";
+      var tip = s.name + (o.skipped ? " - 생략" : o.done ? " - 완료 " + (o.doneAt || "") : o.target ? " - 목표 " + o.target + (stageDelayOf(o) ? " (지연 +" + stageDelayOf(o) + "일)" : "") : " - 대기");
       return '<span class="mini-dot ' + cls + '" title="' + esc(tip) + '"></span>';
     }).join("") + "</span>";
   }
@@ -270,6 +301,7 @@
     return api("GET", "/api/bootstrap").then(function (d) {
       state.items = d.items; state.version = d.version;
       state.criteria = d.settings.criteria; state.storage = d.storage; state.teams = d.settings.teams || [];
+      state.holidays = d.settings.holidays || []; if (d.settings.leadDays) state.leadDays = d.settings.leadDays;
       updateNavBadges();
     });
   }
@@ -374,6 +406,7 @@
     var route = VIEWS[parts[0]] ? parts[0] : "dashboard";
     var changed = route !== state.route;
     state.route = route;
+    if (changed && route === "admin") state.adminUsers = null;  // 들어올 때마다 최신 가입 신청을 다시 불러온다
     $all(".nav-link").forEach(function (a) { a.classList.toggle("active", a.getAttribute("data-route") === route); });
     render(true);
     if (changed) { window.scrollTo(0, 0); if (state.clientId) presencePing(); }
@@ -564,7 +597,8 @@
       if (f.cat === "제품-SP" && !(i.category === "제품" && i.npSp === "SP")) return false;
       if (f.cat === "기술" && i.category !== "기술") return false;
       if (f.year !== "ALL" && yearOf(i.proposalDate) !== f.year) return false;
-      if (f.status !== "ALL" && stageInfo(i).phase !== f.status) return false;
+      if (f.status === "DELAY") { if (!stageInfo(i).delay) return false; }
+      else if (f.status !== "ALL" && stageInfo(i).phase !== f.status) return false;
       if (q && (i.title + " " + i.requester + " " + i.requesterDept + " " + i.id).toLowerCase().indexOf(q) === -1) return false;
       return true;
     }).sort(function (a, b) { return (b.proposalDate || "").localeCompare(a.proposalDate || "") || b.id.localeCompare(a.id); });
@@ -586,7 +620,7 @@
       }).join("") +
       '</div><div class="filter-group"><span class="filter-label">발제연도</span><select class="select" data-filter="list.year">' + yearOptions(f.year) + "</select>" +
       '<span class="filter-label">상태</span><select class="select" data-filter="list.status">' +
-      [["ALL", "전체"], ["WAIT", "접수대기"], ["ING", "검토진행중"], ["DONE", "최종승인완료"]].map(function (o) {
+      [["ALL", "전체"], ["WAIT", "접수대기"], ["ING", "검토진행중"], ["DELAY", "🚨 단계 지연"], ["DONE", "최종승인완료"]].map(function (o) {
         return '<option value="' + o[0] + '"' + (f.status === o[0] ? " selected" : "") + ">" + o[1] + "</option>";
       }).join("") + "</select>" +
       '<input class="input" style="width:200px" placeholder="제품/기술명, 요청자 검색" data-filter="list.q" value="' + esc(f.q) + '" /></div></div>' +
@@ -617,7 +651,8 @@
         '<td><div style="font-weight:700">' + esc(item.title) + trackBadges(si) + '</div><div class="muted" style="font-size:11px">' + esc(item.id) + "</div></td>" +
         "<td>" + esc(item.requester) + (item.requesterDept ? '<div class="muted" style="font-size:11px">' + esc(item.requesterDept) + "</div>" : "") + "</td>" +
         '<td style="font-weight:600">' + esc(item.proposalDate || "-") + "</td>" +
-        '<td><div style="display:flex;align-items:center">' + miniDots(item) + '<span style="font-size:12px;font-weight:700">' + esc(si.name) + "</span></div></td>" +
+        '<td><div style="display:flex;align-items:center;flex-wrap:wrap;gap:3px">' + miniDots(item) + '<span style="font-size:12px;font-weight:700">' + esc(si.name) + "</span>" +
+        (si.delay ? '<span class="badge badge-delay">🚨 +' + si.delay + "일</span>" : "") + "</div></td>" +
         "<td>" + (tasks.length ? '<span style="font-weight:700;font-size:12px;margin-right:4px">완료 ' + dn + "/" + tasks.length + "</span>" + chips +
           (dl ? '<span class="badge badge-delay">지연 ' + dl + "</span>" : "") : '<span class="muted" style="font-size:12px">없음</span>') + "</td>" +
         "<td>" + (item.attachments.length ? '<span title="' + esc(item.attachments.map(function (a) { return a.name; }).join("\n")) + '">📎 ' + item.attachments.length + "</span>" : '<span class="muted">-</span>') + "</td>" +
@@ -1068,6 +1103,12 @@
           '<button class="btn btn-danger btn-sm" data-action="deleteItem" data-id="' + esc(i.id) + '">삭제</button></td></tr>';
       }).join("") + "</tbody></table></div></div>" +
 
+      // 휴일 (영업일 계산)
+      '<div class="card"><div class="card-title">📅 휴일 (영업일 계산에서 제외) <span class="card-sub">' + s.holidays.length + "일 등록</span></div>" +
+      '<div class="card-sub">주말은 자동 제외됩니다. 공휴일·회사 휴무일을 YYYY-MM-DD 형식으로 한 줄에 하나씩(또는 쉼표로) 입력하세요.</div>' +
+      '<textarea id="stHolidays" class="textarea" style="min-height:110px;font-family:monospace" placeholder="2026-12-25&#10;2027-01-01">' + esc(s.holidays.join("\n")) + "</textarea>" +
+      '<div style="display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" data-action="saveHolidays">💾 저장</button></div></div>' +
+
       // 비밀번호
       '<div class="card"><div class="card-title">🔑 관리자 비밀번호 변경</div>' +
       '<div class="field"><label>현재 비밀번호</label><input id="pwCur" type="password" class="input" autocomplete="current-password" /></div>' +
@@ -1080,6 +1121,7 @@
       "<b>연동 상태</b><span>" + (state.storage.isNetwork ? "✅ 사내 공유폴더" : "⚠️ 로컬 폴백 (공유폴더 접근 불가)") + "</span>" +
       "<b>데이터 버전</b><span>v" + state.version + " · 안건 " + state.items.length + "건</span>" +
       "<b>자동 백업</b><span>backups/data_YYYYMMDD.json (최근 30일)</span>" +
+      "<b>단계 리드타임</b><span>1단계 접수 승인일 +" + state.leadDays.step1 + " · 2~5단계 앞 단계 완료일 +7 (영업일)</span>" +
       "<b>접속 주소</b><span>" + esc(s.suggestedPortalUrl) + (s.nameUrls || []).map(function (u) { return "<br>" + esc(u) + " (PC 이름)"; }).join("") + "</span></div></div>" +
       "</div>"
     );
@@ -1176,7 +1218,7 @@
   function openDetailNow(id) {
     var item = findItem(id);
     if (!item) { toast("안건을 찾을 수 없습니다: " + id, "err"); return; }
-    state.detail = { id: id, orig: clone(item), draft: clone(item) };
+    state.detail = { id: id, orig: clone(item), draft: clone(item), ext: null };
     initMail(item, "detail");
     renderDetail();
     $("#detailModal").classList.add("open");
@@ -1247,20 +1289,20 @@
       '<textarea class="textarea note" data-dfield="note" placeholder="회의 요약 및 특이사항 기록..." ' + dis + ">" + esc(d.note) + "</textarea></div>" +
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">2</span>5단계 진행 현황 및 전결(Skip) 제어</div>' +
-      '<span id="stageBadge"></span></div><div class="stepper" id="stepperBox"></div>' +
-      '<div class="card-sub">날짜 입력 = 일정 수립 · [완료 처리] 버튼 = 완료 · ⚡/📌 버튼은 다시 누르면 원복됩니다</div></div>' +
+      '<span id="stageBadge"></span></div><div class="stepper" id="stepperBox"></div><div id="extHistory"></div>' +
+      '<div class="card-sub">목표일은 자동 지정됩니다 (1단계: 접수 승인일 + ' + state.leadDays.step1 + '영업일, 이후: 앞 단계 완료일 + 7영업일, 주말·휴일 제외) · 목표일 변경은 관리자가 [⏰ 연장]으로만 · ⚡/📌 버튼은 다시 누르면 원복됩니다</div></div>' +
 
-      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">3</span>전문(소)위원 · 전문위원 검토 요청 메일 발송</div>' +
-      '<span class="card-sub">저장된 안건 내용 기준으로 작성됩니다</span></div><div id="mailHost-detail"></div></div>' +
-
-      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">4</span>전문(소)위원 검토 — 6대 부문 통합 Risk 테이블</div>' +
+      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">3</span>전문(소)위원 검토 — 6대 부문 통합 Risk 테이블</div>' +
       (admin ? '<div style="display:flex;gap:6px"><button class="btn btn-secondary btn-sm" data-action="riskAddSix">+ 6대 부문 기본행</button><button class="btn btn-primary btn-sm" data-action="riskAdd">+ Risk 행 추가</button></div>' : "") +
       (sectorBtns ? '<div style="display:flex;gap:6px;flex-wrap:wrap">' + sectorBtns + "</div>" : "") +
       '</div><div class="sector-status" id="sectorStatus"></div><div class="table-wrap"><table class="risk-table"><thead>' +
       '<tr><th rowspan="2" style="width:110px">부문</th><th colspan="2">팀장 검토</th><th colspan="3">양산이관 시 예상되는 Risk 항목</th><th colspan="4">Risk 보완 방안 및 진행상태</th>' + (editRisk ? '<th rowspan="2" style="width:44px">삭제</th>' : "") + "</tr>" +
       '<tr><th style="width:110px">검토 팀장</th><th style="width:120px">특이사항 여부</th><th style="min-width:230px">예상 Risk 항목</th><th style="width:84px">과제화</th>' +
       '<th style="width:86px">Risk 등급</th><th style="min-width:230px">Risk 보완 방안 내용</th><th style="width:110px">담당조직</th><th style="width:128px">목표 일정</th><th style="width:90px">과제 상태</th></tr>' +
-      '</thead><tbody id="riskBody"></tbody></table></div></div>';
+      '</thead><tbody id="riskBody"></tbody></table></div></div>' +
+
+      (admin ? '<div class="section admin-section"><div class="section-head"><div class="section-title"><span class="section-num">4</span>전문(소)위원 · 전문위원 검토 요청 메일 발송 <span class="badge badge-gray">관리자 전용</span></div>' +
+        '<span class="card-sub">저장된 안건 내용 기준으로 작성됩니다</span></div><div id="mailHost-detail"></div></div>' : "");
 
     $("#detailFooter").innerHTML =
       (admin ? '<button class="btn btn-danger" data-action="deleteItem" data-id="' + esc(d.id) + '">🗑 이 안건 삭제</button>' : "<span></span>") +
@@ -1287,24 +1329,50 @@
     var d = state.detail.draft, st = d.stages, admin = state.isAdmin, dis = admin ? "" : " disabled";
     var fastOn = st.step2.skipped && st.step3.skipped && st.step4.skipped;
     var subOn = !st.step2.skipped && st.step3.skipped && st.step4.skipped;
+    var ext = state.detail.ext, curInfo = stageInfo(d), curKey = curInfo.phase === "ING" ? STAGES[curInfo.idx].key : "";
     $("#stepperBox").innerHTML = STAGES.map(function (s, i) {
-      var o = st[s.key];
-      var cls = "step-box" + (o.skipped ? " skipped" : o.done ? " completed" : o.date ? " scheduled" : "") + (i === 4 ? " final" : "");
-      var label = o.skipped ? "🚫 생략(Skip)" : o.done ? "✓ 완료됨" : o.date ? "📅 일정 수립됨" : "미수립";
+      var o = st[s.key], delay = stageDelayOf(o);
+      var cls = "step-box" + (o.skipped ? " skipped" : o.done ? " completed" : delay ? " delayed" : o.target ? " scheduled" : "") + (i === 4 ? " final" : "");
+      var label = o.skipped ? "🚫 생략(Skip)" : o.done ? "✓ 완료" : delay ? "🚨 지연" : o.target ? "⏳ 진행중" : "대기";
+      var info = "";
+      if (!o.skipped) {
+        info = '<div class="step-dates">' +
+          (o.target ? '<div><span class="lbl">목표</span><b>' + fmtDay(o.target) + "</b>" + (delay ? ' <span class="badge badge-delay">+' + delay + "일</span>" : "") + "</div>" : "") +
+          (o.extensions.length ? '<div class="muted" title="' + esc(o.extensions.map(function (e) { return e.from + " → " + e.to + " : " + e.reason; }).join("\n")) + '">' +
+            '<span class="lbl">원래</span><s>' + fmtDay(o.targetOriginal) + '</s> <span class="badge badge-ext">연장 ' + o.extensions.length + "회</span></div>" : "") +
+          (o.done ? '<div><span class="lbl">완료</span>' + (admin ? '<input type="date" class="input mini" data-stage-done="' + s.key + '" value="' + esc(o.doneAt) + '" />' : "<b>" + fmtDay(o.doneAt) + "</b>") + "</div>" : "") +
+          (!o.target && !o.done ? '<div class="muted">' + (d.accepted === false ? "접수 승인 후 목표일 자동 지정" : i === 0 ? "접수 승인일 + " + state.leadDays[s.key] + "영업일" : "앞 단계 완료 시 +" + state.leadDays[s.key] + "영업일") + "</div>" : "") +
+          "</div>";
+      }
       var doneBtn = '<button class="step-btn ' + (o.done ? "on" : "") + '" data-action="stDone" data-step="' + s.key + '"' + (admin && !o.skipped ? "" : " disabled") + ">" +
         (o.done ? (i === 4 ? "✓ 최종승인 완료 (해제)" : "✓ 완료됨 (해제)") : (i === 4 ? "최종승인 완료 처리" : "완료 처리")) + "</button>";
+      var extBtn = admin && s.key === curKey ? '<button class="step-btn ext" data-action="stExtOpen" data-step="' + s.key + '">' + (o.target ? "⏰ 목표일 연장" : "📅 목표일 지정") + "</button>" : "";
       var skipBtn = '<button class="step-btn skip ' + (o.skipped ? "on" : "") + '" data-action="stSkip" data-step="' + s.key + '"' + dis + ">" + (o.skipped ? "생략됨 (클릭 시 원복)" : "이 단계 생략(Skip)") + "</button>";
       var extra = "";
-      if (i === 0) extra = '<button class="step-btn fast ' + (fastOn ? "on" : "") + '" data-action="stFast"' + dis + ">" + (fastOn ? "⚡ 패스트트랙 해제 (원복)" : "⚡ 특이사항 없음 (2~4단계 Skip)") + "</button>";
+      if (i === 0) extra = '<button class="step-btn fast ' + (fastOn ? "on" : "") + '" data-action="stFast"' + dis + ">" + (fastOn ? "⚡ 패스트트랙 해제 (원복)" : "⚡ 패스트트랙 (2~4단계 Skip)") + "</button>";
       if (i === 1) extra = '<button class="step-btn subd ' + (subOn ? "on" : "") + '" data-action="stSub"' + (admin && !st.step2.skipped ? "" : " disabled") + ">" + (subOn ? "📌 소위 전결 해제 (원복)" : "📌 소위 전결 (3·4단계 Skip)") + "</button>";
+      var form = ext && ext.key === s.key ? '<div class="ext-form"><div class="lbl">' + (o.target ? "새 목표일" : "목표일") + '</div><input type="date" class="input mini" data-ext="date" value="' + esc(ext.date) + '" />' +
+        '<textarea class="textarea" data-ext="reason" placeholder="' + (o.target ? "연장 사유 (필수)" : "사유 (선택)") + '">' + esc(ext.reason) + "</textarea>" +
+        '<div class="ext-btns"><button class="btn btn-secondary btn-sm" data-action="stExtCancel">취소</button><button class="btn btn-primary btn-sm" data-action="stExtApply">적용</button></div></div>' : "";
       return '<div class="' + cls + '"><div><div class="step-top"><span class="step-index">' + (i + 1) + '단계</span><span class="step-status">' + label + "</span></div>" +
-        '<div class="step-name">' + s.name + "</div></div>" +
-        '<input type="date" class="input" data-stage="' + s.key + '" value="' + esc(o.date) + '"' + (admin && !o.skipped ? "" : " disabled") + " />" +
-        '<div class="step-btns">' + doneBtn + (i >= 1 && i <= 3 ? skipBtn : "") + extra + "</div></div>";
+        '<div class="step-name">' + s.name + "</div></div>" + info + form +
+        '<div class="step-btns">' + doneBtn + (form ? "" : extBtn) + (i >= 1 && i <= 3 ? skipBtn : "") + extra + "</div></div>";
     }).join("");
     var si = stageInfo(d);
-    $("#stageBadge").innerHTML = statusBadge(si) + ' <span class="badge badge-gray">현재: ' + esc(si.name) + "</span>";
+    $("#stageBadge").innerHTML = statusBadge(si) + ' <span class="badge badge-gray">현재: ' + esc(si.name) + "</span>" +
+      (si.delay ? ' <span class="badge badge-delay">🚨 지연 +' + si.delay + "일</span>" : "") +
+      (d.acceptedAt ? ' <span class="badge badge-gray">접수 ' + esc(d.acceptedAt) + "</span>" : "");
+    // 연장 이력
+    var hist = [];
+    STAGES.forEach(function (s, i) {
+      st[s.key].extensions.forEach(function (e) { hist.push({ no: i + 1, name: s.name, e: e }); });
+    });
+    $("#extHistory").innerHTML = hist.length ? '<div class="ext-hist"><div class="lbl">⏰ 목표일 변경 이력</div>' + hist.map(function (h) {
+      return "<div><b>" + h.no + "단계 " + esc(h.name) + "</b> " + (h.e.from ? esc(h.e.from) + " → " : "지정 ") + "<b>" + esc(h.e.to) + "</b> · " + esc(h.e.reason || "-") +
+        ' <span class="muted">(' + esc(h.e.by) + " " + esc(h.e.at) + ")</span></div>";
+    }).join("") + "</div>" : "";
   }
+
 
   function renderRiskTable() {
     var d = state.detail.draft, admin = state.isAdmin, body = $("#riskBody"), delCol = admin || !!mySector();
@@ -1379,10 +1447,10 @@
   }
 
   function stageAction(action, key) {
-    var st = state.detail.draft.stages, o = st[key];
-    var mark = function (k) { st[k].done = true; st[k].skipped = false; if (!st[k].date) st[k].date = today(); };
-    var skip = function (k) { st[k].skipped = true; st[k].done = false; st[k].date = ""; };
-    if (action === "stDone") { if (o.done) o.done = false; else mark(key); }
+    var d = state.detail.draft, st = d.stages, o = st[key];
+    var mark = function (k) { st[k].done = true; st[k].skipped = false; if (!st[k].doneAt) st[k].doneAt = today(); };
+    var skip = function (k) { st[k].skipped = true; st[k].done = false; st[k].doneAt = ""; st[k].target = ""; st[k].targetAuto = false; };
+    if (action === "stDone") { if (o.done) { o.done = false; o.doneAt = ""; } else mark(key); }
     if (action === "stSkip") { if (o.skipped) o.skipped = false; else skip(key); }
     if (action === "stFast") {
       if (st.step2.skipped && st.step3.skipped && st.step4.skipped) ["step2", "step3", "step4"].forEach(function (k) { st[k].skipped = false; });
@@ -1392,10 +1460,28 @@
       if (!st.step2.skipped && st.step3.skipped && st.step4.skipped) ["step3", "step4"].forEach(function (k) { st[k].skipped = false; });
       else { mark("step2"); ["step3", "step4"].forEach(skip); }
     }
-    // 단계를 처리하면 접수된 것으로 본다
-    if (state.detail.draft.accepted === false) { state.detail.draft.accepted = true; toast("단계 처리로 접수 승인 상태로 바뀝니다. (저장 시 반영)"); renderDetail(); return; }
+    state.detail.ext = null;
+    // 단계를 처리하면 접수된 것으로 본다 (접수일 = 오늘, 저장 시 서버가 확정)
+    if (d.accepted === false) {
+      d.accepted = true; d.acceptedAt = today(); applyStageTargets(d);
+      toast("단계 처리로 접수 승인 상태로 바뀝니다. (저장 시 반영)"); renderDetail(); return;
+    }
+    applyStageTargets(d);
     renderStepper();
   }
+  function applyExtension() {
+    var d = state.detail.draft, ext = state.detail.ext, o = d.stages[ext.key];
+    if (!ext.date) { toast("날짜를 선택하세요.", "err"); return; }
+    if (o.target && ext.date === o.target) { toast("현재 목표일과 같은 날짜입니다.", "err"); return; }
+    if (o.target && !ext.reason.trim()) { toast("연장 사유를 입력하세요.", "err"); return; }
+    if (!o.targetOriginal) o.targetOriginal = o.target || ext.date;
+    o.extensions.push({ from: o.target || "", to: ext.date, reason: ext.reason.trim(), by: state.user ? state.user.name : "관리자", at: today() });
+    o.target = ext.date; o.targetAuto = false;
+    state.detail.ext = null;
+    renderStepper();
+    toast("목표일을 변경했습니다. [💾 저장]을 눌러야 반영됩니다.");
+  }
+
 
   function saveDetail(force) {
     var d = state.detail.draft;
@@ -1558,14 +1644,14 @@
   var OX = function (b) { return b ? "O" : "X"; };
   function exportSummary(list) {
     var head = ["ID", "구분", "NP/SP", "제품/기술명", "접수상태", "패스트트랙", "소위전결", "요청자", "소속부서", "요청자이메일", "발제일"];
-    STAGES.forEach(function (s, i) { var n = i + 1; head.push(n + "단계 일정", n + "단계 완료", n + "단계 생략"); });
-    head.push("진행상태", "현재단계", "주요내용", "비고");
+    STAGES.forEach(function (s, i) { var n = i + 1; head.push(n + "단계 목표일", n + "단계 완료일", n + "단계 완료", n + "단계 생략", n + "단계 연장횟수"); });
+    head.push("진행상태", "현재단계", "단계지연일수", "접수일", "주요내용", "비고");
     var rows = [head];
     list.forEach(function (i) {
       var si = stageInfo(i), st = i.stages;
       var row = [i.id, i.category, i.npSp, i.title, i.accepted === false ? "접수대기" : "접수", OX(si.fastTrack), OX(si.subDecision), i.requester, i.requesterDept, i.requesterEmail, i.proposalDate];
-      STAGES.forEach(function (s) { row.push(st[s.key].date, OX(st[s.key].done), OX(st[s.key].skipped)); });
-      row.push(si.phase === "WAIT" ? "접수대기" : si.isDone ? "최종승인완료" : "검토진행중", si.name, i.summary, i.note);
+      STAGES.forEach(function (s) { var o = st[s.key]; row.push(o.target, o.doneAt, OX(o.done), OX(o.skipped), o.extensions.length || ""); });
+      row.push(si.phase === "WAIT" ? "접수대기" : si.isDone ? "최종승인완료" : "검토진행중", si.name, si.delay || "", i.acceptedAt || "", i.summary, i.note);
       rows.push(row);
     });
     downloadCsv("양산이관_요약목록_" + today() + ".csv", rows);
@@ -1633,7 +1719,7 @@
       if (!t) {
         t = { id: id || ("TR-IMP-" + Date.now() + "-" + r), category: cat, npSp: npSp, title: title, requester: "", requesterDept: "", requesterEmail: "",
           proposalDate: "", summary: "", note: "", accepted: true, stages: {}, risks: hasRisk ? [] : SECTORS.map(emptyRisk), attachments: [] };
-        STAGES.forEach(function (s) { t.stages[s.key] = { date: "", done: false, skipped: false }; });
+        STAGES.forEach(function (s) { t.stages[s.key] = { target: "", doneAt: "", done: false, skipped: false, targetAuto: false, targetOriginal: "", extensions: [] }; });
         put(t);
       }
       t.category = cat; t.npSp = npSp; t.title = title;
@@ -1643,13 +1729,18 @@
       if (!t.proposalDate) t.proposalDate = today();
       var acc = get(row, ["접수상태"]);
       if (acc) t.accepted = acc !== "접수대기";
+      var accAt = normDate(get(row, ["접수일"]));
+      if (accAt) t.acceptedAt = accAt;
       if (hasRisk && t._reset) { t.risks = []; delete t._reset; }
       STAGES.forEach(function (s, si) {
         var n = si + 1, o = t.stages[s.key];
-        var dv = get(row, [n + "단계일정", n + "단계"]), dn = get(row, [n + "단계완료"]).toUpperCase(), sk = get(row, [n + "단계생략"]).toUpperCase();
-        if (dv) o.date = normDate(dv);
+        var tv = get(row, [n + "단계목표일"]), dav = get(row, [n + "단계완료일"]), legacy = get(row, [n + "단계일정", n + "단계"]);
+        var dn = get(row, [n + "단계완료"]).toUpperCase(), sk = get(row, [n + "단계생략"]).toUpperCase();
         if (dn) o.done = dn === "O" || dn === "완료" || dn === "TRUE";
         if (sk) o.skipped = sk === "O" || sk === "생략" || sk === "TRUE";
+        if (tv) { o.target = normDate(tv); o.targetAuto = false; }
+        if (dav) o.doneAt = normDate(dav);
+        if (legacy && !tv && !dav) { if (o.done) o.doneAt = normDate(legacy); else { o.target = normDate(legacy); o.targetAuto = false; } }
       });
       var ft = get(row, ["패스트트랙"]).toUpperCase();
       if (ft === "O") { t.stages.step1.done = true; ["step2", "step3", "step4"].forEach(function (k) { t.stages[k].skipped = true; t.stages[k].done = false; }); }
@@ -1829,6 +1920,12 @@
       if (!confirm(emp + " 회원을 삭제할까요?")) return;
       api("DELETE", "/api/admin/users/" + encodeURIComponent(emp)).then(function (list) { state.adminUsers = list; renderUserRows(); toast("삭제했습니다.", "ok"); }).catch(fail);
     },
+    saveHolidays: function () {
+      api("PUT", "/api/settings", { holidays: $("#stHolidays").value }).then(function (sv) {
+        state.admin = sv; state.holidays = sv.holidays; renderAdmin();
+        toast("휴일 " + sv.holidays.length + "일을 저장했습니다. 이후 계산되는 목표일부터 적용됩니다.", "ok");
+      }).catch(fail);
+    },
     usePortalUrl: function (el) { $("#stPortalUrl").value = el.getAttribute("data-url"); toast("[💾 저장]을 눌러야 반영됩니다."); },
     teamAdd: function () { state.teamDraft.push({ name: "", sector: "", canApply: false }); renderTeamRows(); },
     teamDel: function (el) { state.teamDraft.splice(+el.getAttribute("data-idx"), 1); renderTeamRows(); },
@@ -1902,6 +1999,13 @@
       }
       rs.splice(at, 0, row); renderRiskTable();
     },
+    stExtOpen: function (el) {
+      var key = el.getAttribute("data-step"), o = state.detail.draft.stages[key];
+      state.detail.ext = { key: key, date: o.target ? addBusinessDays(o.target, 5) : addBusinessDays(today(), state.leadDays[key]), reason: "" };
+      renderStepper();
+    },
+    stExtCancel: function () { state.detail.ext = null; renderStepper(); },
+    stExtApply: applyExtension,
     sectorSave: function () { saveSector(false); },
     sectorComplete: function () { saveSector(true); },
     sectorReopen: function (el) {
@@ -1943,7 +2047,12 @@
       if (f === "category") { d.npSp = d.category === "제품" ? (d.npSp || "NP") : ""; renderDetail(); }
       return;
     }
-    if (el.hasAttribute("data-stage")) { state.detail.draft.stages[el.getAttribute("data-stage")].date = el.value; renderStepper(); return; }
+    if (el.hasAttribute("data-stage-done")) {
+      var sd = state.detail.draft.stages[el.getAttribute("data-stage-done")];
+      if (el.value) { sd.doneAt = el.value; applyStageTargets(state.detail.draft); renderStepper(); }
+      return;
+    }
+    if (el.hasAttribute("data-ext")) { if (state.detail.ext) state.detail.ext[el.getAttribute("data-ext")] = el.value; return; }
     if (el.hasAttribute("data-rf")) { onRiskField(el); return; }
     if (el.hasAttribute("data-mf")) { state.mail[el.getAttribute("data-mf")] = el.value; state.mail.preview = null; var c = $("#mailCount"); if (c) c.textContent = mailRecipients().length; return; }
     if (el.hasAttribute("data-mail-email")) { state.mail.selected[el.getAttribute("data-mail-email")] = el.checked; state.mail.preview = null; $("#mailCount").textContent = mailRecipients().length; return; }

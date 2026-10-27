@@ -47,6 +47,8 @@ BACKUP_KEEP_DAYS = 30
 
 STAGE_KEYS = ["step1", "step2", "step3", "step4", "step5"]
 STAGE_NAMES = ["전문소위원 검토", "양산이관 검증소위원회", "전문위원 검토", "검증위원회", "최종승인"]
+# 단계별 리드타임(영업일): 1단계는 접수 승인일, 이후 단계는 직전 단계 완료일 기준
+STAGE_LEAD_DAYS = {"step1": 5, "step2": 7, "step3": 7, "step4": 7, "step5": 7}
 SECTORS = ["품질/수율", "장비", "생산성", "Process", "제조", "손익"]
 LEVEL_NAMES = {"sub": "전문소위원", "main": "전문위원"}
 LEVEL_DESC = {"sub": "전문소위원(팀장급)", "main": "전문위원(담당/본부장급)"}
@@ -238,19 +240,72 @@ def normalize_sector_reviews(v: Any) -> Dict[str, Dict[str, str]]:
     return out
 
 
+def normalize_stage(key: str, v: Any) -> Dict[str, Any]:
+    """단계: 목표일(target) / 완료일(doneAt) / 연장 이력. 예전 형식의 date 는 완료면 완료일, 아니면 목표일로 옮긴다."""
+    v = v if isinstance(v, dict) else {}
+    skipped = bool(v.get("skipped")) and key not in ("step1", "step5")
+    done = bool(v.get("done")) and not skipped
+    target, done_at = _date(v.get("target")), _date(v.get("doneAt"))
+    legacy = _date(v.get("date"))
+    if legacy and not target and not done_at:
+        if done:
+            done_at = legacy
+        else:
+            target = legacy
+    exts = []
+    for e in v.get("extensions") or []:
+        if isinstance(e, dict) and _date(e.get("to")):
+            exts.append({"from": _date(e.get("from")), "to": _date(e.get("to")), "reason": _text(e.get("reason"))[:500],
+                         "by": _s(e.get("by"))[:40], "at": _s(e.get("at"))[:19]})
+    return {
+        "done": done, "skipped": skipped,
+        "doneAt": done_at if done else "",
+        "target": "" if skipped else target,
+        "targetAuto": bool(v.get("targetAuto")) and not exts,
+        "targetOriginal": _date(v.get("targetOriginal")) or (exts[0]["from"] if exts else ""),
+        "extensions": exts,
+    }
+
+
+def add_business_days(start: str, n: int, holidays: Optional[set] = None) -> str:
+    """start 다음 날부터 주말·휴일을 빼고 n 영업일째 되는 날."""
+    d = dt.date.fromisoformat(start)
+    holidays = holidays or set()
+    count = 0
+    while count < n:
+        d += dt.timedelta(days=1)
+        if d.weekday() < 5 and d.isoformat() not in holidays:
+            count += 1
+    return d.isoformat()
+
+
+def apply_stage_targets(item: Dict[str, Any], holidays: Optional[set] = None) -> None:
+    """현재 진행 단계의 목표일을 자동 계산 (프론트엔드 static/app.js applyStageTargets 와 같은 규칙).
+    - 1단계: 접수 승인일 + 5 영업일 / 이후: 직전(생략 제외) 단계 완료일 + 7 영업일
+    - 관리자가 연장·지정한 목표일(targetAuto=False)은 덮어쓰지 않는다."""
+    if not item.get("accepted", True):
+        return
+    base = item.get("acceptedAt", "")
+    for k in STAGE_KEYS:
+        st = item["stages"][k]
+        if st["skipped"]:
+            continue
+        if st["done"]:
+            base = st["doneAt"] or ""
+            continue
+        if st["targetAuto"] or not st["target"]:
+            if base:
+                st["target"], st["targetAuto"] = add_business_days(base, STAGE_LEAD_DAYS[k], holidays), True
+            elif st["targetAuto"]:
+                st["target"], st["targetAuto"] = "", False
+        base = ""  # 이 단계가 끝나야 다음 단계 목표일이 생긴다
+
+
 def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     category = "기술" if raw.get("category") == "기술" else "제품"
     raw_stages = raw.get("stages") if isinstance(raw.get("stages"), dict) else {}
-    stages = {}
-    for k in STAGE_KEYS:
-        v = raw_stages.get(k) if isinstance(raw_stages.get(k), dict) else {}
-        skipped = bool(v.get("skipped")) and k != "step1" and k != "step5"
-        stages[k] = {
-            "date": "" if skipped else _date(v.get("date")),
-            "done": bool(v.get("done")) and not skipped,
-            "skipped": skipped,
-        }
+    stages = {k: normalize_stage(k, raw_stages.get(k)) for k in STAGE_KEYS}
     item_id = re.sub(r"[^A-Za-z0-9_\-]", "_", _s(raw.get("id")))[:64] or ("TR-" + secrets.token_hex(4))
     attachments = [a for a in (normalize_attachment(x) for x in (raw.get("attachments") or [])) if a]
     return {
@@ -266,6 +321,7 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "note": _text(raw.get("note")),
         # 기존 data.js 로 이관된 안건은 이미 접수된 것으로 본다.
         "accepted": bool(raw.get("accepted", True)),
+        "acceptedAt": _date(raw.get("acceptedAt")),
         "source": _s(raw.get("source")) or "관리자",
         "stages": stages,
         "risks": [normalize_risk(r) for r in (raw.get("risks") or [])],
@@ -293,7 +349,7 @@ def next_item_id(items: List[Dict[str, Any]], year: str) -> str:
 # 샘플 데이터 / 기본 설정
 # ---------------------------------------------------------------------------
 def _st(date="", done=False, skipped=False):
-    return {"date": date, "done": done, "skipped": skipped}
+    return {"doneAt": date, "done": True} if done else {"target": date, "skipped": skipped}
 
 
 def _risk(sector, reviewer, item="", task="X", grade="", plan="", org="", sched="", status="진행중", no_risk=False):
@@ -309,10 +365,10 @@ def sample_items() -> List[Dict[str, Any]]:
             "id": f"TR-{year}-001", "category": "제품", "npSp": "NP", "accepted": True, "source": "신청",
             "title": "차세대 고방열 SiC 전력반도체 모듈 (Gen-4)",
             "requester": "김민수 수석", "requesterDept": "선행패키지개발팀", "requesterEmail": "minsu.kim@example.com",
-            "proposalDate": d("01-15"),
+            "proposalDate": d("01-15"), "acceptedAt": d("01-16"),
             "summary": "Gen-3 대비 방열 기판을 AMB(Si3N4)로 변경하고 소결 접합(Ag Sintering)을 신규 적용.\n열저항 18% 개선, 신뢰성(TC 1,000cyc) 평가 완료.",
             "note": "검증소위원회 완료 후 전문위원 검토 진행 중. 방열 기판 보이드율 3% 이하 관리 기준 점검 필요.",
-            "stages": {"step1": _st(d("01-22"), True), "step2": _st(d("02-05"), True), "step3": _st(d("11-20")),
+            "stages": {"step1": _st(d("01-22"), True), "step2": _st(d("02-05"), True), "step3": _st(d("10-20")),
                        "step4": _st(), "step5": _st()},
             "risks": [
                 _risk("품질/수율", "박품질 팀장", "진공 리플로우 공정 시 대면적 기판 모서리 보이드(Void) 발생률 상승 우려",
@@ -331,7 +387,7 @@ def sample_items() -> List[Dict[str, Any]]:
             "id": f"TR-{year}-002", "category": "제품", "npSp": "SP", "accepted": True, "source": "신청",
             "title": "전장용 통합 카메라 센서 모듈 파생형 (SP-220)",
             "requester": "이수진 책임", "requesterDept": "전장개발2팀", "requesterEmail": "sujin.lee@example.com",
-            "proposalDate": d("02-10"),
+            "proposalDate": d("02-10"), "acceptedAt": d("02-10"),
             "summary": "기존 SP-200 대비 렌즈 화각만 변경(120°→100°). 공정/자재 변경 없음.",
             "note": "6대 부문 팀장 검토 결과 특이사항 없음으로 판정되어 패스트트랙(2~4단계 Skip) 승인 완료.",
             "stages": {"step1": _st(d("02-12"), True), "step2": _st(skipped=True), "step3": _st(skipped=True),
@@ -342,7 +398,7 @@ def sample_items() -> List[Dict[str, Any]]:
             "id": f"TR-{year}-003", "category": "기술", "npSp": "", "accepted": True, "source": "관리자",
             "title": "Cu Clip 본딩 신공정 (와이어 본딩 대체)",
             "requester": "박지훈 책임", "requesterDept": "요소기술개발팀", "requesterEmail": "jihoon.park@example.com",
-            "proposalDate": d("04-08"),
+            "proposalDate": d("04-08"), "acceptedAt": d("04-09"),
             "summary": "Al 와이어 본딩을 Cu Clip 솔더링으로 대체하여 전류 용량 40% 향상.\n전 제품군 확대 적용 전 대표 모델 2종으로 선이관.",
             "note": "검증소위원회에서 보완 과제 3건 확정, 소위 전결로 3·4단계 생략. 최종승인 일정 대기.",
             "stages": {"step1": _st(d("04-15"), True), "step2": _st(d("04-29"), True), "step3": _st(skipped=True),
@@ -372,7 +428,7 @@ def sample_items() -> List[Dict[str, Any]]:
             "id": f"TR-{year - 1}-001", "category": "제품", "npSp": "SP", "accepted": True, "source": "관리자",
             "title": "산업용 IGBT 모듈 62mm 표준형 (2차 파생)",
             "requester": "정해성 수석", "requesterDept": "전력모듈개발팀", "requesterEmail": "haesung.jung@example.com",
-            "proposalDate": f"{year - 1}-09-03",
+            "proposalDate": f"{year - 1}-09-03", "acceptedAt": f"{year - 1}-09-03",
             "summary": "칩 공급처 이원화(Fab B 추가). 패키지 구조 동일.",
             "note": "전 단계 정상 진행 완료. 보완 과제 2건 모두 완료 확인 후 최종승인.",
             "stages": {"step1": _st(f"{year - 1}-09-10", True), "step2": _st(f"{year - 1}-09-24", True),
@@ -448,6 +504,7 @@ def default_settings(with_password: bool = False) -> Dict[str, Any]:
         ],
         "criteria": copy.deepcopy(DEFAULT_CRITERIA),
         "teams": copy.deepcopy(DEFAULT_TEAMS),
+        "holidays": [],
     }
 
 
@@ -1452,7 +1509,16 @@ def content_disposition(filename: str, attachment: bool = True) -> str:
 # API 핸들러
 # ---------------------------------------------------------------------------
 def public_settings(s: Dict[str, Any]) -> Dict[str, Any]:
-    return {"criteria": s["criteria"], "sectors": SECTORS, "teams": s["teams"]}
+    return {"criteria": s["criteria"], "sectors": SECTORS, "teams": s["teams"], "holidays": holiday_list(s),
+            "leadDays": STAGE_LEAD_DAYS}
+
+
+def holiday_list(s: Dict[str, Any]) -> List[str]:
+    return sorted({d for d in (_date(x) for x in (s.get("holidays") or [])) if d})
+
+
+def holiday_set() -> set:
+    return set(holiday_list(store.settings()))
 
 
 def h_bootstrap(req: Req):
@@ -1514,6 +1580,7 @@ def h_get_settings(req: Optional[Req] = None):
         "suggestedPortalUrl": f"http://{lan_ip()}:{PORT}/",
         "nameUrls": [f"http://{n}:{PORT}/" for n in host_names()],
         "mailDiag": mail_diagnostics(),
+        "holidays": holiday_list(s),
     }
 
 
@@ -1544,6 +1611,9 @@ def h_put_settings(req: Req):
             s["smtp"]["password"] = str(p["password"])
     if "reviewers" in payload:
         s["reviewers"] = normalize_reviewers(payload["reviewers"])
+    if "holidays" in payload:
+        raw = payload["holidays"]
+        s["holidays"] = holiday_list({"holidays": raw if isinstance(raw, list) else re.split(r"[\s,;]+", _s(raw))})
     if isinstance(payload.get("criteria"), dict):
         c = payload["criteria"]
         for k in ("purpose", "np", "sp", "tech"):
@@ -1661,6 +1731,11 @@ def h_update_item(req: Req):
         merged = normalize_item({**incoming, "id": item_id})
         for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId"):
             merged[keep] = cur[keep]
+        # 접수 승인일은 서버가 기록 (처음 접수 처리된 날)
+        merged["acceptedAt"] = cur["acceptedAt"] or (_date(incoming.get("acceptedAt")) or today_str() if merged["accepted"] else "")
+        if not merged["accepted"]:
+            merged["acceptedAt"] = ""
+        apply_stage_targets(merged, holiday_set())
         merged["rev"] = cur["rev"] + 1
         merged["updatedAt"] = now_str()
         data["items"][data["items"].index(cur)] = merged
@@ -1686,6 +1761,8 @@ def h_accept_item(req: Req):
     def _accept(data):
         cur = find_item(data, req.params["id"])
         cur["accepted"] = True
+        cur["acceptedAt"] = cur["acceptedAt"] or today_str()
+        apply_stage_targets(cur, holiday_set())
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
         return cur
@@ -1713,11 +1790,14 @@ def h_bulk_replace(req: Req):
     if not isinstance(incoming, list):
         raise HTTPException(400, "items 목록이 필요합니다.")
 
+    hol = holiday_set()
+
     def _bulk(data):
         cur = {i["id"]: i for i in data["items"]}
         out, seen = [], set()
         for raw in incoming:
             it = normalize_item(raw)
+            apply_stage_targets(it, hol)
             if it["id"] in seen:
                 it["id"] = it["id"] + "-" + secrets.token_hex(2)
             seen.add(it["id"])

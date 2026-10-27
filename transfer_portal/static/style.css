@@ -424,3 +424,22 @@ tbody tr.row-pending { background: #f5f3ff; }
 .diag-step.bad { border-left-color: var(--c-delay); background: #fff5f5; }
 .diag-step span { word-break: break-all; color: var(--text-sub); }
 .diag-step.bad span { color: #991b1b; font-weight: 600; }
+
+/* ---------- v7: 단계 목표일 / 지연 / 연장 ---------- */
+.step-box.delayed { border-color: #f87171; background: #fff5f5; }
+.step-box.delayed .step-status { color: var(--c-delay); }
+.step-box.delayed .step-index { background: var(--c-delay); color: #fff; }
+.mini-dot.delayed { background: #fecaca; border-color: var(--c-delay); }
+.step-dates { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.step-dates .lbl { display: inline-block; width: 30px; color: var(--text-muted); font-weight: 700; font-size: 11px; }
+.step-dates b { font-weight: 800; }
+.input.mini { padding: 3px 6px; font-size: 12px; width: auto; }
+.badge-ext { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+.step-btn.ext { background: #fff7ed; color: #c2410c; border-color: #fdba74; }
+.ext-form { display: flex; flex-direction: column; gap: 5px; padding: 8px; border-radius: 8px; background: #fff7ed; border: 1px dashed #fb923c; }
+.ext-form .lbl { font-size: 11px; font-weight: 800; color: #9a3412; }
+.ext-form .textarea { min-height: 54px; font-size: 12px; padding: 6px; }
+.ext-btns { display: flex; justify-content: flex-end; gap: 4px; }
+.ext-hist { margin-top: 4px; padding: 8px 12px; border-radius: 8px; background: #fffbeb; border: 1px solid #fde68a; font-size: 12px; display: flex; flex-direction: column; gap: 3px; }
+.ext-hist .lbl { font-weight: 800; color: #92400e; }
+.admin-section { border-color: #fcd34d; background: #fffdf5; }
