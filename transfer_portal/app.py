@@ -457,6 +457,8 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "attachments": attachments,
         "notify": raw.get("notify") if isinstance(raw.get("notify"), dict) else None,
         "sectorReviews": normalize_sector_reviews(raw.get("sectorReviews")),
+        "remindLog": [{k: _s(x.get(k))[:300] for k in ("kind", "key", "to", "at", "by")}
+                      for x in (raw.get("remindLog") or []) if isinstance(x, dict)][-200:],
         "applicantEmpId": _s(raw.get("applicantEmpId")),
         "createdAt": _s(raw.get("createdAt")) or now_str(),
         "updatedAt": _s(raw.get("updatedAt")) or now_str(),
@@ -1858,7 +1860,7 @@ def h_update_item(req: Req):
         if not payload.get("force") and int(payload.get("rev") or 0) != cur["rev"]:
             raise HTTPException(409, {"message": "다른 사용자가 먼저 이 안건을 수정했습니다.", "item": cur})
         merged = normalize_item({**incoming, "id": item_id})
-        for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId"):
+        for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId", "remindLog"):
             merged[keep] = cur[keep]
         # 접수 승인일은 서버가 기록 (처음 접수 처리된 날)
         merged["acceptedAt"] = cur["acceptedAt"] or (_date(incoming.get("acceptedAt")) or today_str() if merged["accepted"] else "")
@@ -1935,7 +1937,7 @@ def h_bulk_replace(req: Req):
             seen.add(it["id"])
             old = cur.get(it["id"])
             if old:
-                for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId"):
+                for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId", "remindLog"):
                     it[keep] = old[keep]
                 it["rev"] = old["rev"] + 1
             it["updatedAt"] = now_str()
@@ -2319,6 +2321,98 @@ def h_put_teams(req: Req):
     return teams
 
 
+# --- Remind 메일 (부문 검토 미작성 / 보완 과제 진행 확인) -----------------------
+def _remind_targets(item: Dict[str, Any], kind: str, sectors: List[str], task_id: str, settings: Dict[str, Any]) -> Dict[str, Any]:
+    base = portal_base(settings)
+    link = f"{base}#items/{quote(item['id'])}"
+    cc = _emails(settings.get("secretaryEmails"))
+    info_rows = [("안건 ID", html.escape(item["id"])), ("구분", html.escape(category_label(item))),
+                 ("제품/기술명", f"<b>{html.escape(item['title'])}</b>"), ("현재 단계", html.escape(stage_label(item)))]
+    if kind == "review":
+        sectors = [s for s in sectors if s in SECTORS and s not in item["sectorReviews"]]
+        if not sectors:
+            raise HTTPException(400, "Remind 할 미작성 부문이 없습니다.")
+        users = store.users()
+        to: List[str] = []
+        names: List[str] = []
+        for u in users.values():
+            t = team_info(settings, u.get("team", ""))
+            if u.get("status") == "approved" and t["sector"] in sectors and u.get("email"):
+                to.append(u["email"])
+                names.append(f"{u['team']} {u['name']}")
+        for r in normalize_reviewers(settings.get("reviewers")):
+            if r["level"] == "sub" and r["sector"] in sectors and r["email"]:
+                to.append(r["email"])
+                names.append(f"{r['sector']} {r['name']}")
+        target = item["stages"]["step1"]["target"]
+        delay = (dt.date.today() - dt.date.fromisoformat(target)).days if target and target < today_str() else 0
+        subject = (f"[양산이관 Remind] {item['title']} - {'·'.join(sectors)} 부문 검토 의견 작성 요청"
+                   + (f" (목표 {target[5:].replace('-', '/')}, +{delay}일 지연)" if delay else (f" (목표 {target[5:].replace('-', '/')})" if target else "")))
+        inner = (
+            f"<p>안녕하십니까. 양산이관 검증위원회 간사입니다.<br>아래 안건의 <b>{html.escape('·'.join(sectors))}</b> 부문 "
+            "전문소위원 검토 의견이 아직 작성되지 않아 Remind 드립니다.</p>"
+            + _mail_table(info_rows + [("1단계 목표일", html.escape(target or "-") + (f' <b style="color:#b91c1c">(+{delay}일 지연)</b>' if delay else "")),
+                                       ("작성 방법", "포털 로그인 → 안건 상세 → [3] 본인 부문 카드에서 ✅ 이상 없음 / ⚠️ Risk 있음 선택 후 [✅ 작성 완료]")])
+            + f'<p>▶ 바로 작성하기: <a href="{html.escape(link)}">{html.escape(link)}</a></p><p>감사합니다.</p>'
+        )
+        key = ",".join(sectors)
+    else:
+        t = next((x for x in item["tasks"] if x["id"] == task_id), None)
+        if not t:
+            raise HTTPException(404, "과제를 찾을 수 없습니다.")
+        if t["status"] == "완료":
+            raise HTTPException(400, "이미 완료된 과제입니다.")
+        to = _emails(t["ownerEmail"])
+        names = [t["ownerName"] or t["ownerEmail"]]
+        if not to:
+            raise HTTPException(400, f"과제 {t['id']} 의 담당자 이메일이 없습니다. 안건 상세 [4]에서 담당자를 지정하세요.")
+        delay = (dt.date.today() - dt.date.fromisoformat(t["target"])).days if t["target"] and t["target"] < today_str() else 0
+        subject = (f"[양산이관 Remind] {t['id']} 보완 과제 진행 확인 요청 - {item['title']}"
+                   + (f" (목표일 {t['target'][5:].replace('-', '/')}, +{delay}일 지연)" if delay else (f" (목표일 {t['target'][5:].replace('-', '/')})" if t["target"] else "")))
+        inner = (
+            "<p>안녕하십니까. 양산이관 검증위원회 간사입니다.<br>아래 보완 과제의 진행 상황 확인을 요청드립니다.</p>"
+            + _mail_table(info_rows + [
+                ("과제", f"<b>{html.escape(t['id'])}</b> ({html.escape(t['sector'])} · 중요도 {html.escape(t['importance'])})"),
+                ("과제 내용", _br(t["title"])), ("보완 방안", _br(t["plan"])),
+                ("담당", html.escape(" / ".join(x for x in (t["org"], t["ownerName"]) if x) or "-")),
+                ("목표일", html.escape(t["target"] or "미지정") + (f' <b style="color:#b91c1c">(+{delay}일 지연)</b>' if delay else ""))])
+            + "<p>완료되었으면 간사에게 회신 부탁드리며, 일정 변경이 필요하면 사유와 함께 알려 주세요.</p>"
+            + f'<p>▶ 안건 상세: <a href="{html.escape(link)}">{html.escape(link)}</a></p><p>감사합니다.</p>'
+        )
+        key = t["id"]
+    to = _emails(to)
+    if not to:
+        raise HTTPException(400, "받는 사람이 없습니다. 해당 부문 팀 회원 가입 또는 관리자 모드의 검토자 주소록을 확인하세요.")
+    cc = [c for c in cc if c.lower() not in [x.lower() for x in to]]
+    return {"to": to, "cc": cc, "names": names, "subject": subject, "key": key,
+            "html": _mail_wrap("양산이관 검증위원회 Remind", inner), "text": re.sub(r"<[^>]+>", " ", inner)}
+
+
+def h_remind(req: Req):
+    """관리자: Remind 메일. dryRun 이면 받는 사람·제목만 돌려준다(확인용)."""
+    p = req.json()
+    kind = "task" if p.get("kind") == "task" else "review"
+    item = find_item(store.load(), _s(p.get("itemId")))
+    settings = store.settings()
+    sectors = p.get("sectors") if isinstance(p.get("sectors"), list) else []
+    mail = _remind_targets(item, kind, [_s(x) for x in sectors], _s(p.get("taskId")), settings)
+    if p.get("dryRun"):
+        return {"to": mail["to"], "cc": mail["cc"], "names": mail["names"], "subject": mail["subject"]}
+    try:
+        method = send_mail(settings, mail["to"], mail["cc"], mail["subject"], mail["html"], mail["text"])
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"Remind 발송 실패: {e}")
+
+    def _log(data):
+        cur = find_item(data, item["id"])
+        cur["remindLog"].append({"kind": kind, "key": mail["key"], "to": "; ".join(mail["to"]), "at": now_str(), "by": "관리자"})
+        cur["remindLog"] = cur["remindLog"][-200:]
+        cur["rev"] += 1
+        return cur
+    updated = store.mutate(_log)
+    return {"ok": True, "message": f"{method}로 {len(mail['to'])}명에게 Remind 메일을 보냈습니다.", "item": updated}
+
+
 # ---------------------------------------------------------------------------
 # 라우팅
 # ---------------------------------------------------------------------------
@@ -2370,6 +2464,7 @@ route("POST", "/api/items/{id}/sector/{sector}", h_sector_save)
 route("POST", "/api/items/{id}/sector/{sector}/reopen", h_sector_reopen, admin=True)
 route("POST", "/api/presence", h_presence)
 route("POST", "/api/presence/leave", h_presence_leave)
+route("POST", "/api/remind", h_remind, admin=True)
 
 STATIC_DIR = (BASE_DIR / "static").resolve()
 

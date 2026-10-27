@@ -491,3 +491,35 @@ tbody tr.row-pending { background: #f5f3ff; }
 .task-table .input, .task-table .select { width: 100%; padding: 5px 7px; font-size: 12px; margin-bottom: 4px; }
 .task-table .textarea.sm { margin-bottom: 4px; }
 .badge-cond { background: #ccfbf1; color: #0f766e; border: 1px solid #5eead4; }
+
+/* ---------- v9: 새 대시보드 / Remind ---------- */
+.kpi-grid.kpi4 { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 1200px) { .kpi-grid.kpi4 { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 700px) { .kpi-grid.kpi4 { grid-template-columns: 1fr; } }
+.kpi-card[data-action] { cursor: pointer; }
+.kpi-card.wait-card { border-top-color: #7c3aed; }
+.funnel-val .funnel-delay { color: var(--c-delay); font-size: 12px; }
+.funnel-bar { display: flex; align-items: flex-end; }
+.funnel-bar-delay { width: 100%; background: var(--c-delay); border-radius: 6px 6px 0 0; }
+.action-table td { padding: 9px 10px; font-size: 13px; vertical-align: middle; }
+.action-table tr.sev0 { background: #fff5f5; }
+.action-table tr.sev0:hover { background: #fee2e2; }
+.act-label { display: inline-block; font-size: 11.5px; font-weight: 800; padding: 3px 8px; border-radius: 6px; white-space: nowrap; }
+.act-label.k-stage, .act-label.k-task { background: #fee2e2; color: #b91c1c; }
+.act-label.k-review { background: #fef3c7; color: #92400e; }
+.act-label.k-decide { background: #ede9fe; color: #6d28d9; }
+.act-label.k-wait { background: #e0e7ff; color: #3730a3; }
+.act-label.k-notarget { background: #f1f5f9; color: var(--text-sub); }
+.txt-delay { color: var(--c-delay); font-size: 15px; }
+.remind-log { font-size: 11px; color: var(--text-sub); background: #f1f5f9; padding: 2px 6px; border-radius: 99px; white-space: nowrap; }
+.rv-remind { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.up-list { display: flex; flex-direction: column; gap: 4px; max-height: 300px; overflow-y: auto; }
+.up-row { display: flex; align-items: center; gap: 10px; padding: 7px 8px; border-radius: 8px; cursor: pointer; transition: background 0.15s; font-size: 12.5px; }
+.up-row:hover { background: #eff6ff; }
+.up-date { display: flex; flex-direction: column; align-items: center; min-width: 64px; font-weight: 800; color: var(--primary); }
+.up-date small { font-size: 10.5px; color: var(--text-muted); font-weight: 700; }
+.up-date.soon { color: var(--warning); }
+.up-kind { font-size: 11px; font-weight: 800; padding: 2px 7px; border-radius: 99px; }
+.up-kind.stage { background: #dbeafe; color: #1d4ed8; }
+.up-kind.task { background: #fef3c7; color: #92400e; }
+.up-text { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
