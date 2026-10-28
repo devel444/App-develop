@@ -246,28 +246,13 @@ def normalize_review_risk(r: Any) -> Optional[Dict[str, Any]]:
             "taskId": _s(r.get("taskId"))[:12] if decision == "task" else ""}
 
 
-def normalize_reviews(v: Any) -> Dict[str, Dict[str, Any]]:
-    out = empty_reviews()
-    v = v if isinstance(v, dict) else {}
-    for sec in SECTORS:
-        r = v.get(sec) if isinstance(v.get(sec), dict) else {}
-        risks = [x for x in (normalize_review_risk(x) for x in (r.get("risks") or [])) if x]
-        result = r.get("result") if r.get("result") in ("ok", "risk") else ""
-        if result == "ok" and any(x["decision"] for x in risks):
-            result = "risk"  # 이미 결정된 Risk 가 있으면 '이상 없음' 으로 바꿀 수 없다
-        if result == "ok":
-            risks = []
-        out[sec] = {"result": result, "reviewer": _s(r.get("reviewer"))[:40], "risks": risks}
-    return out
-
-
 def normalize_task(t: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(t, dict) or not TASK_ID_RE.match(_s(t.get("id"))):
         return None
     st = normalize_stage("task", {"target": t.get("target"), "targetOriginal": t.get("targetOriginal"),
                                   "extensions": t.get("extensions"), "done": t.get("status") == "완료", "doneAt": t.get("doneAt")})
     return {
-        "id": _s(t.get("id")), "riskId": _s(t.get("riskId"))[:12],
+        "id": _s(t.get("id")), "riskId": _s(t.get("riskId"))[:12], "team": _s(t.get("team"))[:40],
         "sector": t.get("sector") if t.get("sector") in SECTORS else SECTORS[0],
         "title": _text(t.get("title"))[:3000], "plan": _text(t.get("plan"))[:3000],
         "importance": t.get("importance") if t.get("importance") in IMPORTANCE else "중",
@@ -313,13 +298,111 @@ def migrate_legacy_risks(raw_risks: List[Any]) -> Tuple[Dict[str, Dict[str, Any]
     return reviews, tasks
 
 
+# ---------------------------------------------------------------------------
+# 팀 단위 검토 의견 (D단계)
+#  - item["reviews"] = {팀 이름: 카드}. 카드가 있는 팀 = 전문(소)위원으로 선정된 팀
+#  - 카드: sector, result(ok/risk/""), comment, risks[], done(작성 완료자), history(작성 이력)
+#  - 같은 팀 회원이면 직급 상관없이 작성, 누가 저장/완료했는지 history 에 남긴다
+# ---------------------------------------------------------------------------
+LEGACY_CARD_PREFIX = "(기존) "
+PRODUCT_SIZES = ["300mm", "200mm"]
+PRODUCT_TYPES = ["PW", "EPI"]
+_FIXED = ["제조운영팀", "효율혁신팀"]  # 생산성·손익: 모든 제품 공통
+_300_COMMON = ["종합공정2팀", "장비기술1팀", "장비기술2팀", "장비기술3팀", "Metrology기술팀",
+               "GR기술2팀", "LS공정기술1팀", "LS공정기술2팀", "LS공정기술3팀", "오염제어기술팀"]
+_200_COMMON = ["종합공정1팀", "MS장비기술팀", "Metrology기술팀", "GR기술1팀", "MS공정기술팀", "오염제어기술팀"]
+DEFAULT_REVIEW_MATRIX = {
+    "300mm PW": _300_COMMON + ["LS제조1팀", "LS제조2팀", "LS제조3팀"] + _FIXED,
+    "300mm EPI": _300_COMMON + ["EPI기술1팀", "EPI기술2팀", "LS제조1팀", "LS제조2팀", "LS제조3팀", "LS제조4팀"] + _FIXED,
+    "200mm PW": _200_COMMON + ["MS제조1팀", "MS제조2팀"] + _FIXED,
+    "200mm EPI": _200_COMMON + ["EPI기술1팀", "EPI기술2팀", "MS제조1팀", "MS제조2팀", "LS제조4팀"] + _FIXED,
+}
+
+
+def matrix_key(size: str, ptype: str) -> str:
+    return f"{size} {ptype}" if size in PRODUCT_SIZES and ptype in PRODUCT_TYPES else ""
+
+
+def normalize_matrix(v: Any) -> Dict[str, List[str]]:
+    v = v if isinstance(v, dict) else {}
+    out = {}
+    for key, default in DEFAULT_REVIEW_MATRIX.items():
+        teams = v.get(key) if isinstance(v.get(key), list) else default
+        out[key] = list(dict.fromkeys(_s(t)[:40] for t in teams if _s(t)))
+    return out
+
+
+def _done_record(d: Any) -> Optional[Dict[str, str]]:
+    if not isinstance(d, dict) or not _s(d.get("at")):
+        return None
+    return {k: _s(d.get(k))[:40] for k in ("empId", "name", "title", "team", "at")}
+
+
+def normalize_card(c: Any) -> Dict[str, Any]:
+    c = c if isinstance(c, dict) else {}
+    risks = [x for x in (normalize_review_risk(x) for x in (c.get("risks") or [])) if x]
+    result = c.get("result") if c.get("result") in ("ok", "risk") else ""
+    if result == "ok" and any(x["decision"] for x in risks):
+        result = "risk"  # 위원회가 결정한 Risk 가 있으면 '이상 없음' 불가
+    if result == "ok":
+        risks = []
+    history = [{k: _s(h.get(k))[:80] for k in ("at", "by", "action")} for h in (c.get("history") or []) if isinstance(h, dict)][-50:]
+    return {"sector": c.get("sector") if c.get("sector") in SECTORS else SECTORS[0], "result": result,
+            "comment": _text(c.get("comment"))[:2000], "risks": risks, "done": _done_record(c.get("done")), "history": history}
+
+
+def convert_sector_reviews(by_sector: Dict[str, Any], sector_done: Any) -> Dict[str, Dict[str, Any]]:
+    """v8(부문당 1장) → 팀 카드. 내용이 있는 부문만 '(기존) 부문' 카드로 옮긴다."""
+    sector_done = sector_done if isinstance(sector_done, dict) else {}
+    cards = {}
+    for sec in SECTORS:
+        rv = by_sector.get(sec) if isinstance(by_sector.get(sec), dict) else {}
+        done = sector_done.get(sec) if isinstance(sector_done.get(sec), dict) else None
+        if not (rv.get("result") or rv.get("risks") or done):
+            continue
+        reviewer = _s(rv.get("reviewer"))
+        cards[LEGACY_CARD_PREFIX + sec] = normalize_card({
+            "sector": sec, "result": rv.get("result"), "risks": rv.get("risks"),
+            "comment": f"(검토: {reviewer})" if reviewer else "",
+            "done": {**done, "title": ""} if done else None,
+            "history": [{"at": done.get("at", ""), "by": f"{done.get('team', '')} {done.get('name', '')}".strip(), "action": "작성 완료(이전 버전)"}] if done else [],
+        })
+    return cards
+
+
+def normalize_review_cards(raw: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    v = raw.get("reviews")
+    if isinstance(v, dict) and (not v or any(isinstance(x, dict) and "sector" in x for x in v.values())):
+        return {_s(team)[:40]: normalize_card(c) for team, c in v.items() if _s(team)}
+    if isinstance(v, dict):  # v8 부문 형식
+        return convert_sector_reviews(v, raw.get("sectorReviews"))
+    by_sector, _ = migrate_legacy_risks(raw.get("risks") or [])  # v1~v7 Risk 테이블
+    return convert_sector_reviews(by_sector, raw.get("sectorReviews"))
+
+
+def card_order(item: Dict[str, Any], settings: Optional[Dict[str, Any]] = None) -> List[str]:
+    names = [t["name"] for t in (settings or {}).get("teams", [])]
+    return sorted(item["reviews"], key=lambda t: (SECTORS.index(item["reviews"][t]["sector"]),
+                                                  names.index(t) if t in names else len(names), t))
+
+
+def apply_review_matrix(item: Dict[str, Any], settings: Dict[str, Any]) -> None:
+    """제품 안건: 검토 팀이 아직 없으면 구경·PW/EPI 매트릭스대로 선정 (기술 안건은 간사가 직접 선정)."""
+    if item["category"] != "제품" or item["reviews"]:
+        return
+    for team in settings["reviewMatrix"].get(matrix_key(item["productSize"], item["productType"]), []):
+        sec = team_info(settings, team)["sector"]
+        if sec:
+            item["reviews"][team] = normalize_card({"sector": sec})
+
+
 def next_seq_id(prefix: str, ids: List[str]) -> str:
     nums = [int(m.group(1)) for m in (re.match(rf"^{prefix}(\d+)$", i or "") for i in ids) if m]
     return f"{prefix}{(max(nums) + 1) if nums else 1:02d}"
 
 
 def all_risk_ids(item: Dict[str, Any]) -> List[str]:
-    return [r["id"] for rv in item["reviews"].values() for r in rv["risks"]]
+    return [r["id"] for c in item["reviews"].values() for r in c["risks"]]
 
 
 def open_tasks(item: Dict[str, Any], importance: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -335,16 +418,6 @@ def normalize_attachment(a: Any) -> Optional[Dict[str, Any]]:
         "uploadedAt": _s(a.get("uploadedAt")),
         "by": _s(a.get("by")),
     }
-
-
-def normalize_sector_reviews(v: Any) -> Dict[str, Dict[str, str]]:
-    """부문별 '작성 완료' 기록 {부문: {empId, name, team, at}}."""
-    out = {}
-    if isinstance(v, dict):
-        for sector, r in v.items():
-            if sector in SECTORS and isinstance(r, dict):
-                out[sector] = {k: _s(r.get(k)) for k in ("empId", "name", "team", "at")}
-    return out
 
 
 def normalize_stage(key: str, v: Any) -> Dict[str, Any]:
@@ -414,8 +487,8 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
     raw_stages = raw.get("stages") if isinstance(raw.get("stages"), dict) else {}
     stages = {k: normalize_stage(k, raw_stages.get(k)) for k in STAGE_KEYS}
     item_id = re.sub(r"[^A-Za-z0-9_\-]", "_", _s(raw.get("id")))[:64] or ("TR-" + secrets.token_hex(4))
+    reviews = normalize_review_cards(raw)
     if isinstance(raw.get("reviews"), dict):
-        reviews = normalize_reviews(raw.get("reviews"))
         seen, tasks = set(), []
         for t in (normalize_task(x) for x in (raw.get("tasks") or [])):
             if t and t["id"] not in seen:
@@ -426,20 +499,25 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
             for r in rv["risks"]:
                 if r["decision"] == "task" and r["taskId"] not in seen:
                     r.update(decision="", taskId="")
-        # 같은 Risk ID 가 중복되면 새 번호 부여
-        used: List[str] = []
-        for rv in reviews.values():
-            for r in rv["risks"]:
-                if not RISK_ID_RE.match(r["id"]) or r["id"] in used:
-                    r["id"] = next_seq_id("R", used + [x["id"] for v in reviews.values() for x in v["risks"]])
-                used.append(r["id"])
     else:
-        reviews, tasks = migrate_legacy_risks(raw.get("risks") or [])
+        _, tasks = migrate_legacy_risks(raw.get("risks") or [])
+    # 같은 Risk ID 가 중복되면 새 번호 부여
+    used: List[str] = []
+    for rv in reviews.values():
+        for r in rv["risks"]:
+            if not RISK_ID_RE.match(r["id"]) or r["id"] in used:
+                r["id"] = next_seq_id("R", used + [x["id"] for v in reviews.values() for x in v["risks"]])
+            used.append(r["id"])
+    for t in tasks:  # 과제 출처 팀 (이전 버전 과제는 '(기존) 부문')
+        if not t["team"]:
+            t["team"] = next((name for name, c in reviews.items() if any(r["taskId"] == t["id"] for r in c["risks"])), "")
     attachments = [a for a in (normalize_attachment(x) for x in (raw.get("attachments") or [])) if a]
     return {
         "id": item_id,
         "category": category,
         "npSp": "" if category == "기술" else ("SP" if _s(raw.get("npSp")).upper() == "SP" else "NP"),
+        "productSize": _s(raw.get("productSize")) if _s(raw.get("productSize")) in PRODUCT_SIZES else "",
+        "productType": _s(raw.get("productType")).upper() if _s(raw.get("productType")).upper() in PRODUCT_TYPES else "",
         "title": _s(raw.get("title")),
         "requester": _s(raw.get("requester")),
         "requesterDept": _s(raw.get("requesterDept")),
@@ -456,7 +534,6 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "tasks": tasks,
         "attachments": attachments,
         "notify": raw.get("notify") if isinstance(raw.get("notify"), dict) else None,
-        "sectorReviews": normalize_sector_reviews(raw.get("sectorReviews")),
         "remindLog": [{k: _s(x.get(k))[:300] for k in ("kind", "key", "to", "at", "by")}
                       for x in (raw.get("remindLog") or []) if isinstance(x, dict)][-200:],
         "applicantEmpId": _s(raw.get("applicantEmpId")),
@@ -493,7 +570,7 @@ def sample_items() -> List[Dict[str, Any]]:
     d = lambda md: f"{year}-{md}"  # noqa: E731
     items = [
         {
-            "id": f"TR-{year}-001", "category": "제품", "npSp": "NP", "accepted": True, "source": "신청",
+            "id": f"TR-{year}-001", "category": "제품", "npSp": "NP", "productSize": "300mm", "productType": "EPI", "accepted": True, "source": "신청",
             "title": "차세대 고방열 SiC 전력반도체 모듈 (Gen-4)",
             "requester": "김민수 수석", "requesterDept": "선행패키지개발팀", "requesterEmail": "minsu.kim@example.com",
             "proposalDate": d("01-15"), "acceptedAt": d("01-16"),
@@ -515,7 +592,7 @@ def sample_items() -> List[Dict[str, Any]]:
             ],
         },
         {
-            "id": f"TR-{year}-002", "category": "제품", "npSp": "SP", "accepted": True, "source": "신청",
+            "id": f"TR-{year}-002", "category": "제품", "npSp": "SP", "productSize": "200mm", "productType": "PW", "accepted": True, "source": "신청",
             "title": "전장용 통합 카메라 센서 모듈 파생형 (SP-220)",
             "requester": "이수진 책임", "requesterDept": "전장개발2팀", "requesterEmail": "sujin.lee@example.com",
             "proposalDate": d("02-10"), "acceptedAt": d("02-10"),
@@ -547,7 +624,7 @@ def sample_items() -> List[Dict[str, Any]]:
             ],
         },
         {
-            "id": f"TR-{year}-004", "category": "제품", "npSp": "NP", "accepted": False, "source": "신청",
+            "id": f"TR-{year}-004", "category": "제품", "npSp": "NP", "productSize": "300mm", "productType": "PW", "accepted": False, "source": "신청",
             "title": "고전압 BMS용 절연 게이트 드라이버 IC 패키지",
             "requester": "최유나 선임", "requesterDept": "제품개발3팀", "requesterEmail": "yuna.choi@example.com",
             "proposalDate": today_str(),
@@ -556,7 +633,7 @@ def sample_items() -> List[Dict[str, Any]]:
             "risks": default_risk_rows(),
         },
         {
-            "id": f"TR-{year - 1}-001", "category": "제품", "npSp": "SP", "accepted": True, "source": "관리자",
+            "id": f"TR-{year - 1}-001", "category": "제품", "npSp": "SP", "productSize": "200mm", "productType": "EPI", "accepted": True, "source": "관리자",
             "title": "산업용 IGBT 모듈 62mm 표준형 (2차 파생)",
             "requester": "정해성 수석", "requesterDept": "전력모듈개발팀", "requesterEmail": "haesung.jung@example.com",
             "proposalDate": f"{year - 1}-09-03", "acceptedAt": f"{year - 1}-09-03",
@@ -636,6 +713,7 @@ def default_settings(with_password: bool = False) -> Dict[str, Any]:
         "criteria": copy.deepcopy(DEFAULT_CRITERIA),
         "teams": copy.deepcopy(DEFAULT_TEAMS),
         "holidays": [],
+        "reviewMatrix": copy.deepcopy(DEFAULT_REVIEW_MATRIX),
     }
 
 
@@ -794,6 +872,7 @@ class Store:
             if not teams or {t["name"] for t in teams} == OLD_SAMPLE_TEAMS:
                 teams = copy.deepcopy(DEFAULT_TEAMS)
             base["teams"] = teams
+            base["reviewMatrix"] = normalize_matrix(base.get("reviewMatrix"))
             return base
 
     def save_settings(self, s: Dict[str, Any]) -> None:
@@ -1399,6 +1478,10 @@ def build_review_mail(item: Dict[str, Any], settings: Dict[str, Any], level: str
     requester = item["requester"] + (f" ({item['requesterDept']})" if item["requesterDept"] else "")
 
     book = {r["email"].lower(): r for r in normalize_reviewers(settings.get("reviewers"))}
+    for u in store.users().values():
+        if u.get("status") == "approved" and u.get("email"):
+            book.setdefault(u["email"].lower(), {"sector": f"{team_info(settings, u.get('team', ''))['sector'] or '-'} · {u.get('team', '')}",
+                                                 "name": u.get("name", ""), "title": u.get("title", "")})
     target_rows = ""
     for email in to:
         r = book.get(email.lower(), {"sector": "-", "name": "", "title": ""})
@@ -1440,16 +1523,18 @@ def build_review_mail(item: Dict[str, Any], settings: Dict[str, Any], level: str
             "html": _mail_wrap(f"양산이관 {LEVEL_NAMES[level]} 검토 요청", inner), "text": text}
 
 
-def build_sector_done_mail(item: Dict[str, Any], sector: str, user: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+def build_team_done_mail(item: Dict[str, Any], team: str, user: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
     base = portal_base(settings)
     link = f"{base}#items/{quote(item['id'])}"
     who = f"{user['team']} {user['name']} {user.get('title', '')}".strip()
-    subject = f"[양산이관 검토완료] {sector} 부문 - {item['title']} ({who})"
-    rv = item["reviews"][sector]
+    rv = item["reviews"][team]
+    sector = rv["sector"]
+    subject = f"[양산이관 검토완료] {sector} · {team} - {item['title']} ({who})"
     th = 'style="background:#f1f5f9;border:1px solid #cbd5e1;padding:6px 8px;font-size:12.5px;text-align:left;"'
     td = 'style="border:1px solid #cbd5e1;padding:6px 8px;font-size:12.5px;vertical-align:top;"'
+    comment = f'<p style="background:#f8fafc;border-left:4px solid #94a3b8;padding:8px 10px;">💬 {_br(rv["comment"])}</p>' if rv["comment"] else ""
     if rv["result"] == "ok":
-        table = '<p style="font-size:14px;color:#15803d;font-weight:bold;">✅ 이상 없음 (특이사항 없음)</p>'
+        table = '<p style="font-size:14px;color:#15803d;font-weight:bold;">✅ 이상 없음</p>' + comment
     else:
         body_rows = "".join(
             f"<tr><td {td}>{i + 1}</td><td {td}>{_br(r['content'])}</td><td {td}>{_br(r['proposal'])}</td></tr>"
@@ -1459,15 +1544,15 @@ def build_sector_done_mail(item: Dict[str, Any], sector: str, user: Dict[str, An
             '<p style="font-size:14px;color:#b91c1c;font-weight:bold;">⚠️ Risk 있음</p>'
             '<table style="border-collapse:collapse;width:100%;max-width:900px;margin:8px 0 16px;">'
             f"<tr><th {th}>#</th><th {th}>예상 Risk</th><th {th}>제안 보완 방안</th></tr>{body_rows}</table>"
-        )
+        ) + comment
     inner = (
-        f"<p><b>{html.escape(who)}</b> 님이 <b>{html.escape(sector)}</b> 부문 검토를 작성 완료했습니다.</p>"
+        f"<p><b>{html.escape(who)}</b> 님이 <b>{html.escape(sector)} · {html.escape(team)}</b> 검토 의견을 작성 완료했습니다.</p>"
         + _mail_table([("안건 ID", html.escape(item["id"])), ("구분", html.escape(category_label(item))),
                        ("제품/기술명", f"<b>{html.escape(item['title'])}</b>"), ("현재 단계", html.escape(stage_label(item)))])
-        + f'<p style="font-weight:bold;">■ {html.escape(sector)} 부문 검토 내용</p>' + table
+        + f'<p style="font-weight:bold;">■ {html.escape(team)} 검토 의견</p>' + table
         + f'<p>▶ 안건 상세 보기: <a href="{html.escape(link)}">{html.escape(link)}</a></p>'
     )
-    text = f"{who} 님이 {sector} 부문 검토를 작성 완료했습니다.\n안건: {item['title']} ({item['id']})\n{link}\n"
+    text = f"{who} 님이 {sector} · {team} 검토 의견을 작성 완료했습니다.\n안건: {item['title']} ({item['id']})\n{link}\n"
     return {"to": _emails(settings.get("secretaryEmails")), "subject": subject,
             "html": _mail_wrap("양산이관 부문 검토 작성 완료", inner), "text": text}
 
@@ -1483,14 +1568,14 @@ def mail_to_secretary(subject: str, html_body: str, text: str, settings: Dict[st
         return {"status": "failed", "message": str(e)[:300]}
 
 
-def notify_sector_done(item_id: str, sector: str, user: Dict[str, Any]) -> None:
+def notify_team_done(item_id: str, team: str, user: Dict[str, Any]) -> None:
     settings = store.settings()
     try:
-        mail = build_sector_done_mail(find_item(store.load(), item_id), sector, user, settings)
+        mail = build_team_done_mail(find_item(store.load(), item_id), team, user, settings)
         result = mail_to_secretary(mail["subject"], mail["html"], mail["text"], settings)
     except Exception as e:  # noqa: BLE001
         result = {"status": "failed", "message": str(e)[:300]}
-    print(f"[mail] {item_id} {sector} 작성 완료 알림: {result['status']} - {result['message']}")
+    print(f"[mail] {item_id} {team} 작성 완료 알림: {result['status']} - {result['message']}")
 
 
 def notify_signup(user: Dict[str, Any]) -> None:
@@ -1641,6 +1726,7 @@ def content_disposition(filename: str, attachment: bool = True) -> str:
 # ---------------------------------------------------------------------------
 def public_settings(s: Dict[str, Any]) -> Dict[str, Any]:
     return {"criteria": s["criteria"], "sectors": SECTORS, "teams": s["teams"], "holidays": holiday_list(s),
+            "reviewMatrix": s["reviewMatrix"],
             "leadDays": STAGE_LEAD_DAYS}
 
 
@@ -1712,6 +1798,7 @@ def h_get_settings(req: Optional[Req] = None):
         "nameUrls": [f"http://{n}:{PORT}/" for n in host_names()],
         "mailDiag": mail_diagnostics(),
         "holidays": holiday_list(s),
+        "reviewMatrix": s["reviewMatrix"],
     }
 
 
@@ -1742,6 +1829,8 @@ def h_put_settings(req: Req):
             s["smtp"]["password"] = str(p["password"])
     if "reviewers" in payload:
         s["reviewers"] = normalize_reviewers(payload["reviewers"])
+    if isinstance(payload.get("reviewMatrix"), dict):
+        s["reviewMatrix"] = normalize_matrix(payload["reviewMatrix"])
     if "holidays" in payload:
         raw = payload["holidays"]
         s["holidays"] = holiday_list({"holidays": raw if isinstance(raw, list) else re.split(r"[\s,;]+", _s(raw))})
@@ -1824,13 +1913,16 @@ def h_apply(req: Req):
         if len(data) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, f"'{filename}' 파일이 100MB를 초과합니다.")
     p_date = _date(f.get("proposalDate")) or today_str()
+    if f.get("category", "제품") != "기술" and not matrix_key(f.get("productSize", ""), _s(f.get("productType")).upper()):
+        raise HTTPException(400, "제품 구분(300mm/200mm, PW/EPI)을 선택하세요.")
 
     def _create(data):
         item = normalize_item({
             "id": next_item_id(data["items"], p_date[:4]), "category": f.get("category", "제품"), "npSp": f.get("npSp", "NP"),
             "title": title[:200], "requester": requester[:100], "requesterDept": dept[:100],
             "requesterEmail": email, "proposalDate": p_date, "summary": (f.get("summary") or "")[:5000],
-            "accepted": False, "source": "신청", "stages": {}, "reviews": empty_reviews(), "tasks": [],
+            "productSize": f.get("productSize", ""), "productType": f.get("productType", ""),
+            "accepted": False, "source": "신청", "stages": {}, "reviews": {}, "tasks": [],
             "applicantEmpId": user["empId"] if user else "",
             "notify": {"status": "pending", "message": "알림 메일 발송 대기", "at": now_str()},
         })
@@ -1860,12 +1952,23 @@ def h_update_item(req: Req):
         if not payload.get("force") and int(payload.get("rev") or 0) != cur["rev"]:
             raise HTTPException(409, {"message": "다른 사용자가 먼저 이 안건을 수정했습니다.", "item": cur})
         merged = normalize_item({**incoming, "id": item_id})
-        for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId", "remindLog"):
+        for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog"):
             merged[keep] = cur[keep]
         # 접수 승인일은 서버가 기록 (처음 접수 처리된 날)
         merged["acceptedAt"] = cur["acceptedAt"] or (_date(incoming.get("acceptedAt")) or today_str() if merged["accepted"] else "")
         if not merged["accepted"]:
             merged["acceptedAt"] = ""
+        # 카드의 작성 완료·이력은 서버가 관리 (관리자가 내용을 고치면 이력에 남김)
+        for team, card in merged["reviews"].items():
+            old = cur["reviews"].get(team)
+            if old:
+                card["done"], card["history"] = old["done"], old["history"]
+                if (card["result"], card["comment"], card["risks"]) != (old["result"], old["comment"], old["risks"]):
+                    card["history"] = (card["history"] + [{"at": now_str(), "by": "관리자", "action": "관리자 수정"}])[-50:]
+            else:
+                card["done"], card["history"] = None, [{"at": now_str(), "by": "관리자", "action": "검토 팀 선정"}]
+        if merged["accepted"] and not cur["accepted"]:
+            apply_review_matrix(merged, store.settings())
         apply_stage_targets(merged, holiday_set())
         if merged["stages"]["step5"]["done"] and not cur["stages"]["step5"]["done"] and open_tasks(merged, "상"):
             raise HTTPException(400, f"중요도 '상' 과제 {len(open_tasks(merged, '상'))}건이 완료되지 않아 최종승인할 수 없습니다.")
@@ -1895,6 +1998,7 @@ def h_accept_item(req: Req):
         cur = find_item(data, req.params["id"])
         cur["accepted"] = True
         cur["acceptedAt"] = cur["acceptedAt"] or today_str()
+        apply_review_matrix(cur, store.settings())
         apply_stage_targets(cur, holiday_set())
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
@@ -1937,7 +2041,7 @@ def h_bulk_replace(req: Req):
             seen.add(it["id"])
             old = cur.get(it["id"])
             if old:
-                for keep in ("attachments", "notify", "createdAt", "source", "sectorReviews", "applicantEmpId", "remindLog"):
+                for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog"):
                     it[keep] = old[keep]
                 it["rev"] = old["rev"] + 1
             it["updatedAt"] = now_str()
@@ -2204,24 +2308,25 @@ def h_admin_user_delete(req: Req):
     return h_admin_users(req)
 
 
-# --- 부문 검토 작성 (팀장: 자기 부문 행만) ----------------------------------
-def h_sector_save(req: Req):
-    item_id, sector = req.params["id"], req.params["sector"]
-    if sector not in SECTORS:
-        raise HTTPException(400, "알 수 없는 부문입니다.")
+# --- 팀 검토 의견 작성 (같은 팀 회원이면 직급 상관없이, 이력 기록) ---------------
+def h_team_review_save(req: Req):
+    item_id, team = req.params["id"], req.params["team"]
     user = req.user()
-    if not req.is_admin and not (user and user["sector"] == sector):
-        raise HTTPException(403, f"{sector} 부문 작성 권한이 없습니다. (본인 팀의 담당 부문만 작성 가능)")
+    if not req.is_admin and not (user and user["team"] == team):
+        raise HTTPException(403, f"'{team}' 검토 의견은 {team} 회원만 작성할 수 있습니다.")
     p = req.json()
     complete = bool(p.get("complete"))
     writer = user or {"empId": "admin", "name": "관리자", "title": "", "team": "간사"}
+    who = f"{writer['team']} {writer['name']} {writer.get('title', '')}".strip()
     result = p.get("result") if p.get("result") in ("ok", "risk") else ""
     incoming = [x for x in (p.get("risks") or []) if isinstance(x, dict)]
 
     def _save(data):
         cur = find_item(data, item_id)
-        rv = cur["reviews"][sector]
-        decided = {r["id"]: r for r in rv["risks"] if r["decision"]}
+        card = cur["reviews"].get(team)
+        if not card:
+            raise HTTPException(404, f"'{team}' 은(는) 이 안건의 검토 팀으로 선정되지 않았습니다.")
+        decided = {r["id"]: r for r in card["risks"] if r["decision"]}
         risks: List[Dict[str, Any]] = []
         for x in incoming:
             rid = _s(x.get("id"))
@@ -2231,24 +2336,24 @@ def h_sector_save(req: Req):
             content, proposal = _text(x.get("content"))[:3000], _text(x.get("proposal"))[:3000]
             if not content and not proposal:
                 continue
-            known = {r["id"] for r in rv["risks"]}
-            if rid not in known:
+            if rid not in {r["id"] for r in card["risks"]}:
                 rid = next_seq_id("R", all_risk_ids(cur) + [r["id"] for r in risks])
             risks.append({"id": rid, "content": content or proposal, "proposal": proposal, "decision": "", "reason": "", "taskId": ""})
         risks.extend(decided.values())
-        res = result
-        if res == "ok" and any(r["decision"] for r in risks):
+        if result == "ok" and any(r["decision"] for r in risks):
             raise HTTPException(400, "위원회가 이미 결정한 Risk 가 있어 '이상 없음'으로 바꿀 수 없습니다.")
-        if res == "ok":
-            risks = []
-        if complete and not res:
+        if complete and not result:
             raise HTTPException(400, "검토 결과(✅ 이상 없음 / ⚠️ Risk 있음)를 선택하세요.")
-        if complete and res == "risk" and not risks:
+        if complete and result == "risk" and not risks:
             raise HTTPException(400, "'Risk 있음'이면 Risk 내용을 1개 이상 입력하세요.")
-        rv.update(result=res, risks=risks,
-                  reviewer=_s(p.get("reviewer"))[:40] or rv["reviewer"] or f"{writer['name']} {writer.get('title', '')}".strip())
+        comment = _text(p.get("comment"))[:2000]
+        if result == "ok" and not comment:
+            comment = "특이사항 없음"
+        card.update(result=result, risks=[] if result == "ok" else risks, comment=comment)
+        card["history"] = (card["history"] + [{"at": now_str(), "by": who, "action": "작성 완료" if complete else "임시 저장"}])[-50:]
         if complete:
-            cur["sectorReviews"][sector] = {"empId": writer["empId"], "name": writer["name"], "team": writer["team"], "at": now_str()}
+            card["done"] = {"empId": writer["empId"], "name": writer["name"], "title": writer.get("title", ""),
+                            "team": writer["team"], "at": now_str()}
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
         return cur
@@ -2256,20 +2361,24 @@ def h_sector_save(req: Req):
     mail = None
     if complete:
         if _emails(store.settings().get("secretaryEmails")):
-            threading.Thread(target=notify_sector_done, args=(item_id, sector, writer), daemon=True).start()
+            threading.Thread(target=notify_team_done, args=(item_id, team, writer), daemon=True).start()
             mail = "sent"
         else:
             mail = "no_recipient"
     return {"item": item, "mail": mail}
 
 
-def h_sector_reopen(req: Req):
-    """관리자: 부문 '작성 완료' 표시 해제 (재작성 요청)."""
-    item_id, sector = req.params["id"], req.params["sector"]
+def h_team_review_reopen(req: Req):
+    """관리자: '작성 완료' 해제 (재작성 요청)."""
+    item_id, team = req.params["id"], req.params["team"]
 
     def _reopen(data):
         cur = find_item(data, item_id)
-        cur["sectorReviews"].pop(sector, None)
+        card = cur["reviews"].get(team)
+        if not card:
+            raise HTTPException(404, "검토 팀을 찾을 수 없습니다.")
+        card["done"] = None
+        card["history"] = (card["history"] + [{"at": now_str(), "by": "관리자", "action": "작성 완료 해제(재작성 요청)"}])[-50:]
         cur["rev"] += 1
         return cur
     return store.mutate(_reopen)
@@ -2329,30 +2438,29 @@ def _remind_targets(item: Dict[str, Any], kind: str, sectors: List[str], task_id
     info_rows = [("안건 ID", html.escape(item["id"])), ("구분", html.escape(category_label(item))),
                  ("제품/기술명", f"<b>{html.escape(item['title'])}</b>"), ("현재 단계", html.escape(stage_label(item)))]
     if kind == "review":
-        sectors = [s for s in sectors if s in SECTORS and s not in item["sectorReviews"]]
-        if not sectors:
-            raise HTTPException(400, "Remind 할 미작성 부문이 없습니다.")
-        users = store.users()
+        teams = [t for t in sectors if t in item["reviews"] and not item["reviews"][t]["done"]]
+        if not teams:
+            raise HTTPException(400, "Remind 할 미작성 검토 팀이 없습니다.")
         to: List[str] = []
         names: List[str] = []
-        for u in users.values():
-            t = team_info(settings, u.get("team", ""))
-            if u.get("status") == "approved" and t["sector"] in sectors and u.get("email"):
+        for u in store.users().values():
+            if u.get("status") == "approved" and u.get("team") in teams and u.get("email"):
                 to.append(u["email"])
-                names.append(f"{u['team']} {u['name']}")
-        for r in normalize_reviewers(settings.get("reviewers")):
-            if r["level"] == "sub" and r["sector"] in sectors and r["email"]:
-                to.append(r["email"])
-                names.append(f"{r['sector']} {r['name']}")
+                names.append(f"{u['team']} {u['name']} {u.get('title', '')}".strip())
+        missing = [t for t in teams if t not in {u.get("team") for u in store.users().values() if u.get("status") == "approved"}]
+        if missing and not to:
+            raise HTTPException(400, f"가입한 회원이 없는 팀입니다: {', '.join(missing)} (해당 팀원이 포털에 가입해야 Remind 를 받을 수 있습니다)")
+        sectors = teams
         target = item["stages"]["step1"]["target"]
         delay = (dt.date.today() - dt.date.fromisoformat(target)).days if target and target < today_str() else 0
-        subject = (f"[양산이관 Remind] {item['title']} - {'·'.join(sectors)} 부문 검토 의견 작성 요청"
+        subject = (f"[양산이관 Remind] {item['title']} - {'·'.join(sectors)} 검토 의견 작성 요청"
                    + (f" (목표 {target[5:].replace('-', '/')}, +{delay}일 지연)" if delay else (f" (목표 {target[5:].replace('-', '/')})" if target else "")))
         inner = (
-            f"<p>안녕하십니까. 양산이관 검증위원회 간사입니다.<br>아래 안건의 <b>{html.escape('·'.join(sectors))}</b> 부문 "
+            f"<p>안녕하십니까. 양산이관 검증위원회 간사입니다.<br>아래 안건의 <b>{html.escape('·'.join(sectors))}</b> "
             "전문소위원 검토 의견이 아직 작성되지 않아 Remind 드립니다.</p>"
+            + (f"<p style='color:#b91c1c'>※ 가입 회원이 없어 메일을 받지 못한 팀: {html.escape(', '.join(missing))}</p>" if missing else "")
             + _mail_table(info_rows + [("1단계 목표일", html.escape(target or "-") + (f' <b style="color:#b91c1c">(+{delay}일 지연)</b>' if delay else "")),
-                                       ("작성 방법", "포털 로그인 → 안건 상세 → [3] 본인 부문 카드에서 ✅ 이상 없음 / ⚠️ Risk 있음 선택 후 [✅ 작성 완료]")])
+                                       ("작성 방법", "포털 로그인 → 안건 상세 → [3] 우리 팀 줄에서 ✅ 이상 없음 / ⚠️ Risk 있음 선택 후 [✅ 작성 완료]")])
             + f'<p>▶ 바로 작성하기: <a href="{html.escape(link)}">{html.escape(link)}</a></p><p>감사합니다.</p>'
         )
         key = ",".join(sectors)
@@ -2460,8 +2568,8 @@ route("GET", "/api/admin/users", h_admin_users, admin=True)
 route("POST", "/api/admin/users/{empId}", h_admin_user_action, admin=True)
 route("DELETE", "/api/admin/users/{empId}", h_admin_user_delete, admin=True)
 route("PUT", "/api/admin/teams", h_put_teams, admin=True)
-route("POST", "/api/items/{id}/sector/{sector}", h_sector_save)
-route("POST", "/api/items/{id}/sector/{sector}/reopen", h_sector_reopen, admin=True)
+route("POST", "/api/items/{id}/review/{team}", h_team_review_save)
+route("POST", "/api/items/{id}/review/{team}/reopen", h_team_review_reopen, admin=True)
 route("POST", "/api/presence", h_presence)
 route("POST", "/api/presence/leave", h_presence_leave)
 route("POST", "/api/remind", h_remind, admin=True)

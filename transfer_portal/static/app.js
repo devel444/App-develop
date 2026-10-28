@@ -32,6 +32,8 @@
     clientId: "",
     adminUsers: null,
     holidays: [],
+    reviewMatrix: {},
+    matrixDraft: null,
     leadDays: { step1: 5, step2: 7, step3: 7, step4: 7, step5: 7 },
     route: "dashboard",
     f: {
@@ -247,18 +249,24 @@
   }
   function allRisks(item) {
     var arr = [];
-    SECTORS.forEach(function (sec) { (item.reviews[sec].risks || []).forEach(function (r) { arr.push({ sector: sec, risk: r }); }); });
+    cardOrder(item).forEach(function (team) {
+      var c = item.reviews[team];
+      (c.risks || []).forEach(function (r) { arr.push({ team: team, sector: c.sector, risk: r }); });
+    });
     return arr;
   }
+  // 선정된 검토 팀 기준 요약 (팀 단위)
   function reviewSummary(item) {
-    var risks = allRisks(item), completed = Object.keys(item.sectorReviews || {}).length;
+    var teams = Object.keys(item.reviews || {}), risks = allRisks(item);
+    var pending = cardOrder(item).filter(function (t) { return !item.reviews[t].done; });
     return {
-      completed: completed, pending: SECTORS.filter(function (s) { return !(item.sectorReviews || {})[s]; }),
-      allOk: SECTORS.every(function (s) { return item.reviews[s].result === "ok"; }),
+      total: teams.length, completed: teams.length - pending.length, pending: pending,
+      allOk: teams.length > 0 && teams.every(function (t) { return item.reviews[t].result === "ok"; }),
       riskCount: risks.length,
       undecided: risks.filter(function (x) { return !x.risk.decision; }).length
     };
   }
+  function shortTeams(list, n) { return list.length > n ? list.slice(0, n).join(" · ") + " 외 " + (list.length - n) + "팀" : list.join(" · "); }
   function openTaskCount(item, imp) {
     return (item.tasks || []).filter(function (t) { return t.status !== "완료" && (!imp || t.importance === imp); }).length;
   }
@@ -269,13 +277,30 @@
   }
   function findRisk(item, id) {
     var hit = null;
-    SECTORS.forEach(function (sec) { item.reviews[sec].risks.forEach(function (r) { if (r.id === id) hit = { sector: sec, risk: r }; }); });
+    Object.keys(item.reviews || {}).forEach(function (team) {
+      var c = item.reviews[team];
+      c.risks.forEach(function (r) { if (r.id === id) hit = { team: team, sector: c.sector, risk: r }; });
+    });
     return hit;
   }
+  // 카드 표시 순서: 부문 → 팀 목록 순서
+  function cardOrder(item) {
+    var names = state.teams.map(function (t) { return t.name; });
+    return Object.keys(item.reviews || {}).sort(function (a, b) {
+      var ca = item.reviews[a], cb = item.reviews[b];
+      var sa = SECTORS.indexOf(ca.sector), sb = SECTORS.indexOf(cb.sector);
+      if (sa !== sb) return sa - sb;
+      var ia = names.indexOf(a), ib = names.indexOf(b);
+      return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib) || a.localeCompare(b);
+    });
+  }
+  function teamSector(team) { var t = state.teams.filter(function (x) { return x.name === team; })[0]; return t ? t.sector : ""; }
+  function newCard(team) { return { sector: teamSector(team) || SECTORS[0], result: "", comment: "", risks: [], done: null, history: [] }; }
   function findTask(item, id) { return (item.tasks || []).filter(function (t) { return t.id === id; })[0]; }
   function catBadge(item) {
     return item.category === "제품"
-      ? '<span class="badge badge-product">제품</span><span class="badge badge-npsp">' + esc(item.npSp || "NP") + "</span>"
+      ? '<span class="badge badge-product">제품</span><span class="badge badge-npsp">' + esc(item.npSp || "NP") + "</span>" +
+        (item.productSize ? '<span class="badge badge-size">' + esc(item.productSize + " " + item.productType) + "</span>" : "")
       : '<span class="badge badge-tech">기술</span>';
   }
   function catText(item) { return item.category === "제품" ? "제품(" + (item.npSp || "NP") + ")" : "기술"; }
@@ -312,14 +337,10 @@
   function isLoggedIn() { return state.isAdmin || !!state.user; }
   var MEMBER_ROUTES = ["items", "tasks"];  // 로그인해야 보이는 메뉴
   function canApply() { return state.isAdmin || !!(state.user && state.user.canApply); }
-  function mySector() { return state.user && state.user.sector ? state.user.sector : ""; }
   function userLabel(u) { return (u.team ? u.team + " " : "") + u.name + (u.title ? " " + u.title : ""); }
-  function canEditSector(sec) { return state.isAdmin || (!!mySector() && sec === mySector()); }
-  function emptyReviews() {
-    var o = {};
-    SECTORS.forEach(function (s) { o[s] = { result: "", reviewer: "", risks: [] }; });
-    return o;
-  }
+  // 검토 의견: 같은 팀 회원이면 직급 상관없이 작성 (관리자는 전체)
+  function canEditTeam(team) { return state.isAdmin || !!(state.user && state.user.team === team); }
+  function emptyReviews() { return {}; }
 
   // =====================================================================
   // 데이터 로드 / 실시간 갱신
@@ -328,7 +349,7 @@
     return api("GET", "/api/bootstrap").then(function (d) {
       state.items = d.items; state.version = d.version;
       state.criteria = d.settings.criteria; state.storage = d.storage; state.teams = d.settings.teams || [];
-      state.holidays = d.settings.holidays || []; if (d.settings.leadDays) state.leadDays = d.settings.leadDays;
+      state.holidays = d.settings.holidays || []; state.reviewMatrix = d.settings.reviewMatrix || {}; if (d.settings.leadDays) state.leadDays = d.settings.leadDays;
       updateNavBadges();
     });
   }
@@ -473,8 +494,11 @@
         return;
       }
       if (si.delay) out.push({ kind: "stage", sev: 0, item: it, label: "🚨 단계 지연", text: si.name.replace(/ \(.*\)$/, "") + " · 목표 " + fmtDay(si.target), days: si.delay, unit: "일 지연" });
+      if (si.phase === "ING" && si.idx === 0 && !sm.total) {
+        out.push({ kind: "decide", sev: 1, item: it, label: "👥 팀 미선정", text: "전문(소)위원(검토 팀) 선정 필요", days: 0, unit: "" });
+      }
       if (si.phase === "ING" && si.idx === 0 && sm.pending.length) {
-        out.push({ kind: "review", sev: 1, item: it, label: "⏳ 부문 미작성", text: sm.pending.join(" · ") + " (" + sm.completed + "/6 완료)", sectors: sm.pending,
+        out.push({ kind: "review", sev: 1, item: it, label: "⏳ 검토 미작성", text: shortTeams(sm.pending, 4) + " (" + sm.completed + "/" + sm.total + " 완료)", sectors: sm.pending,
           days: it.acceptedAt ? Math.max(0, daysBetween(it.acceptedAt, t0)) : 0, unit: "일 경과", remindKey: sm.pending.join(",") });
       }
       if (sm.undecided && si.phase === "ING") {
@@ -595,8 +619,8 @@
       '<div class="kpi-hint">클릭 → 보완 과제 현황(지연)</div></div>' +
 
       '<div class="kpi-card wait-card" data-action="kpiGo" data-go="actions"><div class="kpi-label"><span>⏳ 조치 대기</span><span class="badge badge-wait">회신·결정 필요</span></div>' +
-      '<div class="kpi-value">' + (pendingSectors + undecided.length) + '건</div><div class="kpi-sub"><span class="kpi-pill">부문 미작성 ' + pendingSectors + "</span>" +
-      '<span class="kpi-pill">결정 대기 안건 ' + undecided.length + "</span></div>" +
+      '<div class="kpi-value">' + (pendingSectors + undecided.length) + '건</div><div class="kpi-sub"><span class="kpi-pill">검토 미작성 ' + pendingSectors + "팀</span>" +
+      '<span class="kpi-pill">결정 대기·미선정 ' + undecided.length + "</span></div>" +
       '<div class="kpi-hint">' + (member ? "클릭 → 아래 조치 필요 목록" : "로그인 후 상세 확인") + "</div></div></section>" +
 
       actionHtml +
@@ -679,7 +703,7 @@
         "<td>" + (tasks.length ? '<span style="font-weight:700;font-size:12px;margin-right:4px">완료 ' + dn + "/" + tasks.length + "</span>" + chips +
           (dl ? '<span class="badge badge-delay">지연 ' + dl + "</span>" : "") : '<span class="muted" style="font-size:12px">없음</span>') +
           (rsum.undecided ? '<div><span class="badge badge-wait" title="2단계에서 과제 등록/수용 결정 필요">결정 대기 Risk ' + rsum.undecided + "</span></div>" : "") +
-          (item.accepted !== false && rsum.completed < 6 && !stageInfo(item).isDone ? '<div class="muted" style="font-size:11px">부문 검토 ' + rsum.completed + "/6</div>" : "") + "</td>" +
+          (item.accepted !== false && !stageInfo(item).isDone && (!rsum.total || rsum.completed < rsum.total) ? '<div class="muted" style="font-size:11px">' + (rsum.total ? "검토 " + rsum.completed + "/" + rsum.total : "검토 팀 미선정") + "</div>" : "") + "</td>" +
         "<td>" + (item.attachments.length ? '<span title="' + esc(item.attachments.map(function (a) { return a.name; }).join("\n")) + '">📎 ' + item.attachments.length + "</span>" : '<span class="muted">-</span>') + "</td>" +
         "<td>" + statusBadge(si) + "</td></tr>";
     }).join("");
@@ -800,6 +824,9 @@
       '<select id="apNpSp" class="select" ' + (isProd ? "" : "disabled") + ">" +
       (isProd ? '<option value="NP">NP (New Product, 신제품)</option><option value="SP">SP (Standard Product, 파생/표준제품)</option>' : '<option value="">해당 없음</option>') +
       "</select></div>" +
+      (isProd ? '<div class="field"><label for="apSize">제품 구분 <span class="req">*</span> <span class="muted">(검토 팀 자동 선정 기준)</span></label>' +
+        '<div style="display:flex;gap:6px"><select id="apSize" class="select" style="flex:1"><option value="">구경 선택</option><option value="300mm">300mm</option><option value="200mm">200mm</option></select>' +
+        '<select id="apType" class="select" style="flex:1"><option value="">PW / EPI</option><option value="PW">PW</option><option value="EPI">EPI</option></select></div></div>' : "") +
       '<div class="field"><label for="apDate">발제일</label><input id="apDate" type="date" class="input" value="' + today() + '" /></div>' +
       '<div class="field full"><label for="apTitle">제품 / 기술명 <span class="req">*</span></label><input id="apTitle" class="input" maxlength="200" placeholder="예) 차세대 SiC 전력반도체 모듈 Gen-4" /></div>' +
       '<div class="field"><label for="apReq">요청자 성명 <span class="req">*</span></label><input id="apReq" class="input" maxlength="100" placeholder="예) 홍길동 책임" value="' + esc(me.name ? me.name + (me.title ? " " + me.title : "") : "") + '" /></div>' +
@@ -844,6 +871,10 @@
     var fd = new FormData();
     fd.append("category", state.apply.category);
     fd.append("npSp", state.apply.category === "제품" ? $("#apNpSp").value : "");
+    if (state.apply.category === "제품") {
+      if (!$("#apSize").value || !$("#apType").value) { toast("제품 구분(300mm/200mm, PW/EPI)을 선택하세요.", "err"); return; }
+      fd.append("productSize", $("#apSize").value); fd.append("productType", $("#apType").value);
+    }
     fd.append("title", title); fd.append("requester", req); fd.append("requesterDept", dept);
     fd.append("requesterEmail", email); fd.append("proposalDate", $("#apDate").value || today());
     fd.append("summary", $("#apSummary").value);
@@ -1129,6 +1160,11 @@
           '<button class="btn btn-danger btn-sm" data-action="deleteItem" data-id="' + esc(i.id) + '">삭제</button></td></tr>';
       }).join("") + "</tbody></table></div></div>" +
 
+      // 검토 팀 매트릭스
+      '<div class="card full"><div class="card-title">🧩 제품 구분별 검토 팀 (전문소위원) <span class="card-sub">접수 승인 시 제품 안건에 자동 선정됩니다 · 기술 안건은 안건 상세에서 직접 선정</span></div>' +
+      '<div class="table-wrap" id="matrixBody"></div><div style="display:flex;justify-content:flex-end;gap:6px">' +
+      '<button class="btn btn-primary btn-sm" data-action="matrixSave">💾 매트릭스 저장</button></div></div>' +
+
       // 휴일 (영업일 계산)
       '<div class="card"><div class="card-title">📅 휴일 (영업일 계산에서 제외) <span class="card-sub">' + s.holidays.length + "일 등록</span></div>" +
       '<div class="card-sub">주말은 자동 제외됩니다. 공휴일·회사 휴무일을 YYYY-MM-DD 형식으로 한 줄에 하나씩(또는 쉼표로) 입력하세요.</div>' +
@@ -1153,9 +1189,11 @@
     );
     renderReviewerRows();
     if (!state.teamDraft) state.teamDraft = clone(state.teams);
+    if (!state.matrixDraft) state.matrixDraft = clone(s.reviewMatrix || state.reviewMatrix);
+    renderMatrix();
     renderTeamRows();
     if (state.adminUsers) renderUserRows();
-    else api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; renderUserRows(); }).catch(fail);
+    else api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; renderUserRows(); renderMailPanel(); }).catch(fail);
     var it = findItem(state.adminMailItemId);
     if (it && (!state.mail || state.mail.host !== "admin" || state.mail.itemId !== it.id)) initMail(it, "admin");
     renderMailPanel();
@@ -1172,6 +1210,23 @@
       "<b>서버 실행 권한</b><span>" + esc(priv) + "</span>" +
       '<b>Python</b><span style="word-break:break-all">' + esc(d.python) + "</span></div>" +
       '<div class="card-sub">Outlook 2016/2019/365 데스크톱 버전 모두 지원합니다. 서버 PC에서 <b>Outlook을 켜 둔 상태</b>여야 자동 발송됩니다.</div>';
+  }
+  // ---- 관리자: 제품 구분별 검토 팀 매트릭스 ----
+  var MATRIX_KEYS = ["300mm PW", "300mm EPI", "200mm PW", "200mm EPI"];
+  function renderMatrix() {
+    var box = $("#matrixBody");
+    if (!box) return;
+    var mx = state.matrixDraft;
+    box.innerHTML = '<table class="matrix-table"><thead><tr><th>부문</th><th>검토 팀</th>' + MATRIX_KEYS.map(function (k) { return "<th>" + k + "</th>"; }).join("") +
+      "</tr></thead><tbody>" + SECTORS.map(function (sec) {
+        var teams = state.teams.filter(function (t) { return t.sector === sec; });
+        return teams.map(function (t, i) {
+          return "<tr>" + (i === 0 ? '<td rowspan="' + teams.length + '" class="mx-sec">' + esc(sec) + "</td>" : "") + "<td>" + esc(t.name) + "</td>" +
+            MATRIX_KEYS.map(function (k) {
+              return '<td class="mx-cell"><input type="checkbox" data-mx-key="' + k + '" data-mx-team="' + esc(t.name) + '"' + ((mx[k] || []).indexOf(t.name) !== -1 ? " checked" : "") + " /></td>";
+            }).join("") + "</tr>";
+        }).join("");
+      }).join("") + '</tbody><tfoot><tr><td colspan="2"><b>선정 팀 수</b></td>' + MATRIX_KEYS.map(function (k) { return "<td><b>" + (mx[k] || []).length + "</b></td>"; }).join("") + "</tr></tfoot></table>";
   }
   function renderUserRows() {
     var body = $("#userBody");
@@ -1249,7 +1304,7 @@
     renderDetail();
     $("#detailModal").classList.add("open");
     $("#detailModal").setAttribute("aria-hidden", "false");
-    if (state.isAdmin && !state.adminUsers) api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; if (state.detail) renderTaskBox(); }).catch(function () { });
+    if (state.isAdmin && !state.adminUsers) api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; if (state.detail) { renderTaskBox(); renderMailPanel(); } }).catch(function () { });
     if (state.isAdmin && !state.admin) loadAdminSettings().then(function () { if (state.detail) { initMail(findItem(id) || item, "detail"); renderMailPanel(); } }).catch(fail);
   }
   function isDirty() { return state.detail && JSON.stringify(state.detail.draft) !== JSON.stringify(state.detail.orig); }
@@ -1275,11 +1330,11 @@
 
   function renderDetail() {
     var d = state.detail.draft, si = stageInfo(d), admin = state.isAdmin, dis = admin ? "" : "disabled";
-    var sec = admin ? "" : mySector();
+    var myTeam = !admin && state.user && d.reviews[state.user.team] ? state.user.team : "";
     var roleBanner = admin ? ""
-      : sec ? '<div class="banner info"><span>🖊 <b>' + esc(sec) + "</b> 부문 검토 의견 작성 권한이 있습니다. 아래 [3]의 " + esc(sec) +
-        " 카드에서 <b>✅ 이상 없음</b> 또는 <b>⚠️ Risk 있음</b>을 고르고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다.</span></div>"
-      : '<div class="banner warn"><span>🔒 열람 모드입니다. ' + (state.user ? "검토 작성은 6대 부문 검토팀 회원만 가능합니다." : "부문 검토 작성은 로그인 후, 전체 수정은 [관리자 모드]에서 가능합니다.") + "</span>" +
+      : myTeam ? '<div class="banner info"><span>🖊 <b>' + esc(myTeam) + "</b> 이(가) 검토 팀으로 선정되었습니다. 아래 [3]의 " + esc(myTeam) +
+        " 줄에서 <b>✅ 이상 없음</b> 또는 <b>⚠️ Risk 있음</b>을 고르고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다. (작성 이력이 남습니다)</span></div>"
+      : '<div class="banner warn"><span>🔒 열람 모드입니다. ' + (state.user ? "우리 팀(" + esc(state.user.team) + ")은 이 안건의 검토 팀으로 선정되지 않았습니다." : "검토 의견 작성은 로그인 후, 전체 수정은 [관리자 모드]에서 가능합니다.") + "</span>" +
         (state.user ? "" : '<button class="btn btn-secondary btn-sm" data-action="nav" data-route="account">👤 로그인</button>') + "</div>";
     $("#detailHeader").innerHTML =
       '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3>' + esc(d.title || "(제목 없음)") + "</h3>" + catBadge(d) + trackBadges(si) +
@@ -1301,6 +1356,9 @@
       '<div class="field"><label>구분</label><select class="select" data-dfield="category" ' + dis + '><option value="제품"' + (d.category === "제품" ? " selected" : "") + '>제품</option><option value="기술"' + (d.category === "기술" ? " selected" : "") + ">기술</option></select></div>" +
       '<div class="field"><label>NP / SP</label><select class="select" data-dfield="npSp" ' + (admin && d.category === "제품" ? "" : "disabled") + ">" +
       (d.category === "제품" ? '<option value="NP"' + (d.npSp === "NP" ? " selected" : "") + '>NP</option><option value="SP"' + (d.npSp === "SP" ? " selected" : "") + ">SP</option>" : '<option value="">해당없음</option>') + "</select></div>" +
+      (d.category === "제품" ? '<div class="field"><label>제품 구분</label><div style="display:flex;gap:4px">' +
+        '<select class="select" data-dfield="productSize" ' + dis + '><option value="">구경</option>' + ["300mm", "200mm"].map(function (v) { return '<option value="' + v + '"' + (d.productSize === v ? " selected" : "") + ">" + v + "</option>"; }).join("") + "</select>" +
+        '<select class="select" data-dfield="productType" ' + dis + '><option value="">PW/EPI</option>' + ["PW", "EPI"].map(function (v) { return '<option value="' + v + '"' + (d.productType === v ? " selected" : "") + ">" + v + "</option>"; }).join("") + "</select></div></div>" : "") +
       '<div class="field span2"><label>제품 / 기술명</label><input class="input" data-dfield="title" value="' + esc(d.title) + '" ' + dis + " /></div>" +
       '<div class="field"><label>요청자</label><input class="input" data-dfield="requester" value="' + esc(d.requester) + '" ' + dis + " /></div>" +
       '<div class="field"><label>소속 부서</label><input class="input" data-dfield="requesterDept" value="' + esc(d.requesterDept) + '" ' + dis + " /></div>" +
@@ -1316,25 +1374,25 @@
       '<span id="stageBadge"></span></div><div class="stepper" id="stepperBox"></div><div id="extHistory"></div>' +
       '<div class="card-sub">목표일은 자동 지정됩니다 (1단계: 접수 승인일 + ' + state.leadDays.step1 + '영업일, 이후: 앞 단계 완료일 + 7영업일, 주말·휴일 제외) · 목표일 변경은 관리자가 [⏰ 연장]으로만 · ⚡/📌 버튼은 다시 누르면 원복됩니다</div></div>' +
 
-      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">3</span>전문소위원 검토 의견 — 6대 부문</div>' +
+      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">3</span>전문소위원 검토 의견 — 선정된 검토 팀</div>' +
       '<span id="reviewSummary"></span></div>' +
-      '<div class="card-sub">각 부문 팀장이 ✅ 이상 없음 / ⚠️ Risk 있음을 작성합니다. Risk 는 2단계 검증소위원회에서 간사가 <b>[🛠 과제 등록]</b> 또는 <b>[✔ 수용]</b>으로 결정합니다.</div>' +
+      '<div class="card-sub">선정된 팀이 ✅ 이상 없음(의견 선택) / ⚠️ Risk 있음을 작성합니다. Risk 는 2단계 검증소위원회에서 간사가 <b>[🛠 과제 등록]</b> 또는 <b>[✔ 수용]</b>으로 결정합니다.</div>' +
       '<div class="review-grid" id="reviewGrid"></div></div>' +
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">4</span>🛠 보완 과제</div><span id="taskSummary"></span></div>' +
       '<div class="card-sub">중요도 <b>상</b> = 양산이관 전 완료 필수(미완료 시 최종승인 불가) · <b>중·하</b> = 남아 있어도 조건부 승인 가능 · 목표일 변경은 [⏰ 연장](사유 필수)</div>' +
       '<div id="taskBox"></div></div>' +
 
-      (admin ? '<div class="section admin-section"><div class="section-head"><div class="section-title"><span class="section-num">5</span>전문(소)위원 · 전문위원 검토 요청 메일 발송 <span class="badge badge-gray">관리자 전용</span></div>' +
-        '<span class="card-sub">저장된 안건 내용 기준으로 작성됩니다</span></div><div id="mailHost-detail"></div></div>' : "");
+      (admin ? '<div class="section admin-section"><div class="section-head"><div class="section-title"><span class="section-num">5</span>전문(소)위원 선정 · 검토 요청 메일 <span class="badge badge-gray">관리자 전용</span></div>' +
+        '<span class="card-sub">메일 본문은 저장된 안건 내용 기준으로 작성됩니다</span></div><div id="teamPick"></div><div id="mailHost-detail"></div></div>' : "");
 
     $("#detailFooter").innerHTML =
       (admin ? '<button class="btn btn-danger" data-action="deleteItem" data-id="' + esc(d.id) + '">🗑 이 안건 삭제</button>' : "<span></span>") +
       '<div style="display:flex;gap:8px;margin-left:auto"><button class="btn btn-secondary" data-action="closeDetail">닫기</button>' +
       (admin ? '<button class="btn btn-primary" data-action="detailSave">💾 저장 (공유폴더 즉시 반영)</button>' : "") +
-      (sec ? '<button class="btn btn-teal" data-action="sectorSave">💾 임시 저장</button><button class="btn btn-primary" data-action="sectorComplete">✅ ' + esc(sec) + " 작성 완료 (간사에게 메일)</button>" : "") + "</div>";
+      (myTeam ? '<button class="btn btn-teal" data-action="teamSave">💾 임시 저장</button><button class="btn btn-primary" data-action="teamComplete">✅ ' + esc(myTeam) + " 작성 완료 (간사에게 메일)</button>" : "") + "</div>";
 
-    renderAttachments(); renderStepper(); renderMailPanel(); renderReviews(); renderTaskBox();
+    renderAttachments(); renderStepper(); renderTeamPick(); renderMailPanel(); renderReviews(); renderTaskBox();
   }
 
   function renderAttachments() {
@@ -1398,44 +1456,58 @@
   }
 
 
-  // ---- [3] 부문 검토 의견 카드 ----
+  // ---- [3] 전문소위원 검토 의견: 부문별로 묶고 팀마다 한 줄 ----
   function renderReviews() {
     var d = state.detail.draft, grid = $("#reviewGrid"), admin = state.isAdmin;
     if (!grid) return;
-    var done = d.sectorReviews || {};
-    grid.innerHTML = SECTORS.map(function (sec) {
-      var rv = d.reviews[sec], edit = canEditSector(sec), cr = done[sec];
-      var status = rv.result === "ok" ? '<span class="rv-chip ok">✅ 이상 없음</span>'
-        : rv.result === "risk" ? '<span class="rv-chip risk">⚠️ Risk ' + rv.risks.length + "건</span>" : '<span class="rv-chip none">⬜ 미작성</span>';
-      var compl = cr ? '<div class="rv-done" title="' + esc(cr.team + " " + cr.name + " · " + cr.at) + '">✓ 작성 완료 · ' + esc(cr.name) + " " + esc((cr.at || "").slice(5, 10)) +
-          (admin ? ' <button class="x" data-action="sectorReopen" data-sector="' + esc(sec) + '" title="작성 완료 해제(재작성 요청)">✕</button>' : "") + "</div>"
-        : '<div class="rv-pending">작성 완료 전</div>';
-      var reviewer = edit ? '<input class="input rv-reviewer" data-rv-sector="' + esc(sec) + '" data-rvf="reviewer" placeholder="검토 팀장 이름" value="' + esc(rv.reviewer) + '" />'
-        : rv.reviewer ? '<div class="muted" style="font-size:12px">검토: ' + esc(rv.reviewer) + "</div>" : "";
-      var toggle = edit ? '<div class="rv-toggle">' +
-        '<button class="rv-opt ok' + (rv.result === "ok" ? " on" : "") + '" data-action="rvResult" data-sector="' + esc(sec) + '" data-val="ok">✅ 이상 없음</button>' +
-        '<button class="rv-opt risk' + (rv.result === "risk" ? " on" : "") + '" data-action="rvResult" data-sector="' + esc(sec) + '" data-val="risk">⚠️ Risk 있음</button></div>' : "";
-      var body = "";
-      if (rv.result === "risk") {
-        body = rv.risks.map(function (r) { return riskHtml(sec, r, edit); }).join("") +
-          (edit ? '<button class="btn btn-secondary btn-sm" data-action="riskAdd" data-sector="' + esc(sec) + '">+ Risk 추가</button>' : "");
-      } else if (rv.result === "ok") {
-        body = '<div class="rv-ok-text">특이사항 없음</div>';
-      } else if (!edit) {
-        body = '<div class="muted" style="font-size:12px">아직 작성되지 않았습니다.</div>';
-      }
-      var remind = admin && !cr && d.accepted !== false ? '<div class="rv-remind">' + remindInfo(d, sec) + ' <button class="btn btn-amber btn-sm" data-action="remind" data-kind="review" data-id="' + esc(d.id) + '" data-sectors="' + esc(sec) + '">✉️ Remind</button></div>' : "";
-      var actions = !admin && edit ? '<div class="rv-actions"><button class="btn btn-teal btn-sm" data-action="sectorSave">💾 임시 저장</button>' +
-        '<button class="btn btn-primary btn-sm" data-action="sectorComplete">✅ 작성 완료</button></div>' : "";
-      return '<div class="rv-card ' + (rv.result || "none") + (edit && !admin ? " mine" : "") + '"><div class="rv-head"><b>' + esc(sec) + "</b>" + status + "</div>" +
-        compl + remind + reviewer + toggle + body + actions + "</div>";
-    }).join("");
+    var order = cardOrder(d);
+    if (!order.length) {
+      grid.innerHTML = '<div class="empty-state" style="padding:18px">검토 팀이 아직 선정되지 않았습니다.' +
+        (admin ? " 아래 [5] 전문(소)위원 선정에서 팀을 선택하세요." : " (간사가 선정합니다)") + "</div>";
+    } else {
+      grid.innerHTML = SECTORS.map(function (sec) {
+        var teams = order.filter(function (t) { return d.reviews[t].sector === sec; });
+        if (!teams.length) return "";
+        var doneCnt = teams.filter(function (t) { return d.reviews[t].done; }).length;
+        return '<div class="rv-sector"><div class="rv-sector-head"><b>' + esc(sec) + '</b><span class="muted">' + teams.length + "팀 · 완료 " + doneCnt + "</span></div>" +
+          teams.map(function (team) { return reviewRow(d, team); }).join("") + "</div>";
+      }).join("");
+    }
     var sm = reviewSummary(d);
-    $("#reviewSummary").innerHTML = '<span class="badge badge-gray">작성 완료 ' + sm.completed + "/6</span>" +
+    $("#reviewSummary").innerHTML = '<span class="badge badge-gray">작성 완료 ' + sm.completed + "/" + sm.total + "</span>" +
       (sm.riskCount ? ' <span class="badge badge-gray">Risk ' + sm.riskCount + "건</span>" : "") +
       (sm.undecided ? ' <span class="badge badge-wait">결정 대기 ' + sm.undecided + "건</span>" : "");
   }
-  function riskHtml(sec, r, edit) {
+  function reviewRow(d, team) {
+    var c = d.reviews[team], admin = state.isAdmin, edit = canEditTeam(team), mine = edit && !admin;
+    var tAttr = ' data-team="' + esc(team) + '"';
+    var toggle = edit
+      ? '<span class="rv-mini">' +
+        '<button class="rv-opt ok sm' + (c.result === "ok" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="ok">✅ 이상 없음</button>' +
+        '<button class="rv-opt risk sm' + (c.result === "risk" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="risk">⚠️ Risk 있음</button></span>'
+      : (c.result === "ok" ? '<span class="rv-chip ok">✅ 이상 없음</span>' : c.result === "risk" ? '<span class="rv-chip risk">⚠️ Risk ' + c.risks.length + "건</span>" : '<span class="rv-chip none">⬜ 미작성</span>');
+    var hist = c.history && c.history.length ? '<span class="rv-hist" title="' + esc(c.history.map(function (h) { return h.at + "  " + h.by + "  " + h.action; }).join("\n")) + '">🕘 이력 ' + c.history.length + "</span>" : "";
+    var status = c.done
+      ? '<span class="rv-done">✓ 완료 · ' + esc(c.done.name) + (c.done.title ? " " + esc(c.done.title) : "") + " " + esc((c.done.at || "").slice(5, 16)) +
+        (admin ? ' <button class="x" data-action="teamReopen"' + tAttr + ' title="작성 완료 해제(재작성 요청)">✕</button>' : "") + "</span>"
+      : '<span class="rv-pending">⏳ 미작성</span>' +
+        (admin && d.accepted !== false ? " " + remindInfo(d, team) + ' <button class="btn btn-amber btn-xs" data-action="remind" data-kind="review" data-id="' + esc(d.id) + '" data-sectors="' + esc(team) + '">✉️ Remind</button>' : "");
+    var body = "";
+    if (c.result === "risk") {
+      body = c.risks.map(function (r) { return riskHtml(team, r, edit); }).join("") +
+        (edit ? '<button class="btn btn-secondary btn-sm" data-action="riskAdd"' + tAttr + '>+ Risk 추가</button>' : "");
+    }
+    if (c.result) {
+      body += edit
+        ? '<textarea class="textarea sm" data-rv-team="' + esc(team) + '" data-rvf="comment" placeholder="' + (c.result === "ok" ? "의견 (선택) · 비워 두면 '특이사항 없음'으로 저장됩니다" : "종합 의견 (선택)") + '">' + esc(c.comment) + "</textarea>"
+        : (c.comment ? '<div class="rv-comment">💬 ' + esc(c.comment) + "</div>" : "");
+    }
+    var actions = mine ? '<div class="rv-actions"><button class="btn btn-teal btn-sm" data-action="teamSave">💾 임시 저장</button>' +
+      '<button class="btn btn-primary btn-sm" data-action="teamComplete">✅ 작성 완료</button></div>' : "";
+    return '<div class="rv-row ' + (c.result || "none") + (mine ? " mine" : "") + '"><div class="rv-line"><span class="rv-team">' + esc(team) + "</span>" + toggle +
+      '<span class="rv-status">' + status + hist + "</span></div>" + (body || actions ? '<div class="rv-body">' + body + actions + "</div>" : "") + "</div>";
+  }
+  function riskHtml(team, r, edit) {
     var admin = state.isAdmin, d = state.detail.draft, locked = !!r.decision, acc = state.detail.acceptFor;
     var content = edit && !locked
       ? '<textarea class="textarea" data-risk-id="' + esc(r.id) + '" data-rkf="content" placeholder="예상되는 Risk">' + esc(r.content) + "</textarea>" +
@@ -1461,6 +1533,47 @@
     return '<div class="rv-risk' + (locked ? " locked" : "") + '"><div class="rv-risk-top"><span class="rv-risk-no">' + esc(r.id) + "</span>" +
       (edit && !locked ? '<button class="x" data-action="riskDel" data-risk-id="' + esc(r.id) + '" title="삭제">✕</button>' : "") + "</div>" +
       content + '<div class="rv-dec">' + dec + "</div></div>";
+  }
+
+  // ---- [5] 전문(소)위원(검토 팀) 선정 ----
+  function renderTeamPick() {
+    var box = $("#teamPick");
+    if (!box || !state.detail) return;
+    var d = state.detail.draft, key = d.productSize && d.productType ? d.productSize + " " + d.productType : "";
+    var matrix = (state.reviewMatrix || {})[key] || [];
+    box.innerHTML = '<div class="pick-head"><span class="filter-label">검토 팀 선정 · ' + Object.keys(d.reviews).length + "팀</span>" +
+      (d.category === "제품" ? '<span class="badge badge-gray">제품 구분: ' + esc(key || "미지정") + "</span>" +
+        (matrix.length ? '<button class="btn btn-secondary btn-sm" data-action="pickMatrix">' + esc(key) + " 기본 팀 적용 (" + matrix.length + "팀)</button>" : "")
+        : '<span class="badge badge-tech">기술 안건: 공정에 맞게 직접 선정</span>') + "</div>" +
+      '<div class="pick-grid">' + SECTORS.map(function (sec) {
+        var teams = state.teams.filter(function (t) { return t.sector === sec; });
+        Object.keys(d.reviews).forEach(function (t) { if (d.reviews[t].sector === sec && !teams.some(function (x) { return x.name === t; })) teams.push({ name: t }); });
+        return '<div class="pick-sector"><h5>' + esc(sec) + "</h5>" + teams.map(function (t) {
+          var c = d.reviews[t.name];
+          return '<label class="pick-team' + (c ? " on" : "") + (c && c.done ? " done" : "") + '"><input type="checkbox" data-pick-team="' + esc(t.name) + '"' + (c ? " checked" : "") + " />" +
+            esc(t.name) + (c && c.done ? " ✓" : "") + (matrix.indexOf(t.name) !== -1 ? ' <span class="pick-def" title="제품 구분 기본 팀">기본</span>' : "") + "</label>";
+        }).join("") + "</div>";
+      }).join("") + "</div>" +
+      '<div class="card-sub">선택하면 [3]에 해당 팀 줄이 바로 생깁니다. 선정 변경 후 [💾 저장]을 눌러야 반영됩니다. 위원회가 결정한 Risk 가 있는 팀은 해제할 수 없습니다.</div>';
+  }
+  function pickTeam(team, on) {
+    var d = state.detail.draft, c = d.reviews[team];
+    if (on && !c) {
+      d.reviews[team] = newCard(team);
+      autoSelectLeaders([team]);
+    } else if (!on && c) {
+      if (c.risks.some(function (r) { return r.decision; })) { toast(team + " 은(는) 위원회가 결정한 Risk 가 있어 해제할 수 없습니다.", "err"); renderTeamPick(); return; }
+      if ((c.result || c.done) && !confirm(team + " 이(가) 이미 작성한 검토 의견이 있습니다. 선정을 해제하면 의견이 삭제됩니다. 계속할까요?")) { renderTeamPick(); return; }
+      delete d.reviews[team];
+    }
+    renderTeamPick(); renderReviews(); renderMailPanel();
+  }
+  // 선정 팀의 팀장(가입 회원)을 메일 받는 사람으로 자동 선택
+  function autoSelectLeaders(teams) {
+    if (!state.mail) return;
+    (state.adminUsers || []).forEach(function (u) {
+      if (u.status === "approved" && u.email && teams.indexOf(u.team) !== -1 && u.title === "팀장") state.mail.selected[u.email] = true;
+    });
   }
 
   // ---- [4] 보완 과제 표 ----
@@ -1495,7 +1608,7 @@
             : '<button class="step-btn ext" data-action="taskExtOpen" data-task-id="' + esc(t.id) + '">' + (t.target ? "⏰ 연장" : "📅 목표일 지정") + "</button>" +
               (t.ownerEmail ? '<button class="step-btn" data-action="remind" data-kind="task" data-id="' + esc(d.id) + '" data-task="' + esc(t.id) + '">✉️ Remind</button>' + remindInfo(d, t.id) : "");
         }
-        return '<tr class="' + (delay ? "row-delay" : "") + '"><td><b>' + esc(t.id) + '</b><div class="muted" style="font-size:11px">' + esc(t.sector) + "</div></td>" +
+        return '<tr class="' + (delay ? "row-delay" : "") + '"><td><b>' + esc(t.id) + '</b><div class="muted" style="font-size:11px">' + esc(t.sector) + (t.team ? "<br>" + esc(t.team) : "") + "</div></td>" +
           "<td>" + (admin ? '<select class="select"' + a("importance") + ">" + GRADES.map(function (g) { return '<option value="' + g + '"' + (t.importance === g ? " selected" : "") + ">" + g + "</option>"; }).join("") + "</select>"
             : '<span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span>") + "</td>" +
           "<td>" + (admin ? '<textarea class="textarea sm"' + a("title") + ' placeholder="과제 내용">' + esc(t.title) + '</textarea><textarea class="textarea sm"' + a("plan") + ' placeholder="보완 방안">' + esc(t.plan) + "</textarea>"
@@ -1510,17 +1623,18 @@
       }).join("") + "</tbody></table></div>";
   }
 
-  // ---- 팀장: 내 부문 저장 ----
-  function saveSector(complete) {
-    var sec = mySector(), d = state.detail.draft, rv = d.reviews[sec];
+  // ---- 회원: 우리 팀 검토 의견 저장 (팀장·Pro 상관없이, 서버가 이력 기록) ----
+  function saveTeam(complete) {
+    var team = state.user && state.user.team, d = state.detail.draft, c = d.reviews[team];
+    if (!c) return;
     if (complete) {
-      if (!rv.result) { toast("✅ 이상 없음 또는 ⚠️ Risk 있음을 선택하세요.", "err"); return; }
-      if (rv.result === "risk" && !rv.risks.some(function (r) { return (r.content || "").trim(); })) { toast("Risk 내용을 1개 이상 입력하세요.", "err"); return; }
-      if (!confirm(sec + " 부문 검토를 작성 완료하고 간사에게 메일을 보낼까요?")) return;
+      if (!c.result) { toast("✅ 이상 없음 또는 ⚠️ Risk 있음을 선택하세요.", "err"); return; }
+      if (c.result === "risk" && !c.risks.some(function (r) { return (r.content || "").trim(); })) { toast("Risk 내용을 1개 이상 입력하세요.", "err"); return; }
+      if (!confirm(team + " 검토 의견을 작성 완료하고 간사에게 메일을 보낼까요?")) return;
     }
-    api("POST", "/api/items/" + encodeURIComponent(d.id) + "/sector/" + encodeURIComponent(sec), {
-      result: rv.result, reviewer: rv.reviewer, complete: complete,
-      risks: rv.risks.map(function (r) { return { id: r.id, content: r.content, proposal: r.proposal }; })
+    api("POST", "/api/items/" + encodeURIComponent(d.id) + "/review/" + encodeURIComponent(team), {
+      result: c.result, comment: c.comment, complete: complete,
+      risks: c.risks.map(function (r) { return { id: r.id, content: r.content, proposal: r.proposal }; })
     }).then(function (r) {
       replaceItem(r.item); updateNavBadges();
       state.detail.orig = clone(r.item); state.detail.draft = clone(r.item);
@@ -1534,16 +1648,17 @@
   // ---- 검토 의견 / 과제 편집 이벤트 ----
   function onReviewField(el) {
     var d = state.detail.draft;
-    if (el.hasAttribute("data-rv-sector")) {
-      var sec = el.getAttribute("data-rv-sector");
-      if (canEditSector(sec)) d.reviews[sec][el.getAttribute("data-rvf")] = el.value;
+    if (el.hasAttribute("data-rv-team")) {
+      var team = el.getAttribute("data-rv-team");
+      if (canEditTeam(team) && d.reviews[team]) d.reviews[team][el.getAttribute("data-rvf")] = el.value;
       return true;
     }
     if (el.hasAttribute("data-risk-id") && el.hasAttribute("data-rkf")) {
       var hit = findRisk(d, el.getAttribute("data-risk-id"));
-      if (hit && canEditSector(hit.sector) && !hit.risk.decision) hit.risk[el.getAttribute("data-rkf")] = el.value;
+      if (hit && canEditTeam(hit.team) && !hit.risk.decision) hit.risk[el.getAttribute("data-rkf")] = el.value;
       return true;
     }
+    if (el.hasAttribute("data-pick-team")) { if (state.isAdmin) pickTeam(el.getAttribute("data-pick-team"), el.checked); return true; }
     if (el.hasAttribute("data-accept")) { if (state.detail.acceptFor) state.detail.acceptFor.reason = el.value; return true; }
     if (el.hasAttribute("data-task-ext")) { if (state.detail.taskExt) state.detail.taskExt[el.getAttribute("data-task-ext")] = el.value; return true; }
     if (!state.isAdmin) return false;
@@ -1578,10 +1693,11 @@
       (action === "stSub" && !(!st.step2.skipped && st.step3.skipped && st.step4.skipped));
     if (!marking) return true;
     if (action === "stFast") {
-      if (!sm.allOk) { toast("⚡ 패스트트랙은 6개 부문이 모두 '✅ 이상 없음'일 때만 가능합니다.", "err"); return false; }
+      if (!sm.allOk) { toast("⚡ 패스트트랙은 선정된 모든 검토 팀이 '✅ 이상 없음'일 때만 가능합니다.", "err"); return false; }
     }
     if ((action === "stDone" && key === "step1") || action === "stFast") {
-      if (sm.completed < 6 && !confirm("6개 부문 중 " + sm.pending.join(", ") + " 부문이 아직 작성 완료되지 않았습니다.\n그래도 1단계를 완료 처리할까요?")) return false;
+      if (!sm.total && !confirm("검토 팀이 선정되지 않았습니다. 그래도 1단계를 완료 처리할까요?")) return false;
+      if (sm.total && sm.pending.length && !confirm(sm.total + "개 팀 중 " + sm.pending.length + "개 팀(" + shortTeams(sm.pending, 5) + ")이 아직 작성 완료되지 않았습니다.\n그래도 1단계를 완료 처리할까요?")) return false;
     }
     if ((action === "stDone" && key === "step2") || action === "stSub") {
       if (sm.undecided) { toast("결정 대기 Risk " + sm.undecided + "건이 있습니다. [3]에서 모두 [과제 등록] 또는 [수용]으로 결정한 뒤 2단계를 완료하세요.", "err"); return false; }
@@ -1664,7 +1780,7 @@
   function initMail(item, host) {
     var sec = state.admin ? state.admin.secretaryEmails : [];
     state.mail = {
-      host: host, itemId: item.id, level: "sub", selected: {},
+      host: host, itemId: item.id, level: "sub", selected: {}, autoSel: true,
       extra: "", cc: uniq(sec.concat(item.requesterEmail ? [item.requesterEmail] : [])).join("; "),
       summary: item.summary || item.note || "", preview: null
     };
@@ -1684,20 +1800,36 @@
     if (!box) return;
     if (!state.isAdmin) { box.innerHTML = '<div class="banner warn">🔒 검토 요청 메일 발송은 관리자 모드에서 사용할 수 있습니다.</div>'; return; }
     if (!state.admin) { box.innerHTML = '<div class="muted">주소록을 불러오는 중…</div>'; return; }
-    var book = state.admin.reviewers.filter(function (r) { return r.level === m.level && r.email; });
-    var groups = SECTORS.map(function (sec) {
-      var people = book.filter(function (r) { return r.sector === sec; });
-      return '<div class="recipient-sector"><h5>' + esc(sec) + (people.length ? '<button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:10.5px" data-action="mailSector" data-sector="' + esc(sec) + '">선택</button>' : "") + "</h5>" +
-        (people.length ? people.map(function (r) {
-          return '<label><input type="checkbox" data-mail-email="' + esc(r.email) + '"' + (m.selected[r.email] ? " checked" : "") + " /><span><b>" + esc(r.name) + "</b> " + esc(r.title) + '<br><span class="muted">' + esc(r.email) + "</span></span></label>";
-        }).join("") : '<span class="muted" style="font-size:11.5px">주소록 미등록</span>') + "</div>";
-    }).join("");
+    var item = m.host === "detail" && state.detail ? state.detail.draft : (findItem(m.itemId) || { reviews: {} });
+    if (m.autoSel && state.adminUsers) { autoSelectLeaders(Object.keys(item.reviews)); m.autoSel = false; }
+    var groups;
+    if (m.level === "sub") {
+      // 전문소위원: 선정된 검토 팀의 가입 회원 (팀장 기본 선택)
+      var order = cardOrder(item);
+      groups = !order.length ? '<div class="muted" style="font-size:12px">검토 팀이 선정되지 않았습니다.</div>' : order.map(function (team) {
+        var members = (state.adminUsers || []).filter(function (u) { return u.status === "approved" && u.team === team && u.email; });
+        return '<div class="recipient-sector"><h5>' + esc(team) + ' <span class="muted" style="font-weight:600">' + esc(item.reviews[team].sector) + "</span></h5>" +
+          (members.length ? members.map(function (u) {
+            return '<label><input type="checkbox" data-mail-email="' + esc(u.email) + '"' + (m.selected[u.email] ? " checked" : "") + " /><span><b>" + esc(u.name) + "</b> " + esc(u.title) + '<br><span class="muted">' + esc(u.email) + "</span></span></label>";
+          }).join("") : '<span class="muted" style="font-size:11.5px">가입 회원 없음 → 아래 \'추가 받는 사람\'에 직접 입력</span>') + "</div>";
+      }).join("");
+    } else {
+      // 전문위원(담당/본부장): 부문별 주소록
+      var book = state.admin.reviewers.filter(function (r) { return r.level === m.level && r.email; });
+      groups = SECTORS.map(function (sec) {
+        var people = book.filter(function (r) { return r.sector === sec; });
+        return '<div class="recipient-sector"><h5>' + esc(sec) + (people.length ? '<button class="btn btn-secondary btn-sm" style="padding:1px 6px;font-size:10.5px" data-action="mailSector" data-sector="' + esc(sec) + '">선택</button>' : "") + "</h5>" +
+          (people.length ? people.map(function (r) {
+            return '<label><input type="checkbox" data-mail-email="' + esc(r.email) + '"' + (m.selected[r.email] ? " checked" : "") + " /><span><b>" + esc(r.name) + "</b> " + esc(r.title) + '<br><span class="muted">' + esc(r.email) + "</span></span></label>";
+          }).join("") : '<span class="muted" style="font-size:11.5px">주소록 미등록</span>') + "</div>";
+      }).join("");
+    }
     var to = mailRecipients();
     box.innerHTML = '<div class="mail-panel"><div style="display:flex;flex-direction:column;gap:10px">' +
       '<div class="level-toggle">' + Object.keys(LEVELS).map(function (k) {
         return '<div class="radio-card ' + (m.level === k ? "selected" : "") + '" data-action="mailLevel" data-level="' + k + '">' + (k === "sub" ? "👥 " : "🏢 ") + LEVELS[k] + "</div>";
       }).join("") + "</div>" +
-      '<div style="display:flex;justify-content:space-between;align-items:center"><span class="filter-label">받는 사람 (6대 부문 주소록) · 선택 <b id="mailCount">' + to.length + "</b>명</span>" +
+      '<div style="display:flex;justify-content:space-between;align-items:center"><span class="filter-label">받는 사람 (' + (m.level === "sub" ? "선정 팀 회원" : "부문별 주소록") + ') · 선택 <b id="mailCount">' + to.length + "</b>명</span>" +
       '<span style="display:flex;gap:4px"><button class="btn btn-secondary btn-sm" data-action="mailAll">전체 선택</button><button class="btn btn-secondary btn-sm" data-action="mailNone">해제</button></span></div>' +
       '<div class="recipient-grid">' + groups + "</div>" +
       '<div class="field"><label>추가 받는 사람 <span class="muted">(; 구분)</span></label><input class="input" data-mf="extra" value="' + esc(m.extra) + '" /></div>' +
@@ -1736,9 +1868,9 @@
   }
   function mailAction(action, el) {
     var m = state.mail;
-    if (action === "mailLevel") { m.level = el.getAttribute("data-level"); m.selected = {}; m.preview = null; renderMailPanel(); return; }
+    if (action === "mailLevel") { m.level = el.getAttribute("data-level"); m.selected = {}; m.autoSel = m.level === "sub"; m.preview = null; renderMailPanel(); return; }
     if (action === "mailAll" || action === "mailNone") {
-      state.admin.reviewers.forEach(function (r) { if (r.level === m.level && r.email) m.selected[r.email] = action === "mailAll"; });
+      $all("#mailHost-" + m.host + " [data-mail-email]").forEach(function (cb) { m.selected[cb.getAttribute("data-mail-email")] = action === "mailAll"; });
       m.preview = null; renderMailPanel(); return;
     }
     if (action === "mailSector") {
@@ -1791,41 +1923,43 @@
   }
   var OX = function (b) { return b ? "O" : "X"; };
   function exportSummary(list) {
-    var head = ["ID", "구분", "NP/SP", "제품/기술명", "접수상태", "패스트트랙", "소위전결", "요청자", "소속부서", "요청자이메일", "발제일"];
+    var head = ["ID", "구분", "NP/SP", "제품구분", "제품/기술명", "접수상태", "패스트트랙", "소위전결", "요청자", "소속부서", "요청자이메일", "발제일"];
     STAGES.forEach(function (s, i) { var n = i + 1; head.push(n + "단계 목표일", n + "단계 완료일", n + "단계 완료", n + "단계 생략", n + "단계 연장횟수"); });
     head.push("진행상태", "현재단계", "단계지연일수", "접수일", "주요내용", "비고");
     var rows = [head];
     list.forEach(function (i) {
       var si = stageInfo(i), st = i.stages;
-      var row = [i.id, i.category, i.npSp, i.title, i.accepted === false ? "접수대기" : "접수", OX(si.fastTrack), OX(si.subDecision), i.requester, i.requesterDept, i.requesterEmail, i.proposalDate];
+      var row = [i.id, i.category, i.npSp, i.productSize ? i.productSize + " " + i.productType : "", i.title, i.accepted === false ? "접수대기" : "접수", OX(si.fastTrack), OX(si.subDecision), i.requester, i.requesterDept, i.requesterEmail, i.proposalDate];
       STAGES.forEach(function (s) { var o = st[s.key]; row.push(o.target, o.doneAt, OX(o.done), OX(o.skipped), o.extensions.length || ""); });
       row.push(si.phase === "WAIT" ? "접수대기" : si.isDone ? "최종승인완료" : "검토진행중", si.name, si.delay || "", i.acceptedAt || "", i.summary, i.note);
       rows.push(row);
     });
     downloadCsv("양산이관_요약목록_" + today() + ".csv", rows);
   }
-  var RISK_HEAD = ["부문", "검토결과", "검토팀장", "작성완료", "RiskID", "예상Risk", "제안보완방안", "결정", "수용사유",
+  var RISK_HEAD = ["부문", "검토팀", "검토결과", "의견(Comment)", "작성완료", "RiskID", "예상Risk", "제안보완방안", "결정", "수용사유",
     "과제ID", "중요도", "과제보완방안", "담당조직", "담당자", "담당자이메일", "목표일", "연장횟수", "과제상태", "완료일", "지연일수"];
-  // 안건 1건 → 부문 검토 의견·Risk·과제를 한 줄씩 (Risk 가 없는 부문도 1줄)
+  // 안건 1건 → 검토 팀·Risk·과제를 한 줄씩 (Risk 가 없는 팀도 1줄)
   function reviewRows(item) {
     var rows = [];
-    SECTORS.forEach(function (sec) {
-      var rv = item.reviews[sec], cr = (item.sectorReviews || {})[sec];
-      var base = [sec, rv.result === "ok" ? "이상 없음" : rv.result === "risk" ? "Risk 있음" : "미작성", rv.reviewer, cr ? cr.name + " " + cr.at : ""];
-      if (!rv.risks.length) { rows.push(base.concat(RISK_HEAD.slice(4).map(function () { return ""; }))); return; }
-      rv.risks.forEach(function (r) {
+    cardOrder(item).forEach(function (team) {
+      var c = item.reviews[team];
+      var base = [c.sector, team, c.result === "ok" ? "이상 없음" : c.result === "risk" ? "Risk 있음" : "미작성", c.comment,
+        c.done ? c.done.name + " " + (c.done.title || "") + " " + c.done.at : ""];
+      if (!c.risks.length) { rows.push(base.concat(RISK_HEAD.slice(5).map(function () { return ""; }))); return; }
+      c.risks.forEach(function (r) {
         var t = r.decision === "task" ? findTask(item, r.taskId) : null;
         rows.push(base.concat([r.id, r.content, r.proposal, r.decision === "task" ? "과제" : r.decision === "accept" ? "수용" : "결정 대기", r.reason,
           t ? t.id : "", t ? t.importance : "", t ? t.plan : "", t ? t.org : "", t ? t.ownerName : "", t ? t.ownerEmail : "",
           t ? t.target : "", t && t.extensions.length ? t.extensions.length : "", t ? t.status : "", t ? t.doneAt : "", t && taskDelay(t) ? taskDelay(t) : ""]));
       });
     });
+    if (!rows.length) rows.push(RISK_HEAD.map(function () { return ""; }));
     return rows;
   }
   function exportRisk(list) {
-    var rows = [["ID", "구분", "NP/SP", "제품/기술명", "요청자", "발제일"].concat(RISK_HEAD).concat(["비고"])];
+    var rows = [["ID", "구분", "NP/SP", "제품구분", "제품/기술명", "요청자", "발제일"].concat(RISK_HEAD).concat(["비고"])];
     list.forEach(function (i) {
-      var base = [i.id, i.category, i.npSp, i.title, i.requester, i.proposalDate];
+      var base = [i.id, i.category, i.npSp, i.productSize ? i.productSize + " " + i.productType : "", i.title, i.requester, i.proposalDate];
       reviewRows(i).forEach(function (r) { rows.push(base.concat(r).concat([i.note])); });
     });
     downloadCsv("양산이관_검토의견_과제_" + today() + ".csv", rows);
@@ -1888,7 +2022,10 @@
       t.category = cat; t.npSp = npSp; t.title = title;
       var setIf = function (field, names, fn) { var v = get(row, names); if (v) t[field] = fn ? fn(v) : v; };
       setIf("requester", ["요청자", "담당자"]); setIf("requesterDept", ["소속부서", "소속"]); setIf("requesterEmail", ["요청자이메일", "이메일"]);
-      setIf("proposalDate", ["발제일", "등록일"], normDate); setIf("summary", ["주요내용", "주요내용및변경점"]); setIf("note", ["비고", "비고(Note)"]);
+      setIf("proposalDate", ["발제일", "등록일"], normDate);
+      var pk = get(row, ["제품구분"]).toUpperCase().replace(/\s+/g, "");
+      var pm = pk.match(/^(300MM|200MM)(PW|EPI)$/);
+      if (pm) { t.productSize = pm[1].toLowerCase(); t.productType = pm[2]; } setIf("summary", ["주요내용", "주요내용및변경점"]); setIf("note", ["비고", "비고(Note)"]);
       if (!t.proposalDate) t.proposalDate = today();
       var acc = get(row, ["접수상태"]);
       if (acc) t.accepted = acc !== "접수대기";
@@ -1914,10 +2051,12 @@
       if (riskFmt === "new") {
         var sec = get(row, ["부문"]);
         if (SECTORS.indexOf(sec) !== -1) {
-          var rv = t.reviews[sec], res = get(row, ["검토결과"]), rev = get(row, ["검토팀장"]);
+          var team = get(row, ["검토팀"]) || ("(기존) " + sec);
+          if (!t.reviews[team]) t.reviews[team] = { sector: sec, result: "", comment: "", risks: [], done: null, history: [] };
+          var rv = t.reviews[team], res = get(row, ["검토결과"]), cm = get(row, ["의견(Comment)", "의견", "Comment"]);
           if (res.indexOf("없음") !== -1) rv.result = rv.result || "ok";
           else if (res.indexOf("Risk") !== -1 || res.indexOf("있음") !== -1) rv.result = "risk";
-          if (rev) rv.reviewer = rev;
+          if (cm) rv.comment = cm;
           var content = get(row, ["예상Risk", "Risk내용"]);
           if (content) {
             rv.result = "risk";
@@ -1930,7 +2069,7 @@
               var tids = t.tasks.map(function (x) { return x.id; }), tid = get(row, ["과제ID"]);
               if (!/^T\d+$/.test(tid) || tids.indexOf(tid) !== -1) tid = nextSeqId("T", tids);
               var imp = get(row, ["중요도"]);
-              t.tasks.push({ id: tid, riskId: rid, sector: sec, title: content, plan: get(row, ["과제보완방안"]) || risk.proposal,
+              t.tasks.push({ id: tid, riskId: rid, sector: sec, team: team, title: content, plan: get(row, ["과제보완방안"]) || risk.proposal,
                 importance: GRADES.indexOf(imp) !== -1 ? imp : "중", org: get(row, ["담당조직"]), ownerName: get(row, ["담당자"]), ownerEmpId: "",
                 ownerEmail: get(row, ["담당자이메일"]), target: normDate(get(row, ["목표일"])), targetOriginal: "", extensions: [],
                 status: get(row, ["과제상태"]) === "완료" ? "완료" : "진행중", doneAt: normDate(get(row, ["완료일"])), createdAt: today() });
@@ -2136,6 +2275,12 @@
       if (!confirm(emp + " 회원을 삭제할까요?")) return;
       api("DELETE", "/api/admin/users/" + encodeURIComponent(emp)).then(function (list) { state.adminUsers = list; renderUserRows(); toast("삭제했습니다.", "ok"); }).catch(fail);
     },
+    matrixSave: function () {
+      api("PUT", "/api/settings", { reviewMatrix: state.matrixDraft }).then(function (sv) {
+        state.admin = sv; state.reviewMatrix = sv.reviewMatrix; state.matrixDraft = clone(sv.reviewMatrix); renderMatrix();
+        toast("검토 팀 매트릭스를 저장했습니다. 이후 접수되는 제품 안건부터 적용됩니다.", "ok");
+      }).catch(fail);
+    },
     saveHolidays: function () {
       api("PUT", "/api/settings", { holidays: $("#stHolidays").value }).then(function (sv) {
         state.admin = sv; state.holidays = sv.holidays; renderAdmin();
@@ -2206,9 +2351,17 @@
       api("DELETE", "/api/items/" + encodeURIComponent(state.detail.id) + "/attachments/" + encodeURIComponent(name))
         .then(function (updated) { syncServerFields(updated); renderAttachments(); }).catch(fail);
     },
+    pickMatrix: function () {
+      var d = state.detail.draft, teams = (state.reviewMatrix || {})[d.productSize + " " + d.productType] || [];
+      var added = teams.filter(function (t) { return !d.reviews[t]; });
+      added.forEach(function (t) { d.reviews[t] = newCard(t); });
+      autoSelectLeaders(added);
+      renderTeamPick(); renderReviews(); renderMailPanel();
+      toast(added.length ? added.length + "개 팀을 추가했습니다. [💾 저장]을 눌러야 반영됩니다." : "이미 모두 선정되어 있습니다.");
+    },
     rvResult: function (el) {
-      var d = state.detail.draft, sec = el.getAttribute("data-sector"), val = el.getAttribute("data-val"), rv = d.reviews[sec];
-      if (!canEditSector(sec)) return;
+      var d = state.detail.draft, team = el.getAttribute("data-team"), val = el.getAttribute("data-val"), rv = d.reviews[team];
+      if (!rv || !canEditTeam(team)) return;
       if (val === "ok") {
         if (rv.risks.some(function (r) { return r.decision; })) { toast("위원회가 이미 결정한 Risk 가 있어 '이상 없음'으로 바꿀 수 없습니다.", "err"); return; }
         if (rv.risks.some(function (r) { return (r.content || "").trim(); }) && !confirm("작성한 Risk " + rv.risks.length + "건이 지워집니다. '이상 없음'으로 바꿀까요?")) return;
@@ -2216,18 +2369,17 @@
       }
       if (val === "risk" && !rv.risks.length) rv.risks.push({ id: nextSeqId("R", allRisks(d).map(function (x) { return x.risk.id; })), content: "", proposal: "", decision: "", reason: "", taskId: "" });
       rv.result = val;
-      if (!rv.reviewer && state.user && !state.isAdmin) rv.reviewer = state.user.name + " " + state.user.title;
       renderReviews();
     },
     riskAdd: function (el) {
-      var d = state.detail.draft, sec = el.getAttribute("data-sector");
-      d.reviews[sec].risks.push({ id: nextSeqId("R", allRisks(d).map(function (x) { return x.risk.id; })), content: "", proposal: "", decision: "", reason: "", taskId: "" });
+      var d = state.detail.draft, team = el.getAttribute("data-team");
+      d.reviews[team].risks.push({ id: nextSeqId("R", allRisks(d).map(function (x) { return x.risk.id; })), content: "", proposal: "", decision: "", reason: "", taskId: "" });
       renderReviews();
     },
     riskDel: function (el) {
       var d = state.detail.draft, hit = findRisk(d, el.getAttribute("data-risk-id"));
       if (!hit || hit.risk.decision) return;
-      d.reviews[hit.sector].risks = d.reviews[hit.sector].risks.filter(function (r) { return r !== hit.risk; });
+      d.reviews[hit.team].risks = d.reviews[hit.team].risks.filter(function (r) { return r !== hit.risk; });
       renderReviews();
     },
     riskToTask: function (el) {
@@ -2236,7 +2388,7 @@
       if (!(hit.risk.content || "").trim()) { toast("Risk 내용이 비어 있습니다.", "err"); return; }
       var id = nextSeqId("T", (d.tasks || []).map(function (t) { return t.id; }));
       d.tasks = d.tasks || [];
-      d.tasks.push({ id: id, riskId: hit.risk.id, sector: hit.sector, title: hit.risk.content, plan: hit.risk.proposal, importance: "중",
+      d.tasks.push({ id: id, riskId: hit.risk.id, sector: hit.sector, team: hit.team, title: hit.risk.content, plan: hit.risk.proposal, importance: "중",
         org: "", ownerName: "", ownerEmpId: "", ownerEmail: "", target: "", targetOriginal: "", extensions: [], status: "진행중", doneAt: "", createdAt: today() });
       hit.risk.decision = "task"; hit.risk.taskId = id; hit.risk.reason = "";
       renderReviews(); renderTaskBox();
@@ -2287,16 +2439,21 @@
     },
     stExtCancel: function () { state.detail.ext = null; renderStepper(); },
     stExtApply: applyExtension,
-    sectorSave: function () { saveSector(false); },
-    sectorComplete: function () { saveSector(true); },
-    sectorReopen: function (el) {
-      var sec = el.getAttribute("data-sector");
-      if (!confirm(sec + " 부문 '작성 완료' 표시를 해제할까요? (재작성 요청)")) return;
-      api("POST", "/api/items/" + encodeURIComponent(state.detail.id) + "/sector/" + encodeURIComponent(sec) + "/reopen").then(function (updated) {
-        syncServerFields(updated); state.detail.draft.sectorReviews = clone(updated.sectorReviews); state.detail.orig.sectorReviews = clone(updated.sectorReviews);
-        renderReviews(); toast(sec + " 부문 작성 완료를 해제했습니다.", "ok");
+    teamSave: function () { saveTeam(false); },
+    teamComplete: function () { saveTeam(true); },
+    teamReopen: function (el) {
+      var team = el.getAttribute("data-team");
+      if (!confirm(team + " 의 '작성 완료' 표시를 해제할까요? (재작성 요청)")) return;
+      api("POST", "/api/items/" + encodeURIComponent(state.detail.id) + "/review/" + encodeURIComponent(team) + "/reopen").then(function (updated) {
+        syncServerFields(updated);
+        ["draft", "orig"].forEach(function (k) {
+          var c = state.detail[k].reviews[team];
+          if (c) { c.done = clone(updated.reviews[team].done); c.history = clone(updated.reviews[team].history); }
+        });
+        renderReviews(); toast(team + " 작성 완료를 해제했습니다.", "ok");
       }).catch(fail);
     },
+
   };
   ["stDone", "stSkip", "stFast", "stSub"].forEach(function (a) { ACTIONS[a] = function (el) { stageAction(a, el.getAttribute("data-step")); }; });
   ["mailLevel", "mailAll", "mailNone", "mailSector", "mailOpen", "mailEml", "mailPreview", "mailMailto", "mailCopyTo", "mailCopyBody"]
@@ -2304,7 +2461,7 @@
 
   // 신청 폼에서 구분을 바꿀 때 입력값 유지
   function keepApplyInputs(fn) {
-    var ids = ["apTitle", "apReq", "apDept", "apEmail", "apSummary", "apDate"], saved = {};
+    var ids = ["apTitle", "apReq", "apDept", "apEmail", "apSummary", "apDate", "apSize", "apType"], saved = {};
     ids.forEach(function (id) { var el = $("#" + id); if (el) saved[id] = el.value; });
     fn();
     ids.forEach(function (id) { var el = $("#" + id); if (el && saved[id] !== undefined) el.value = saved[id]; });
@@ -2319,11 +2476,12 @@
 
   function onField(el) {
     if (el.hasAttribute("data-filter")) { setFilter(el.getAttribute("data-filter"), el.value); return; }
-    if (!state.detail && !state.mail && !state.admin && !state.teamDraft) return;
+    if (!state.detail && !state.mail && !state.admin && !state.teamDraft && !state.matrixDraft) return;
     if (el.hasAttribute("data-dfield")) {
       var d = state.detail.draft, f = el.getAttribute("data-dfield");
       d[f] = el.value;
       if (f === "category") { d.npSp = d.category === "제품" ? (d.npSp || "NP") : ""; renderDetail(); }
+      if (f === "productSize" || f === "productType") renderTeamPick();
       return;
     }
     if (el.hasAttribute("data-stage-done")) {
@@ -2335,6 +2493,12 @@
     if (state.detail && onReviewField(el)) return;
     if (el.hasAttribute("data-mf")) { state.mail[el.getAttribute("data-mf")] = el.value; state.mail.preview = null; var c = $("#mailCount"); if (c) c.textContent = mailRecipients().length; return; }
     if (el.hasAttribute("data-mail-email")) { state.mail.selected[el.getAttribute("data-mail-email")] = el.checked; state.mail.preview = null; $("#mailCount").textContent = mailRecipients().length; return; }
+    if (el.hasAttribute("data-mx-key")) {
+      var mk = el.getAttribute("data-mx-key"), mt = el.getAttribute("data-mx-team"), list = state.matrixDraft[mk] = state.matrixDraft[mk] || [];
+      if (el.checked && list.indexOf(mt) === -1) list.push(mt);
+      if (!el.checked) state.matrixDraft[mk] = list.filter(function (x) { return x !== mt; });
+      renderMatrix(); return;
+    }
     if (el.hasAttribute("data-team")) {
       var t = state.teamDraft[+el.getAttribute("data-team")], tf = el.getAttribute("data-teamf");
       t[tf] = tf === "canApply" ? el.checked : el.value; return;
