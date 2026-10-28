@@ -2491,6 +2491,16 @@ def build_report_xlsx(items: List[Dict[str, Any]]) -> bytes:
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+    def clean(v):
+        # 메일에서 붙여넣은 회의록 등의 제어 문자는 엑셀에 저장할 수 없어 제거
+        return ILLEGAL_CHARACTERS_RE.sub("", v) if isinstance(v, str) else v
+
+    def text_cells(row):  # '=' 로 시작하는 글이 수식으로 저장되지 않게
+        for c in row:
+            if isinstance(c.value, str) and c.value.startswith("="):
+                c.data_type = "s"
 
     wb = Workbook()
     head_fill, head_font = PatternFill("solid", fgColor="1E3A8A"), Font(bold=True, color="FFFFFF")
@@ -2501,12 +2511,14 @@ def build_report_xlsx(items: List[Dict[str, Any]]) -> bytes:
 
     def sheet(ws, title, head, rows, widths, fills=None):
         ws.title = title
+        rows = [[clean(v) for v in r] for r in rows]
         ws.append(head)
         for c in ws[1]:
             c.fill, c.font, c.border = head_fill, head_font, border
             c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         for i, r in enumerate(rows):
             ws.append(r)
+            text_cells(ws[ws.max_row])
             fill = fills[i] if fills else None
             for c in ws[ws.max_row]:
                 c.border, c.alignment = border, wrap
@@ -2626,13 +2638,17 @@ def h_report_xlsx(req: Req):
     try:
         import openpyxl  # noqa: F401
     except ImportError:
-        raise HTTPException(500, "서버 PC에 openpyxl 이 설치되어 있지 않아 xlsx 보고서를 만들 수 없습니다. (pip install openpyxl 또는 CSV 내보내기 사용)")
+        raise HTTPException(500, f"[XLSX-1] openpyxl 미설치 (서버 Python: {sys.executable})")
     items = store.load()["items"]
     from urllib.parse import parse_qs
     year = (parse_qs(req.query or "").get("year") or [""])[0]
     if year and year != "ALL":
         items = [it for it in items if (it["proposalDate"] or "")[:4] == year]
-    data = build_report_xlsx(items)
+    try:
+        data = build_report_xlsx(items)
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        raise HTTPException(500, f"[XLSX-2] 보고서 생성 오류: {type(e).__name__} - {str(e)[:80]}")
     fname = f"양산이관_현황보고서_{today_str()}.xlsx"
     return Resp(data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 headers={"Content-Disposition": content_disposition(fname)})
@@ -3038,7 +3054,9 @@ def h_team_review_save(req: Req):
         raise HTTPException(403, f"'{team}' 검토 의견은 {team} 회원만 작성할 수 있습니다.")
     p = req.json()
     complete = bool(p.get("complete"))
-    writer = user or {"empId": "admin", "name": "관리자", "title": "", "team": "간사"}
+    # 팀 회원이 아닌 관리자가 작성하면 '관리자 대리 입력'으로 기록 (팀장이 작성하지 않을 때 강제 진행용)
+    proxy = not (user and user["team"] == team)
+    writer = {"empId": "admin", "name": "관리자", "title": "(대리 입력)", "team": "간사"} if proxy else user
     who = f"{writer['team']} {writer['name']} {writer.get('title', '')}".strip()
     result = p.get("result") if p.get("result") in ("ok", "risk") else ""
     incoming = [x for x in (p.get("risks") or []) if isinstance(x, dict)]
@@ -3072,17 +3090,19 @@ def h_team_review_save(req: Req):
         if result == "ok" and not comment:
             comment = "특이사항 없음"
         card.update(result=result, risks=[] if result == "ok" else risks, comment=comment)
-        card["history"] = (card["history"] + [{"at": now_str(), "by": who, "action": "작성 완료" if complete else "임시 저장"}])[-50:]
+        card["history"] = (card["history"] + [{"at": now_str(), "by": who, "action": ("관리자 대리 작성 완료" if proxy else "작성 완료") if complete else "임시 저장"}])[-50:]
         if complete:
             card["done"] = {"empId": writer["empId"], "name": writer["name"], "title": writer.get("title", ""),
                             "team": writer["team"], "at": now_str()}
-            add_audit(cur, who, f"[{team}] 검토 의견 작성 완료 — " + ("이상 없음" if result == "ok" else f"Risk {len(card['risks'])}건"))
+            add_audit(cur, who, f"[{team}] 검토 의견 {'관리자 대리 ' if proxy else ''}작성 완료 — " + ("이상 없음" if result == "ok" else f"Risk {len(card['risks'])}건"))
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
         return cur
     item = store.mutate(_save)
     mail = None
-    if complete:
+    if complete and proxy:
+        mail = "proxy"
+    elif complete:
         if _emails(store.settings().get("secretaryEmails")):
             threading.Thread(target=notify_team_done, args=(item_id, team, writer), daemon=True).start()
             mail = "sent"

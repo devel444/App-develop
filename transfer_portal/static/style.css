@@ -619,3 +619,12 @@ tbody tr.row-pending { background: #f5f3ff; }
 .audit-row:first-child { border-top: 0; }
 .audit-at { color: var(--text-sub); font-variant-numeric: tabular-nums; }
 .audit-by { font-weight: 700; }
+
+/* ===== v13: 내 할 일 · 장기 과제 조치 목록 ===== */
+.nav-count.my { background: #0f766e; }
+.badge-mine { background: #ccfbf1; color: #0f766e; border: 1px solid #5eead4; }
+.act-label.k-long { background: #f3e8ff; color: #6b21a8; }
+.my-banner { justify-content: space-between; }
+.done-list { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+.done-chip { padding: 4px 10px; border-radius: 999px; background: #f0fdf4; border: 1px solid #bbf7d0; font-size: 12px; font-weight: 600; cursor: pointer; }
+.done-chip:hover { border-color: #16a34a; }
