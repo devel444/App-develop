@@ -240,10 +240,29 @@
   }
   // ---- 보완 과제 / 부문 검토 의견 ----
   function taskDelay(t) { return t.status !== "완료" && t.target && t.target < today() ? daysBetween(t.target, today()) : 0; }
+  var LONG_TERM_MONTHS = 3;
+  function addMonths(date, n) {
+    var p = date.split("-").map(Number), d = new Date(Date.UTC(p[0], p[1] - 1 + n, 1));
+    var last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+    d.setUTCDate(Math.min(p[2], last));
+    return d.toISOString().slice(0, 10);
+  }
+  // 장기 과제: 안건 발제일 + 3개월이 지났는데 아직 완료되지 않은 과제 → 경과 개월 수 (아니면 0)
+  function longTermOf(item, t) {
+    if (t.status === "완료" || !item.proposalDate) return 0;
+    var t0 = today();
+    if (t0 < addMonths(item.proposalDate, LONG_TERM_MONTHS)) return 0;
+    var m = LONG_TERM_MONTHS;
+    while (m < 240 && t0 >= addMonths(item.proposalDate, m + 1)) m++;
+    return m;
+  }
+  function longBadge(months) {
+    return months ? '<span class="badge badge-long" title="안건 발제일로부터 ' + LONG_TERM_MONTHS + '개월이 지난 미완료 과제">⏳ 장기 ' + months + "개월+</span>" : "";
+  }
   function tasksOf(items) {
     var arr = [];
     items.forEach(function (item) {
-      (item.tasks || []).forEach(function (t) { arr.push({ item: item, task: t, delay: taskDelay(t) }); });
+      (item.tasks || []).forEach(function (t) { arr.push({ item: item, task: t, delay: taskDelay(t), long: longTermOf(item, t) }); });
     });
     return arr;
   }
@@ -558,6 +577,7 @@
     var openTasks = tasks.filter(function (t) { return t.task.status !== "완료"; });
     var delayedTasks = tasks.filter(function (t) { return t.delay > 0; });
     var maxTaskDelay = delayedTasks.reduce(function (m, t) { return Math.max(m, t.delay); }, 0);
+    var longTasks = tasks.filter(function (t) { return t.long; });
     var actions = actionItems(items);
     var pendingReview = actions.filter(function (a) { return a.kind === "review"; });
     var pendingSectors = pendingReview.reduce(function (n, a) { return n + a.sectors.length; }, 0);
@@ -615,7 +635,8 @@
 
       '<div class="kpi-card delay ' + (delayedTasks.length ? "has-delay" : "") + '" data-action="kpiGo" data-go="taskDelay"><div class="kpi-label"><span>🚨 지연 과제</span><span class="badge" style="background:#fee2e2;color:#b91c1c">과제 목표일 경과</span></div>' +
       '<div class="kpi-value">' + delayedTasks.length + '건</div><div class="kpi-sub"><span class="kpi-pill">진행 중 과제 ' + openTasks.length + "</span>" +
-      (maxTaskDelay ? '<span class="kpi-pill" style="color:#b91c1c">최장 +' + maxTaskDelay + "일</span>" : "") + "</div>" +
+      (maxTaskDelay ? '<span class="kpi-pill" style="color:#b91c1c">최장 +' + maxTaskDelay + "일</span>" : "") +
+      '<span class="kpi-pill long" data-action="kpiGo" data-go="taskLong" title="발제일 + ' + LONG_TERM_MONTHS + '개월이 지난 미완료 과제">⏳ 장기 ' + longTasks.length + "</span></div>" +
       '<div class="kpi-hint">클릭 → 보완 과제 현황(지연)</div></div>' +
 
       '<div class="kpi-card wait-card" data-action="kpiGo" data-go="actions"><div class="kpi-label"><span>⏳ 조치 대기</span><span class="badge badge-wait">회신·결정 필요</span></div>' +
@@ -699,7 +720,8 @@
         "<td>" + esc(item.requester) + (item.requesterDept ? '<div class="muted" style="font-size:11px">' + esc(item.requesterDept) + "</div>" : "") + "</td>" +
         '<td style="font-weight:600">' + esc(item.proposalDate || "-") + "</td>" +
         '<td><div style="display:flex;align-items:center;flex-wrap:wrap;gap:3px">' + miniDots(item) + '<span style="font-size:12px;font-weight:700">' + esc(si.name) + "</span>" +
-        (si.delay ? '<span class="badge badge-delay">🚨 +' + si.delay + "일</span>" : "") + "</div></td>" +
+        (si.delay ? '<span class="badge badge-delay">🚨 +' + si.delay + "일</span>" : "") +
+        (si.phase === "ING" && MEETING_STAGES.indexOf(STAGES[si.idx].key) !== -1 && (item.stages[STAGES[si.idx].key].meetings || []).length ? '<span class="badge badge-mtg">🗓 ' + meetingLabel(item.stages[STAGES[si.idx].key]) + "</span>" : "") + "</div></td>" +
         "<td>" + (tasks.length ? '<span style="font-weight:700;font-size:12px;margin-right:4px">완료 ' + dn + "/" + tasks.length + "</span>" + chips +
           (dl ? '<span class="badge badge-delay">지연 ' + dl + "</span>" : "") : '<span class="muted" style="font-size:12px">없음</span>') +
           (rsum.undecided ? '<div><span class="badge badge-wait" title="2단계에서 과제 등록/수용 결정 필요">결정 대기 Risk ' + rsum.undecided + "</span></div>" : "") +
@@ -719,6 +741,7 @@
       if (f.grade !== "ALL" && t.importance !== f.grade) return false;
       if (f.sector !== "ALL" && t.sector !== f.sector) return false;
       if (f.status === "DELAY" && !x.delay) return false;
+      if (f.status === "LONG" && !x.long) return false;
       if ((f.status === "진행중" || f.status === "완료") && t.status !== f.status) return false;
       if (q && [t.id, t.title, t.plan, t.org, t.ownerName, x.item.title].join(" ").toLowerCase().indexOf(q) === -1) return false;
       return true;
@@ -736,17 +759,19 @@
     var f = state.f.task;
     var all = tasksOf(state.items);
     var delayCnt = all.filter(function (t) { return t.delay; }).length;
+    var longCnt = all.filter(function (t) { return t.long; }).length;
     setView(
       '<div class="page-head"><div><h2>🛠️ 보완 과제 현황</h2><p>2단계 검증소위원회에서 확정된 보완 과제 통합 추적 · 목표일이 지난 진행중 과제는 최상단에 표시됩니다</p></div>' +
       '<div class="page-actions"><span class="badge badge-gray">전체 ' + all.length + '건</span><span class="badge badge-delay">🚨 지연 ' + delayCnt + "건</span>" +
+      '<span class="badge badge-long">⏳ 장기 ' + longCnt + "건</span>" +
       '<button class="btn btn-excel" data-action="csvRisk">📥 엑셀(Risk 상세표)</button></div></div>' +
       '<div class="card"><div class="toolbar"><div class="filter-group"><span class="filter-label">중요도</span>' +
       [["ALL", "전체"], ["상", "상 (이관 전 필수)"], ["중", "중"], ["하", "하"]].map(function (g) {
         return '<button class="chip-btn ' + (f.grade === g[0] ? "active" : "") + '" data-action="taskGrade" data-grade="' + g[0] + '">' + g[1] + "</button>";
       }).join("") +
       '<span class="filter-label" style="margin-left:8px">상태</span>' +
-      [["ALL", "전체"], ["DELAY", "🚨 지연과제만"], ["진행중", "진행중"], ["완료", "완료"]].map(function (s) {
-        return '<button class="chip-btn ' + (s[0] === "DELAY" ? "danger " : "") + (f.status === s[0] ? "active" : "") + '" data-action="taskStatus" data-status="' + s[0] + '">' + s[1] + "</button>";
+      [["ALL", "전체"], ["DELAY", "🚨 지연과제만"], ["LONG", "⏳ 장기 과제 (발제 " + LONG_TERM_MONTHS + "개월+)"], ["진행중", "진행중"], ["완료", "완료"]].map(function (s) {
+        return '<button class="chip-btn ' + (s[0] === "DELAY" ? "danger " : s[0] === "LONG" ? "long " : "") + (f.status === s[0] ? "active" : "") + '" data-action="taskStatus" data-status="' + s[0] + '">' + s[1] + "</button>";
       }).join("") +
       '</div><div class="filter-group"><span class="filter-label">부문</span><select class="select" data-filter="task.sector">' +
       ['<option value="ALL">전체 부문</option>'].concat(SECTORS.map(function (s) {
@@ -778,7 +803,7 @@
         '<div class="pre" style="font-size:12px;color:var(--text-sub);margin-top:3px">💡 보완: ' + esc(t.plan || "-") + "</div></td>" +
         '<td><div style="font-weight:700">' + esc(t.org || "-") + "</div>" + (t.ownerName || t.ownerEmail ? '<div class="muted" style="font-size:11px">' + esc(t.ownerName || t.ownerEmail) + "</div>" : "") + "</td>" +
         '<td style="font-weight:600">' + esc(t.target || "미정") + (t.extensions.length ? ' <span class="badge badge-ext">연장 ' + t.extensions.length + "</span>" : "") +
-        (x.delay ? '<div><span class="badge badge-delay">🚨 지연 (+' + x.delay + "일)</span></div>" : "") + (isDone && t.doneAt ? '<div class="muted" style="font-size:11px">완료 ' + esc(t.doneAt) + "</div>" : "") + "</td>" +
+        (x.delay ? '<div><span class="badge badge-delay">🚨 지연 (+' + x.delay + "일)</span></div>" : "") + (x.long ? "<div>" + longBadge(x.long) + "</div>" : "") + (isDone && t.doneAt ? '<div class="muted" style="font-size:11px">완료 ' + esc(t.doneAt) + "</div>" : "") + "</td>" +
         '<td><button class="btn btn-sm ' + (isDone ? "btn-teal" : "btn-secondary") + '" data-action="taskToggle" data-id="' + esc(x.item.id) + '" data-task="' + esc(t.id) + '"' +
         (state.isAdmin ? "" : ' disabled title="관리자 모드에서 변경 가능"') + ">" + (isDone ? "✓ 완료" : "⏳ 진행중") + "</button></td></tr>";
     }).join("");
@@ -824,9 +849,9 @@
       '<select id="apNpSp" class="select" ' + (isProd ? "" : "disabled") + ">" +
       (isProd ? '<option value="NP">NP (New Product, 신제품)</option><option value="SP">SP (Standard Product, 파생/표준제품)</option>' : '<option value="">해당 없음</option>') +
       "</select></div>" +
-      (isProd ? '<div class="field"><label for="apSize">제품 구분 <span class="req">*</span> <span class="muted">(검토 팀 자동 선정 기준)</span></label>' +
+      '<div class="field"><label for="apSize">구경 · PW/EPI <span class="req">*</span> <span class="muted">(' + (isProd ? "검토 팀 자동 선정 기준" : "검토 팀 선정 참고") + ")</span></label>" +
         '<div style="display:flex;gap:6px"><select id="apSize" class="select" style="flex:1"><option value="">구경 선택</option><option value="300mm">300mm</option><option value="200mm">200mm</option></select>' +
-        '<select id="apType" class="select" style="flex:1"><option value="">PW / EPI</option><option value="PW">PW</option><option value="EPI">EPI</option></select></div></div>' : "") +
+        '<select id="apType" class="select" style="flex:1"><option value="">PW / EPI</option><option value="PW">PW</option><option value="EPI">EPI</option></select></div></div>' +
       '<div class="field"><label for="apDate">발제일</label><input id="apDate" type="date" class="input" value="' + today() + '" /></div>' +
       '<div class="field full"><label for="apTitle">제품 / 기술명 <span class="req">*</span></label><input id="apTitle" class="input" maxlength="200" placeholder="예) 차세대 SiC 전력반도체 모듈 Gen-4" /></div>' +
       '<div class="field"><label for="apReq">요청자 성명 <span class="req">*</span></label><input id="apReq" class="input" maxlength="100" placeholder="예) 홍길동 책임" value="' + esc(me.name ? me.name + (me.title ? " " + me.title : "") : "") + '" /></div>' +
@@ -871,10 +896,8 @@
     var fd = new FormData();
     fd.append("category", state.apply.category);
     fd.append("npSp", state.apply.category === "제품" ? $("#apNpSp").value : "");
-    if (state.apply.category === "제품") {
-      if (!$("#apSize").value || !$("#apType").value) { toast("제품 구분(300mm/200mm, PW/EPI)을 선택하세요.", "err"); return; }
-      fd.append("productSize", $("#apSize").value); fd.append("productType", $("#apType").value);
-    }
+    if (!$("#apSize").value || !$("#apType").value) { toast("구경(300mm/200mm)과 PW/EPI 를 선택하세요.", "err"); return; }
+    fd.append("productSize", $("#apSize").value); fd.append("productType", $("#apType").value);
     fd.append("title", title); fd.append("requester", req); fd.append("requesterDept", dept);
     fd.append("requesterEmail", email); fd.append("proposalDate", $("#apDate").value || today());
     fd.append("summary", $("#apSummary").value);
@@ -1333,7 +1356,7 @@
     var myTeam = !admin && state.user && d.reviews[state.user.team] ? state.user.team : "";
     var roleBanner = admin ? ""
       : myTeam ? '<div class="banner info"><span>🖊 <b>' + esc(myTeam) + "</b> 이(가) 검토 팀으로 선정되었습니다. 아래 [3]의 " + esc(myTeam) +
-        " 줄에서 <b>✅ 이상 없음</b> 또는 <b>⚠️ Risk 있음</b>을 고르고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다. (작성 이력이 남습니다)</span></div>"
+        " 줄에서 <b>✅ OK</b>(이상 없음) 또는 <b>⚠️ Risk</b>를 고르고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다. (작성 이력이 남습니다)</span></div>"
       : '<div class="banner warn"><span>🔒 열람 모드입니다. ' + (state.user ? "우리 팀(" + esc(state.user.team) + ")은 이 안건의 검토 팀으로 선정되지 않았습니다." : "검토 의견 작성은 로그인 후, 전체 수정은 [관리자 모드]에서 가능합니다.") + "</span>" +
         (state.user ? "" : '<button class="btn btn-secondary btn-sm" data-action="nav" data-route="account">👤 로그인</button>') + "</div>";
     $("#detailHeader").innerHTML =
@@ -1356,9 +1379,9 @@
       '<div class="field"><label>구분</label><select class="select" data-dfield="category" ' + dis + '><option value="제품"' + (d.category === "제품" ? " selected" : "") + '>제품</option><option value="기술"' + (d.category === "기술" ? " selected" : "") + ">기술</option></select></div>" +
       '<div class="field"><label>NP / SP</label><select class="select" data-dfield="npSp" ' + (admin && d.category === "제품" ? "" : "disabled") + ">" +
       (d.category === "제품" ? '<option value="NP"' + (d.npSp === "NP" ? " selected" : "") + '>NP</option><option value="SP"' + (d.npSp === "SP" ? " selected" : "") + ">SP</option>" : '<option value="">해당없음</option>') + "</select></div>" +
-      (d.category === "제품" ? '<div class="field"><label>제품 구분</label><div style="display:flex;gap:4px">' +
+      ('<div class="field"><label>구경 · PW/EPI</label><div style="display:flex;gap:4px">' +
         '<select class="select" data-dfield="productSize" ' + dis + '><option value="">구경</option>' + ["300mm", "200mm"].map(function (v) { return '<option value="' + v + '"' + (d.productSize === v ? " selected" : "") + ">" + v + "</option>"; }).join("") + "</select>" +
-        '<select class="select" data-dfield="productType" ' + dis + '><option value="">PW/EPI</option>' + ["PW", "EPI"].map(function (v) { return '<option value="' + v + '"' + (d.productType === v ? " selected" : "") + ">" + v + "</option>"; }).join("") + "</select></div></div>" : "") +
+        '<select class="select" data-dfield="productType" ' + dis + '><option value="">PW/EPI</option>' + ["PW", "EPI"].map(function (v) { return '<option value="' + v + '"' + (d.productType === v ? " selected" : "") + ">" + v + "</option>"; }).join("") + "</select></div></div>") +
       '<div class="field span2"><label>제품 / 기술명</label><input class="input" data-dfield="title" value="' + esc(d.title) + '" ' + dis + " /></div>" +
       '<div class="field"><label>요청자</label><input class="input" data-dfield="requester" value="' + esc(d.requester) + '" ' + dis + " /></div>" +
       '<div class="field"><label>소속 부서</label><input class="input" data-dfield="requesterDept" value="' + esc(d.requesterDept) + '" ' + dis + " /></div>" +
@@ -1371,12 +1394,12 @@
       '<textarea class="textarea note" data-dfield="note" placeholder="회의 요약 및 특이사항 기록..." ' + dis + ">" + esc(d.note) + "</textarea></div>" +
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">2</span>5단계 진행 현황 및 전결(Skip) 제어</div>' +
-      '<span id="stageBadge"></span></div><div class="stepper" id="stepperBox"></div><div id="extHistory"></div>' +
+      '<span id="stageBadge"></span></div><div class="stepper" id="stepperBox"></div><div id="extHistory"></div><div id="meetingBox" class="mtg-grid"></div>' +
       '<div class="card-sub">목표일은 자동 지정됩니다 (1단계: 접수 승인일 + ' + state.leadDays.step1 + '영업일, 이후: 앞 단계 완료일 + 7영업일, 주말·휴일 제외) · 목표일 변경은 관리자가 [⏰ 연장]으로만 · ⚡/📌 버튼은 다시 누르면 원복됩니다</div></div>' +
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">3</span>전문소위원 검토 의견 — 선정된 검토 팀</div>' +
       '<span id="reviewSummary"></span></div>' +
-      '<div class="card-sub">선정된 팀이 ✅ 이상 없음(의견 선택) / ⚠️ Risk 있음을 작성합니다. Risk 는 2단계 검증소위원회에서 간사가 <b>[🛠 과제 등록]</b> 또는 <b>[✔ 수용]</b>으로 결정합니다.</div>' +
+      '<div class="card-sub">선정된 팀이 ✅ OK(이상 없음, 의견 선택) / ⚠️ Risk 를 작성합니다. Risk 는 2단계 검증소위원회에서 간사가 <b>[🛠 과제 등록]</b> 또는 <b>[✔ 수용]</b>으로 결정합니다.</div>' +
       '<div class="review-grid" id="reviewGrid"></div></div>' +
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">4</span>🛠 보완 과제</div><span id="taskSummary"></span></div>' +
@@ -1392,7 +1415,7 @@
       (admin ? '<button class="btn btn-primary" data-action="detailSave">💾 저장 (공유폴더 즉시 반영)</button>' : "") +
       (myTeam ? '<button class="btn btn-teal" data-action="teamSave">💾 임시 저장</button><button class="btn btn-primary" data-action="teamComplete">✅ ' + esc(myTeam) + " 작성 완료 (간사에게 메일)</button>" : "") + "</div>";
 
-    renderAttachments(); renderStepper(); renderTeamPick(); renderMailPanel(); renderReviews(); renderTaskBox();
+    renderAttachments(); renderStepper(); renderMeetings(); renderTeamPick(); renderMailPanel(); renderReviews(); renderTaskBox();
   }
 
   function renderAttachments() {
@@ -1423,6 +1446,7 @@
           (o.extensions.length ? '<div class="muted" title="' + esc(o.extensions.map(function (e) { return e.from + " → " + e.to + " : " + e.reason; }).join("\n")) + '">' +
             '<span class="lbl">원래</span><s>' + fmtDay(o.targetOriginal) + '</s> <span class="badge badge-ext">연장 ' + o.extensions.length + "회</span></div>" : "") +
           (o.done ? '<div><span class="lbl">완료</span>' + (admin ? '<input type="date" class="input mini" data-stage-done="' + s.key + '" value="' + esc(o.doneAt) + '" />' : "<b>" + fmtDay(o.doneAt) + "</b>") + "</div>" : "") +
+          (o.meetings && o.meetings.length ? '<div><span class="badge badge-mtg" title="' + esc(o.meetings.map(function (m) { return m.no + "차 " + (m.date || "-") + " " + (m.result || "결과 미입력"); }).join("\n")) + '">🗓 ' + meetingLabel(o) + "</span></div>" : "") +
           (!o.target && !o.done ? '<div class="muted">' + (d.accepted === false ? "접수 승인 후 목표일 자동 지정" : i === 0 ? "접수 승인일 + " + state.leadDays[s.key] + "영업일" : "앞 단계 완료 시 +" + state.leadDays[s.key] + "영업일") + "</div>" : "") +
           "</div>";
       }
@@ -1456,6 +1480,77 @@
   }
 
 
+  // ---- 2단계(검증소위원회)·4단계(검증위원회) 회의 차수 · 회의록 ----
+  var MEETING_STAGES = ["step2", "step4"];
+  var MEETING_RESULTS = ["통과", "조건부 통과", "재심의", "보류"];
+  function meetingLabel(st) {
+    var ms = st.meetings || [], last = ms[ms.length - 1];
+    return ms.length ? (ms.length > 1 ? ms.length + "차 회의" : "1차 회의") + (last.result ? " · " + last.result : "") : "";
+  }
+  function renderMeetings() {
+    var box = $("#meetingBox");
+    if (!box) return;
+    var d = state.detail.draft, admin = state.isAdmin, base = "/api/items/" + encodeURIComponent(d.id);
+    box.innerHTML = MEETING_STAGES.map(function (key) {
+      var idx = STAGES.findIndex(function (s) { return s.key === key; }), st = d.stages[key], ms = st.meetings || [];
+      var head = '<div class="mtg-head"><b>' + (idx + 1) + "단계 " + esc(STAGES[idx].name) + " 회의</b>" +
+        (ms.length ? '<span class="muted">' + ms.length + "회 개최</span>" : "") +
+        (admin && !st.skipped && d.accepted !== false ? '<button class="btn btn-secondary btn-xs" data-action="mtgAdd" data-stage="' + key + '">+ ' + (ms.length + 1) + "차 회의 추가</button>" : "") + "</div>";
+      if (st.skipped) return '<div class="mtg-card skipped">' + head + '<div class="muted">🚫 생략(Skip)된 단계입니다.</div></div>';
+      var rows = ms.length ? ms.map(function (m, i) {
+        var a = ' data-stage="' + key + '" data-no="' + m.no + '"';
+        var files = m.minutes.map(function (f) {
+          return '<span class="file-chip">📄 <a href="' + base + "/minutes/" + encodeURIComponent(f.name) + '" download title="' + esc((f.uploadedAt || "") + " · " + (f.by || "")) + '">' + esc(f.name) + "</a>" +
+            (admin ? '<button class="x" data-action="mtgFileDel"' + a + ' data-name="' + esc(f.name) + '" title="삭제">✕</button>' : "") + "</span>";
+        }).join("") || '<span class="muted">회의록 없음</span>';
+        var resCls = { "통과": "ok", "조건부 통과": "ok", "재심의": "re", "보류": "hold" }[m.result] || "";
+        return '<div class="mtg-row ' + resCls + '"><span class="mtg-no">' + m.no + "차</span>" +
+          (admin
+            ? '<input type="date" class="input mini" data-mtg="date"' + a + ' value="' + esc(m.date) + '" />' +
+              '<select class="select mini" data-mtg="result"' + a + '><option value="">결과 선택</option>' + MEETING_RESULTS.map(function (r) { return '<option' + (m.result === r ? " selected" : "") + ">" + r + "</option>"; }).join("") + "</select>" +
+              '<input class="input mtg-note" data-mtg="note"' + a + ' value="' + esc(m.note) + '" placeholder="회의 요약 / 재심의 사유" />'
+            : '<b>' + esc(m.date ? fmtDay(m.date) : "-") + "</b>" + (m.result ? '<span class="mtg-res ' + resCls + '">' + esc(m.result) + "</span>" : "") +
+              (m.note ? '<span class="mtg-note-text">' + esc(m.note) + "</span>" : "")) +
+          '<div class="mtg-files">' + files +
+          (admin ? '<button class="btn btn-upload btn-xs" data-action="mtgFilePick"' + a + '>📤 회의록</button>' +
+            (i === ms.length - 1 ? '<button class="link-btn" data-action="mtgDel"' + a + ">차수 삭제</button>" : "") : "") + "</div></div>";
+      }).join("") : '<div class="muted" style="padding:6px 2px">' + (admin ? "회의를 열면 [+ 1차 회의 추가]로 기록하고 회의록을 첨부하세요." : "기록된 회의가 없습니다.") + "</div>";
+      var last = ms[ms.length - 1];
+      var hint = admin && last && last.result === "재심의" && !st.done ? '<div class="card-sub">↻ 재심의 결정 → [+ ' + (ms.length + 1) + "차 회의 추가] 후, 필요하면 위 단계의 [⏰ 목표일 연장]으로 일정을 조정하세요.</div>" : "";
+      return '<div class="mtg-card">' + head + rows + hint + "</div>";
+    }).join("") + (admin ? '<input id="mtgFiles" type="file" multiple style="display:none" />' : "");
+    var inp = $("#mtgFiles");
+    if (inp) inp.onchange = function () {
+      var t = state.mtgUpload, files = this.files;
+      if (!t || !files.length) return;
+      var fd = new FormData();
+      Array.prototype.forEach.call(files, function (f) { fd.append("files", f, f.name); });
+      toast("회의록 업로드 중… (" + files.length + "개)");
+      meetingApi("POST", t.stage + "/" + t.no + "/minutes", fd, "회의록을 저장했습니다.");
+      this.value = "";
+    };
+  }
+  // 회의 API 는 즉시 저장된다 → 서버 값으로 회의·rev 만 맞춘다 (작성 중인 다른 수정은 그대로)
+  function meetingApi(method, path, body, okMsg) {
+    var id = state.detail.id;
+    return api(method, "/api/items/" + encodeURIComponent(id) + "/meetings/" + path, body).then(function (updated) {
+      replaceItem(updated);
+      if (state.detail && state.detail.id === id) {
+        [state.detail.draft, state.detail.orig].forEach(function (o) {
+          o.rev = updated.rev; o.updatedAt = updated.updatedAt;
+          MEETING_STAGES.forEach(function (k) { o.stages[k].meetings = clone(updated.stages[k].meetings); });
+        });
+        renderStepper(); renderMeetings();
+      }
+      if (okMsg) toast(okMsg, "ok");
+    }).catch(fail);
+  }
+  function meetingField(el) {
+    var p = {};
+    p[el.getAttribute("data-mtg")] = el.value;
+    meetingApi("PUT", el.getAttribute("data-stage") + "/" + el.getAttribute("data-no"), p, "회의 정보를 저장했습니다.");
+  }
+
   // ---- [3] 전문소위원 검토 의견: 부문별로 묶고 팀마다 한 줄 ----
   function renderReviews() {
     var d = state.detail.draft, grid = $("#reviewGrid"), admin = state.isAdmin;
@@ -1465,27 +1560,41 @@
       grid.innerHTML = '<div class="empty-state" style="padding:18px">검토 팀이 아직 선정되지 않았습니다.' +
         (admin ? " 아래 [5] 전문(소)위원 선정에서 팀을 선택하세요." : " (간사가 선정합니다)") + "</div>";
     } else {
-      grid.innerHTML = SECTORS.map(function (sec) {
-        var teams = order.filter(function (t) { return d.reviews[t].sector === sec; });
-        if (!teams.length) return "";
-        var doneCnt = teams.filter(function (t) { return d.reviews[t].done; }).length;
-        return '<div class="rv-sector"><div class="rv-sector-head"><b>' + esc(sec) + '</b><span class="muted">' + teams.length + "팀 · 완료 " + doneCnt + "</span></div>" +
-          teams.map(function (team) { return reviewRow(d, team); }).join("") + "</div>";
-      }).join("");
+      var groups = SECTORS.map(function (sec) {
+        return { sec: sec, teams: order.filter(function (t) { return d.reviews[t].sector === sec; }) };
+      }).filter(function (g) { return g.teams.length; });
+      var sectorHtml = function (g, cols) {
+        var doneCnt = g.teams.filter(function (t) { return d.reviews[t].done; }).length;
+        return '<div class="rv-sector" style="--rv-cols:' + cols + (g.teams.length <= SMALL_SECTOR ? ";--rv-span:" + g.teams.length : "") + '"><div class="rv-sector-head"><b>' + esc(g.sec) + '</b><span class="muted">' + g.teams.length + "팀 · 완료 " + doneCnt + "</span></div>" +
+          '<div class="rv-rows">' + g.teams.map(function (team) { return reviewRow(d, team); }).join("") + "</div></div>";
+      };
+      var small = groups.filter(function (g) { return g.teams.length <= SMALL_SECTOR; });
+      var big = groups.filter(function (g) { return g.teams.length > SMALL_SECTOR; });
+      grid.innerHTML = (small.length ? '<div class="rv-small">' + small.map(function (g) { return sectorHtml(g, g.teams.length); }).join("") + "</div>" : "") +
+        big.map(function (g) { return sectorHtml(g, bestCols(g.teams.length, Math.max(1, Math.floor((grid.clientWidth || 1300) / RV_ROW_MIN)))); }).join("");
     }
     var sm = reviewSummary(d);
     $("#reviewSummary").innerHTML = '<span class="badge badge-gray">작성 완료 ' + sm.completed + "/" + sm.total + "</span>" +
       (sm.riskCount ? ' <span class="badge badge-gray">Risk ' + sm.riskCount + "건</span>" : "") +
       (sm.undecided ? ' <span class="badge badge-wait">결정 대기 ' + sm.undecided + "건</span>" : "");
   }
+  // 팀이 2개 이하인 부문은 한 줄에 나란히, 그보다 많으면 빈칸이 가장 적은 열 수(2~3열)로 팀 줄을 나눠 배치
+  var SMALL_SECTOR = 2, RV_ROW_MIN = 420;
+  function bestCols(n, maxCols) {
+    var top = Math.max(1, Math.min(maxCols, n)), best = top;
+    for (var c = top - 1; c >= 2; c--) {
+      if (Math.ceil(n / c) * c - n < Math.ceil(n / best) * best - n) best = c;
+    }
+    return best;
+  }
   function reviewRow(d, team) {
     var c = d.reviews[team], admin = state.isAdmin, edit = canEditTeam(team), mine = edit && !admin;
     var tAttr = ' data-team="' + esc(team) + '"';
     var toggle = edit
       ? '<span class="rv-mini">' +
-        '<button class="rv-opt ok sm' + (c.result === "ok" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="ok">✅ 이상 없음</button>' +
-        '<button class="rv-opt risk sm' + (c.result === "risk" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="risk">⚠️ Risk 있음</button></span>'
-      : (c.result === "ok" ? '<span class="rv-chip ok">✅ 이상 없음</span>' : c.result === "risk" ? '<span class="rv-chip risk">⚠️ Risk ' + c.risks.length + "건</span>" : '<span class="rv-chip none">⬜ 미작성</span>');
+        '<button class="rv-opt ok sm' + (c.result === "ok" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="ok" title="이상 없음 (의견 선택)">✅ OK</button>' +
+        '<button class="rv-opt risk sm' + (c.result === "risk" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="risk" title="Risk 있음">⚠️ Risk</button></span>'
+      : (c.result === "ok" ? '<span class="rv-chip ok">✅ OK</span>' : c.result === "risk" ? '<span class="rv-chip risk">⚠️ Risk ' + c.risks.length + "건</span>" : '<span class="rv-chip none">⬜ 미작성</span>');
     var hist = c.history && c.history.length ? '<span class="rv-hist" title="' + esc(c.history.map(function (h) { return h.at + "  " + h.by + "  " + h.action; }).join("\n")) + '">🕘 이력 ' + c.history.length + "</span>" : "";
     var status = c.done
       ? '<span class="rv-done">✓ 완료 · ' + esc(c.done.name) + (c.done.title ? " " + esc(c.done.title) : "") + " " + esc((c.done.at || "").slice(5, 16)) +
@@ -1504,7 +1613,7 @@
     }
     var actions = mine ? '<div class="rv-actions"><button class="btn btn-teal btn-sm" data-action="teamSave">💾 임시 저장</button>' +
       '<button class="btn btn-primary btn-sm" data-action="teamComplete">✅ 작성 완료</button></div>' : "";
-    return '<div class="rv-row ' + (c.result || "none") + (mine ? " mine" : "") + '"><div class="rv-line"><span class="rv-team">' + esc(team) + "</span>" + toggle +
+    return '<div class="rv-row ' + (c.result || "none") + (mine ? " mine" : "") + (c.result === "risk" && c.risks.length ? " wide" : "") + '"><div class="rv-line"><span class="rv-team">' + esc(team) + "</span>" + toggle +
       '<span class="rv-status">' + status + hist + "</span></div>" + (body || actions ? '<div class="rv-body">' + body + actions + "</div>" : "") + "</div>";
   }
   function riskHtml(team, r, edit) {
@@ -1542,9 +1651,9 @@
     var d = state.detail.draft, key = d.productSize && d.productType ? d.productSize + " " + d.productType : "";
     var matrix = (state.reviewMatrix || {})[key] || [];
     box.innerHTML = '<div class="pick-head"><span class="filter-label">검토 팀 선정 · ' + Object.keys(d.reviews).length + "팀</span>" +
-      (d.category === "제품" ? '<span class="badge badge-gray">제품 구분: ' + esc(key || "미지정") + "</span>" +
-        (matrix.length ? '<button class="btn btn-secondary btn-sm" data-action="pickMatrix">' + esc(key) + " 기본 팀 적용 (" + matrix.length + "팀)</button>" : "")
-        : '<span class="badge badge-tech">기술 안건: 공정에 맞게 직접 선정</span>') + "</div>" +
+      '<span class="badge badge-gray">구경 · PW/EPI: ' + esc(key || "미지정") + "</span>" +
+      (d.category === "기술" ? '<span class="badge badge-tech">기술 안건: 공정에 맞게 직접 선정</span>' : "") +
+      (matrix.length ? '<button class="btn btn-secondary btn-sm" data-action="pickMatrix">' + esc(key) + (d.category === "기술" ? " 기본 팀 불러오기 (참고, " : " 기본 팀 적용 (") + matrix.length + "팀)</button>" : "") + "</div>" +
       '<div class="pick-grid">' + SECTORS.map(function (sec) {
         var teams = state.teams.filter(function (t) { return t.sector === sec; });
         Object.keys(d.reviews).forEach(function (t) { if (d.reviews[t].sector === sec && !teams.some(function (x) { return x.name === t; })) teams.push({ name: t }); });
@@ -1599,7 +1708,8 @@
         var delay = taskDelay(t), a = function (f) { return ' data-task-id="' + esc(t.id) + '" data-tkf="' + f + '"'; };
         var target = '<div class="step-dates">' + (t.target ? '<div><b>' + fmtDay(t.target) + "</b>" + (delay ? ' <span class="badge badge-delay">+' + delay + "일</span>" : "") + "</div>" : '<div class="muted">미지정</div>') +
           (t.extensions.length ? '<div class="muted" title="' + esc(t.extensions.map(function (e) { return e.from + " → " + e.to + " : " + e.reason; }).join("\n")) + '"><s>' + fmtDay(t.targetOriginal) + '</s> <span class="badge badge-ext">연장 ' + t.extensions.length + "회</span></div>" : "") +
-          (t.status === "완료" && t.doneAt ? '<div class="muted">완료 ' + fmtDay(t.doneAt) + "</div>" : "") + "</div>";
+          (t.status === "완료" && t.doneAt ? '<div class="muted">완료 ' + fmtDay(t.doneAt) + "</div>" : "") +
+          (longTermOf(d, t) ? "<div>" + longBadge(longTermOf(d, t)) + "</div>" : "") + "</div>";
         if (admin && t.status !== "완료") {
           target += ext && ext.id === t.id
             ? '<div class="ext-form"><input type="date" class="input mini" data-task-ext="date" value="' + esc(ext.date) + '" />' +
@@ -1925,13 +2035,15 @@
   function exportSummary(list) {
     var head = ["ID", "구분", "NP/SP", "제품구분", "제품/기술명", "접수상태", "패스트트랙", "소위전결", "요청자", "소속부서", "요청자이메일", "발제일"];
     STAGES.forEach(function (s, i) { var n = i + 1; head.push(n + "단계 목표일", n + "단계 완료일", n + "단계 완료", n + "단계 생략", n + "단계 연장횟수"); });
-    head.push("진행상태", "현재단계", "단계지연일수", "접수일", "주요내용", "비고");
+    head.push("진행상태", "현재단계", "단계지연일수", "접수일", "주요내용", "비고", "검증소위원회 회의", "검증위원회 회의", "장기과제수");
     var rows = [head];
     list.forEach(function (i) {
       var si = stageInfo(i), st = i.stages;
       var row = [i.id, i.category, i.npSp, i.productSize ? i.productSize + " " + i.productType : "", i.title, i.accepted === false ? "접수대기" : "접수", OX(si.fastTrack), OX(si.subDecision), i.requester, i.requesterDept, i.requesterEmail, i.proposalDate];
       STAGES.forEach(function (s) { var o = st[s.key]; row.push(o.target, o.doneAt, OX(o.done), OX(o.skipped), o.extensions.length || ""); });
-      row.push(si.phase === "WAIT" ? "접수대기" : si.isDone ? "최종승인완료" : "검토진행중", si.name, si.delay || "", i.acceptedAt || "", i.summary, i.note);
+      var mtg = function (k) { return (st[k].meetings || []).map(function (m) { return m.no + "차 " + (m.date || "-") + (m.result ? " " + m.result : ""); }).join(" / "); };
+      row.push(si.phase === "WAIT" ? "접수대기" : si.isDone ? "최종승인완료" : "검토진행중", si.name, si.delay || "", i.acceptedAt || "", i.summary, i.note,
+        mtg("step2"), mtg("step4"), (i.tasks || []).filter(function (t) { return longTermOf(i, t); }).length || "");
       rows.push(row);
     });
     downloadCsv("양산이관_요약목록_" + today() + ".csv", rows);
@@ -2133,6 +2245,7 @@
       if (g === "all") { state.f.list = { cat: "ALL", year: state.f.dashYear, status: "ALL", q: "" }; go("items"); }
       if (g === "stageDelay") { state.f.list = { cat: "ALL", year: "ALL", status: "DELAY", q: "" }; go("items"); }
       if (g === "taskDelay") { state.f.task = { grade: "ALL", sector: "ALL", status: "DELAY", q: "" }; go("tasks"); }
+      if (g === "taskLong") { state.f.task = { grade: "ALL", sector: "ALL", status: "LONG", q: "" }; go("tasks"); }
       if (g === "actions") { var c = $(".action-table"); if (c) c.scrollIntoView({ behavior: "smooth", block: "center" }); else if (!isLoggedIn()) go("account"); }
     },
     toggleActions: function () { state.showAllActions = !state.showAllActions; renderDashboard(); },
@@ -2317,6 +2430,10 @@
     acceptItem: function (el) {
       api("POST", "/api/items/" + encodeURIComponent(el.getAttribute("data-id")) + "/accept").then(function (updated) {
         syncServerFields(updated);
+        // 접수 승인 시 서버가 정한 목표일·기본 검토 팀을 화면에도 반영 (안 하면 저장 시 빈 선정으로 덮어씀)
+        if (state.detail && state.detail.id === updated.id) {
+          ["stages", "reviews", "acceptedAt"].forEach(function (k) { state.detail.draft[k] = clone(updated[k]); state.detail.orig[k] = clone(updated[k]); });
+        }
         if (state.detail) renderDetail(); else render(false);
         toast("접수 승인했습니다. 1단계 전문소위원 검토를 진행하세요.", "ok");
       }).catch(fail);
@@ -2350,6 +2467,22 @@
       if (!confirm("'" + name + "' 첨부파일을 삭제할까요?")) return;
       api("DELETE", "/api/items/" + encodeURIComponent(state.detail.id) + "/attachments/" + encodeURIComponent(name))
         .then(function (updated) { syncServerFields(updated); renderAttachments(); }).catch(fail);
+    },
+    mtgAdd: function (el) {
+      var key = el.getAttribute("data-stage"), n = (state.detail.draft.stages[key].meetings || []).length + 1;
+      meetingApi("POST", key, { date: today() }, n + "차 회의를 추가했습니다. 날짜·결과를 입력하고 회의록을 첨부하세요.");
+    },
+    mtgDel: function (el) {
+      if (!confirm(el.getAttribute("data-no") + "차 회의 기록을 삭제할까요? (첨부된 회의록은 백업 폴더로 옮겨집니다)")) return;
+      meetingApi("DELETE", el.getAttribute("data-stage") + "/" + el.getAttribute("data-no"), undefined, "회의 기록을 삭제했습니다.");
+    },
+    mtgFilePick: function (el) {
+      state.mtgUpload = { stage: el.getAttribute("data-stage"), no: el.getAttribute("data-no") };
+      $("#mtgFiles").click();
+    },
+    mtgFileDel: function (el) {
+      if (!confirm("회의록 '" + el.getAttribute("data-name") + "' 을(를) 삭제할까요?")) return;
+      meetingApi("DELETE", el.getAttribute("data-stage") + "/" + el.getAttribute("data-no") + "/minutes/" + encodeURIComponent(el.getAttribute("data-name")), undefined, "회의록을 삭제했습니다.");
     },
     pickMatrix: function () {
       var d = state.detail.draft, teams = (state.reviewMatrix || {})[d.productSize + " " + d.productType] || [];
@@ -2524,11 +2657,12 @@
     document.addEventListener("input", function (e) {
       var t = e.target;
       if (t.type === "checkbox" || t.type === "radio" || t.type === "file" || t.type === "date") return;
-      if (t.tagName === "SELECT") return;
+      if (t.tagName === "SELECT" || t.hasAttribute("data-mtg")) return;
       onField(t);
     });
     document.addEventListener("change", function (e) {
       var t = e.target;
+      if (t.hasAttribute("data-mtg")) { meetingField(t); return; }
       if (t.type === "checkbox" || t.tagName === "SELECT") onField(t);
       else if (t.type === "date") onField(t);
     });

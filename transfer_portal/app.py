@@ -420,6 +420,45 @@ def normalize_attachment(a: Any) -> Optional[Dict[str, Any]]:
     }
 
 
+# 2단계(검증소위원회)·4단계(검증위원회)는 1차·2차… 회의를 열 수 있다 (회의록 첨부)
+MEETING_STAGES = ("step2", "step4")
+MEETING_RESULTS = ("", "통과", "조건부 통과", "재심의", "보류")
+
+
+def normalize_meeting(v: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(v, dict):
+        return None
+    try:
+        no = int(v.get("no") or 0)
+    except (TypeError, ValueError):
+        no = 0
+    if no < 1:
+        return None
+    result = _s(v.get("result"))
+    return {
+        "no": no,
+        "date": _date(v.get("date")),
+        "result": result if result in MEETING_RESULTS else "",
+        "note": _text(v.get("note"))[:2000],
+        "minutes": [a for a in (normalize_attachment(x) for x in (v.get("minutes") or [])) if a],
+        "createdAt": _s(v.get("createdAt"))[:19] or now_str(),
+    }
+
+
+def normalize_meetings(v: Any) -> List[Dict[str, Any]]:
+    out: Dict[int, Dict[str, Any]] = {}
+    for m in (normalize_meeting(x) for x in (v if isinstance(v, list) else [])):
+        if m and m["no"] not in out:
+            out[m["no"]] = m
+    return [out[k] for k in sorted(out)]
+
+
+def keep_meetings(new: Dict[str, Any], old: Dict[str, Any]) -> None:
+    """회의 차수·회의록은 전용 API 로만 바뀐다 (안건 저장·엑셀 업로드로 지워지지 않게)."""
+    for k in MEETING_STAGES:
+        new["stages"][k]["meetings"] = old["stages"][k]["meetings"]
+
+
 def normalize_stage(key: str, v: Any) -> Dict[str, Any]:
     """단계: 목표일(target) / 완료일(doneAt) / 연장 이력. 예전 형식의 date 는 완료면 완료일, 아니면 목표일로 옮긴다."""
     v = v if isinstance(v, dict) else {}
@@ -444,6 +483,7 @@ def normalize_stage(key: str, v: Any) -> Dict[str, Any]:
         "targetAuto": bool(v.get("targetAuto")) and not exts,
         "targetOriginal": _date(v.get("targetOriginal")) or (exts[0]["from"] if exts else ""),
         "extensions": exts,
+        "meetings": normalize_meetings(v.get("meetings")) if key in MEETING_STAGES else [],
     }
 
 
@@ -576,7 +616,11 @@ def sample_items() -> List[Dict[str, Any]]:
             "proposalDate": d("01-15"), "acceptedAt": d("01-16"),
             "summary": "Gen-3 대비 방열 기판을 AMB(Si3N4)로 변경하고 소결 접합(Ag Sintering)을 신규 적용.\n열저항 18% 개선, 신뢰성(TC 1,000cyc) 평가 완료.",
             "note": "검증소위원회 완료 후 전문위원 검토 진행 중. 방열 기판 보이드율 3% 이하 관리 기준 점검 필요.",
-            "stages": {"step1": _st(d("01-22"), True), "step2": _st(d("02-05"), True), "step3": _st(d("10-20")),
+            "stages": {"step1": _st(d("01-22"), True),
+                       "step2": {**_st(d("02-05"), True), "meetings": [
+                           {"no": 1, "date": d("01-29"), "result": "재심의", "note": "열특성 데이터 보완 후 재상정"},
+                           {"no": 2, "date": d("02-05"), "result": "통과", "note": "보완 데이터 확인, Risk 과제화"}]},
+                       "step3": _st(d("10-20")),
                        "step4": _st(), "step5": _st()},
             "risks": [
                 _risk("품질/수율", "박품질 팀장", "진공 리플로우 공정 시 대면적 기판 모서리 보이드(Void) 발생률 상승 우려",
@@ -1913,8 +1957,8 @@ def h_apply(req: Req):
         if len(data) > MAX_UPLOAD_BYTES:
             raise HTTPException(413, f"'{filename}' 파일이 100MB를 초과합니다.")
     p_date = _date(f.get("proposalDate")) or today_str()
-    if f.get("category", "제품") != "기술" and not matrix_key(f.get("productSize", ""), _s(f.get("productType")).upper()):
-        raise HTTPException(400, "제품 구분(300mm/200mm, PW/EPI)을 선택하세요.")
+    if not matrix_key(f.get("productSize", ""), _s(f.get("productType")).upper()):
+        raise HTTPException(400, "구경(300mm/200mm)과 PW/EPI 를 선택하세요.")
 
     def _create(data):
         item = normalize_item({
@@ -1954,6 +1998,7 @@ def h_update_item(req: Req):
         merged = normalize_item({**incoming, "id": item_id})
         for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog"):
             merged[keep] = cur[keep]
+        keep_meetings(merged, cur)
         # 접수 승인일은 서버가 기록 (처음 접수 처리된 날)
         merged["acceptedAt"] = cur["acceptedAt"] or (_date(incoming.get("acceptedAt")) or today_str() if merged["accepted"] else "")
         if not merged["accepted"]:
@@ -2043,6 +2088,7 @@ def h_bulk_replace(req: Req):
             if old:
                 for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog"):
                     it[keep] = old[keep]
+                keep_meetings(it, old)
                 it["rev"] = old["rev"] + 1
             it["updatedAt"] = now_str()
             out.append(it)
@@ -2053,6 +2099,126 @@ def h_bulk_replace(req: Req):
 
 def h_backup(req: Req):
     return FileResp(store.data_path, f"data_backup_{dt.datetime.now():%Y%m%d_%H%M}.json")
+
+
+# --- 2단계·4단계 회의 차수 / 회의록 ---------------------------------------
+def _meeting_stage(req: Req) -> str:
+    key = req.params["stage"]
+    if key not in MEETING_STAGES:
+        raise HTTPException(404, "회의 차수를 관리하는 단계가 아닙니다.")
+    return key
+
+
+def _find_meeting(cur: Dict[str, Any], key: str, no: str) -> Dict[str, Any]:
+    m = next((x for x in cur["stages"][key]["meetings"] if str(x["no"]) == str(no)), None)
+    if not m:
+        raise HTTPException(404, "회의를 찾을 수 없습니다.")
+    return m
+
+
+def _touch(cur: Dict[str, Any]) -> Dict[str, Any]:
+    cur["rev"] += 1
+    cur["updatedAt"] = now_str()
+    return cur
+
+
+def minutes_dir(item_id: str) -> Path:
+    return store.item_dir(item_id) / "minutes"
+
+
+def _trash_minutes(item_id: str, names: List[str]) -> None:
+    trash = store.backup_dir / "deleted_attachments" / item_id / "minutes"
+    for name in names:
+        path = minutes_dir(item_id) / safe_filename(name)
+        if path.is_file():
+            trash.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(path), str(unique_path(trash, path.name)))
+
+
+def _meeting_fields(m: Dict[str, Any], p: Dict[str, Any]) -> None:
+    if "date" in p:
+        m["date"] = _date(p.get("date"))
+    if "result" in p:
+        m["result"] = _s(p.get("result")) if _s(p.get("result")) in MEETING_RESULTS else ""
+    if "note" in p:
+        m["note"] = _text(p.get("note"))[:2000]
+
+
+def h_meeting_add(req: Req):
+    key, p = _meeting_stage(req), req.json()
+
+    def _add(data):
+        cur = find_item(data, req.params["id"])
+        st = cur["stages"][key]
+        if st["skipped"]:
+            raise HTTPException(400, "생략(Skip)된 단계에는 회의를 추가할 수 없습니다.")
+        no = max([m["no"] for m in st["meetings"]], default=0) + 1
+        m = normalize_meeting({"no": no, "date": p.get("date") or today_str()})
+        _meeting_fields(m, {k: v for k, v in p.items() if k in ("result", "note")})
+        st["meetings"].append(m)
+        return _touch(cur)
+    return store.mutate(_add)
+
+
+def h_meeting_update(req: Req):
+    key, p = _meeting_stage(req), req.json()
+
+    def _upd(data):
+        cur = find_item(data, req.params["id"])
+        _meeting_fields(_find_meeting(cur, key, req.params["no"]), p)
+        return _touch(cur)
+    return store.mutate(_upd)
+
+
+def h_meeting_delete(req: Req):
+    key, removed = _meeting_stage(req), []
+
+    def _del(data):
+        cur = find_item(data, req.params["id"])
+        st = cur["stages"][key]
+        m = _find_meeting(cur, key, req.params["no"])
+        if m["no"] != max(x["no"] for x in st["meetings"]):
+            raise HTTPException(400, "마지막 차수 회의부터 삭제할 수 있습니다.")
+        st["meetings"].remove(m)
+        removed.extend(a["name"] for a in m["minutes"])
+        return _touch(cur)
+    item = store.mutate(_del)
+    _trash_minutes(item["id"], removed)
+    return item
+
+
+def h_minutes_upload(req: Req):
+    key, item_id = _meeting_stage(req), req.params["id"]
+    _find_meeting(find_item(store.load(), item_id), key, req.params["no"])
+    _, files = req.form()
+    if not files:
+        raise HTTPException(400, "업로드할 회의록 파일이 없습니다.")
+    saved = save_uploads(minutes_dir(item_id), files, "관리자")
+
+    def _attach(data):
+        cur = find_item(data, item_id)
+        _find_meeting(cur, key, req.params["no"])["minutes"].extend(saved)
+        return _touch(cur)
+    return store.mutate(_attach)
+
+
+def h_minutes_download(req: Req):
+    return FileResp(_attachment_path(minutes_dir(req.params["id"]), req.params["name"]))
+
+
+def h_minutes_delete(req: Req):
+    key, item_id, name = _meeting_stage(req), req.params["id"], req.params["name"]
+
+    def _detach(data):
+        cur = find_item(data, item_id)
+        m = _find_meeting(cur, key, req.params["no"])
+        if not any(a["name"] == name for a in m["minutes"]):
+            raise HTTPException(404, "회의록 파일을 찾을 수 없습니다.")
+        m["minutes"] = [a for a in m["minutes"] if a["name"] != name]
+        return _touch(cur)
+    item = store.mutate(_detach)
+    _trash_minutes(item_id, [name])
+    return item
 
 
 # --- 첨부파일 --------------------------------------------------------------
@@ -2573,6 +2739,12 @@ route("POST", "/api/items/{id}/review/{team}/reopen", h_team_review_reopen, admi
 route("POST", "/api/presence", h_presence)
 route("POST", "/api/presence/leave", h_presence_leave)
 route("POST", "/api/remind", h_remind, admin=True)
+route("POST", "/api/items/{id}/meetings/{stage}", h_meeting_add, admin=True)
+route("PUT", "/api/items/{id}/meetings/{stage}/{no}", h_meeting_update, admin=True)
+route("DELETE", "/api/items/{id}/meetings/{stage}/{no}", h_meeting_delete, admin=True)
+route("POST", "/api/items/{id}/meetings/{stage}/{no}/minutes", h_minutes_upload, admin=True)
+route("DELETE", "/api/items/{id}/meetings/{stage}/{no}/minutes/{name}", h_minutes_delete, admin=True)
+route("GET", "/api/items/{id}/minutes/{name}", h_minutes_download)
 
 STATIC_DIR = (BASE_DIR / "static").resolve()
 
