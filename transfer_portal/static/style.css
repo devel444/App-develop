@@ -560,16 +560,6 @@ tbody tr.row-pending { background: #f5f3ff; }
 .matrix-table tfoot td { background: #f8fafc; }
 
 /* ===== v11: 검토 의견 배치 · 회의 차수 · 장기 과제 ===== */
-.review-grid { display: flex; flex-direction: column; gap: 10px; }
-.rv-small { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 10px; align-items: start; }
-.rv-small > .rv-sector { grid-column: span var(--rv-span, 1); }
-.rv-rows { display: grid; grid-template-columns: repeat(var(--rv-cols, 1), minmax(0, 1fr)); margin-left: -1px; align-items: stretch; }
-.rv-rows > .rv-row, .rv-rows > .rv-row:first-of-type { border-top: 1px solid var(--border); border-left: 1px solid var(--border); }
-.rv-row.wide { grid-column: 1 / -1; }
-@media (max-width: 900px) {
-  .rv-rows { grid-template-columns: 1fr; }
-  .rv-small > .rv-sector { grid-column: auto; }
-}
 .mtg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }
 @media (max-width: 900px) { .mtg-grid { grid-template-columns: 1fr; } }
 .mtg-card { border: 1px solid var(--border); border-radius: 10px; background: #fff; padding: 8px 12px; }
@@ -594,6 +584,38 @@ tbody tr.row-pending { background: #f5f3ff; }
 .chip-btn.long.active { background: #7e22ce; border-color: #7e22ce; color: #fff; }
 .kpi-pill.long { background: #f3e8ff; color: #6b21a8; cursor: pointer; }
 .kpi-pill.long:hover { outline: 2px solid #d8b4fe; }
-.review-grid { align-items: stretch; }
-.rv-small { grid-template-columns: repeat(auto-fill, minmax(410px, 1fr)); }
-.rv-team { min-width: 110px; }
+/* v12: 검토 의견 카드 2열 (같은 줄 카드 높이 맞춤) */
+.review-grid { grid-template-columns: 1fr 1fr; align-items: stretch; }
+@media (max-width: 900px) { .review-grid { grid-template-columns: 1fr; } }
+.mtg-text { width: 100%; min-height: 220px; font-size: 12.5px; line-height: 1.55; margin-top: 4px; }
+.mtg-text-view { width: 100%; white-space: pre-wrap; background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12.5px; line-height: 1.55; max-height: 420px; overflow: auto; margin-top: 4px; }
+
+/* ===== v12: 과제 진행 기록 · 내 과제 · 변경 이력 ===== */
+.badge-req { background: #dbeafe; color: #1d4ed8; border: 1px solid #93c5fd; }
+.act-label.k-approve { background: #dbeafe; color: #1d4ed8; }
+.chip-btn.mine.active { background: #0f766e; border-color: #0f766e; color: #fff; }
+.track-row > td { background: #f8fafc; padding: 8px 12px; }
+.tl-wrap { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+@media (max-width: 900px) { .tl-wrap { grid-template-columns: 1fr; } }
+.tl-list { display: flex; flex-direction: column; gap: 6px; max-height: 360px; overflow: auto; grid-row: span 2; }
+.tl-item { background: #fff; border: 1px solid var(--border); border-left: 4px solid #94a3b8; border-radius: 8px; padding: 6px 10px; font-size: 12.5px; }
+.tl-item.k-request { border-left-color: #3b82f6; }
+.tl-item.k-approve { border-left-color: #16a34a; }
+.tl-item.k-reject { border-left-color: #dc2626; }
+.tl-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tl-kind { font-weight: 800; }
+.tl-note { white-space: pre-wrap; margin-top: 3px; line-height: 1.5; }
+.tl-files { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+.tl-files .file-chip { padding: 3px 8px; font-size: 12px; }
+.tl-form { background: #fff; border: 1px solid #fcd34d; border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
+.tl-form.admin { border-color: #c7d2fe; }
+.tl-form .lbl { font-weight: 800; font-size: 12.5px; }
+.tl-form textarea { min-height: 90px; }
+.tl-btns { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.tl-btns .input { flex: 1; min-width: 180px; }
+.tl-btns input[type=file] { font-size: 12px; max-width: 230px; }
+.audit-list { display: flex; flex-direction: column; max-height: 360px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.audit-row { display: grid; grid-template-columns: 140px 170px 1fr; gap: 8px; padding: 5px 10px; font-size: 12.5px; border-top: 1px solid var(--border); }
+.audit-row:first-child { border-top: 0; }
+.audit-at { color: var(--text-sub); font-variant-numeric: tabular-nums; }
+.audit-by { font-weight: 700; }

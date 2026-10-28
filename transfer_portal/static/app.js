@@ -34,12 +34,15 @@
     holidays: [],
     reviewMatrix: {},
     matrixDraft: null,
+    mtgOpen: {},            // 펼친 회의록 ("step2-1": true)
+    taskOpen: {},           // 펼친 과제 진행 기록 ("TR-2026-001/T01": true)
+    taskForm: {},           // 진행 입력 중인 내용 (다시 그려도 유지)
     leadDays: { step1: 5, step2: 7, step3: 7, step4: 7, step5: 7 },
     route: "dashboard",
     f: {
       dashYear: "ALL",
       list: { cat: "ALL", year: "ALL", status: "ALL", q: "" },
-      task: { grade: "ALL", sector: "ALL", status: "ALL", q: "" }
+      task: { grade: "ALL", sector: "ALL", status: "ALL", q: "", mine: false }
     },
     detail: null,           // { id, orig, draft }
     mail: null,             // 검토 요청 메일 패널 상태
@@ -476,7 +479,7 @@
     if (changed && route === "admin") state.adminUsers = null;  // 들어올 때마다 최신 가입 신청을 다시 불러온다
     $all(".nav-link").forEach(function (a) { a.classList.toggle("active", a.getAttribute("data-route") === route); });
     render(true);
-    if (changed) { window.scrollTo(0, 0); if (state.clientId) presencePing(); }
+    if (changed) { window.scrollTo(0, 0); if (state.clientId) presencePing(); if (state.version) poll(); }  // 메뉴 이동 시 최신 데이터 확인
     if (route === "items" && parts[1] && isLoggedIn()) openDetail(decodeURIComponent(parts[1]));
   }
   function go(route) {
@@ -526,6 +529,7 @@
       (it.tasks || []).forEach(function (t) {
         if (t.status === "완료") return;
         var d = taskDelay(t);
+        if (t.request) out.push({ kind: "approve", sev: 1, item: it, task: t, label: "🙋 완료 승인 대기", text: t.id + " " + t.title + " · 요청 " + t.request.by, days: daysBetween(t.request.at.slice(0, 10), t0), unit: "일 경과" });
         if (d) out.push({ kind: "task", sev: 0, item: it, task: t, label: "🚨 과제 지연", text: t.id + " " + t.title + (t.org || t.ownerName ? " · " + (t.ownerName || t.org) : ""), days: d, unit: "일 지연", remindKey: t.id });
         else if (!t.target) out.push({ kind: "notarget", sev: 3, item: it, task: t, label: "📅 목표일 미지정", text: t.id + " " + t.title, days: 0, unit: "" });
       });
@@ -609,6 +613,18 @@
         (actions.length > 12 ? '<button class="btn btn-secondary btn-sm" data-action="toggleActions">' + (state.showAllActions ? "접기" : "전체 " + actions.length + "건 보기") + "</button>" : "")
         : '<div class="empty-state" style="padding:20px">🎉 지금 조치가 필요한 항목이 없습니다.</div>') + "</div>";
 
+    // 내 과제 (로그인 회원이 담당자인 진행 중 과제)
+    var mine = state.user ? tasksOf(state.items).filter(function (x) { return isTaskOwner(x.task) && x.task.status !== "완료"; }) : [];
+    var mineHtml = !mine.length ? "" : '<div class="card"><div class="card-title">👤 내 과제 <span class="card-sub">' + esc(state.user.name) + " 님이 담당자인 진행 중 보완 과제 · [✍️ 진행 입력]으로 진행 상황·완료 요청</span>" +
+      '<span class="badge badge-gray">' + mine.length + "건</span></div>" +
+      '<div class="table-wrap"><table class="action-table"><tbody>' + mine.map(function (x) {
+        var t = x.task;
+        return '<tr class="' + (x.delay ? "sev0" : "") + '"><td style="width:70px"><b>' + esc(t.id) + '</b> <span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span></td>" +
+          '<td><b class="link-text" data-action="openDetail" data-id="' + esc(x.item.id) + '">' + esc(x.item.title) + '</b><div class="pre" style="font-size:12px">' + esc(t.title) + "</div></td>" +
+          '<td style="width:170px">목표 ' + esc(t.target ? fmtDay(t.target) : "미정") + (x.delay ? ' <span class="badge badge-delay">+' + x.delay + "일</span>" : "") + longBadge(x.long) + "</td>" +
+          '<td style="width:170px;text-align:right">' + taskTrackBtn(x.item, t) + "</td></tr>" + taskTrackRow(x.item, t, 4);
+      }).join("") + "</tbody></table></div></div>";
+
     // 향후 2주 일정
     var up = member ? upcoming(items) : [];
     var upHtml = !member ? "" : '<div class="card"><div class="card-title">📅 향후 2주 일정 <span class="card-sub">현재 단계 목표일 · 진행 중 과제 목표일</span></div>' +
@@ -621,6 +637,7 @@
     setView(
       '<div class="page-head"><div><h2>📊 대시보드</h2><p>' + (member ? "지금 무엇이 늦어지고 있고, 누구에게 연락해야 하는지 한눈에 봅니다" : "로그인하면 조치 필요 목록과 일정을 볼 수 있습니다") + "</p></div>" +
       '<div class="page-actions"><span class="filter-label">기준연도</span><select class="select" data-filter="dashYear">' + yearOptions(y) + "</select>" +
+      (member ? '<button class="btn btn-excel" data-action="reportXlsx">📊 현황 보고서(xlsx)</button>' : "") +
       '<button class="btn btn-secondary" data-action="refresh">🔄 최신 데이터</button></div></div>' +
 
       '<section class="kpi-grid kpi4">' +
@@ -644,7 +661,7 @@
       '<span class="kpi-pill">결정 대기·미선정 ' + undecided.length + "</span></div>" +
       '<div class="kpi-hint">' + (member ? "클릭 → 아래 조치 필요 목록" : "로그인 후 상세 확인") + "</div></div></section>" +
 
-      actionHtml +
+      mineHtml + actionHtml +
 
       '<section class="charts-grid">' +
       '<div class="card chart-card"><div class="chart-head"><div><div class="card-title">단계별 진행 현황</div>' +
@@ -677,6 +694,7 @@
     setView(
       '<div class="page-head"><div><h2>📋 양산이관 세부현황</h2><p>행을 클릭하면 상세 현황(단계 관리·Risk 검토·메일 발송)이 열립니다</p></div>' +
       '<div class="page-actions">' +
+      '<button class="btn btn-excel" data-action="reportXlsx">📊 현황 보고서(xlsx)</button>' +
       '<button class="btn btn-excel" data-action="csvSummary">📥 엑셀(요약 목록)</button>' +
       '<button class="btn btn-excel" data-action="csvRisk">📥 엑셀(Risk 상세표)</button>' +
       (state.isAdmin ? '<button class="btn btn-upload" data-action="csvUpload">📤 엑셀 일괄 업로드</button>' : "") +
@@ -742,6 +760,8 @@
       if (f.sector !== "ALL" && t.sector !== f.sector) return false;
       if (f.status === "DELAY" && !x.delay) return false;
       if (f.status === "LONG" && !x.long) return false;
+      if (f.status === "REQ" && !t.request) return false;
+      if (f.mine && !isTaskOwner(t)) return false;
       if ((f.status === "진행중" || f.status === "완료") && t.status !== f.status) return false;
       if (q && [t.id, t.title, t.plan, t.org, t.ownerName, x.item.title].join(" ").toLowerCase().indexOf(q) === -1) return false;
       return true;
@@ -764,15 +784,17 @@
       '<div class="page-head"><div><h2>🛠️ 보완 과제 현황</h2><p>2단계 검증소위원회에서 확정된 보완 과제 통합 추적 · 목표일이 지난 진행중 과제는 최상단에 표시됩니다</p></div>' +
       '<div class="page-actions"><span class="badge badge-gray">전체 ' + all.length + '건</span><span class="badge badge-delay">🚨 지연 ' + delayCnt + "건</span>" +
       '<span class="badge badge-long">⏳ 장기 ' + longCnt + "건</span>" +
+      '<button class="btn btn-excel" data-action="reportXlsx">📊 현황 보고서(xlsx)</button>' +
       '<button class="btn btn-excel" data-action="csvRisk">📥 엑셀(Risk 상세표)</button></div></div>' +
       '<div class="card"><div class="toolbar"><div class="filter-group"><span class="filter-label">중요도</span>' +
       [["ALL", "전체"], ["상", "상 (이관 전 필수)"], ["중", "중"], ["하", "하"]].map(function (g) {
         return '<button class="chip-btn ' + (f.grade === g[0] ? "active" : "") + '" data-action="taskGrade" data-grade="' + g[0] + '">' + g[1] + "</button>";
       }).join("") +
       '<span class="filter-label" style="margin-left:8px">상태</span>' +
-      [["ALL", "전체"], ["DELAY", "🚨 지연과제만"], ["LONG", "⏳ 장기 과제 (발제 " + LONG_TERM_MONTHS + "개월+)"], ["진행중", "진행중"], ["완료", "완료"]].map(function (s) {
+      [["ALL", "전체"], ["DELAY", "🚨 지연과제만"], ["LONG", "⏳ 장기 과제 (발제 " + LONG_TERM_MONTHS + "개월+)"], ["REQ", "🙋 완료 요청"], ["진행중", "진행중"], ["완료", "완료"]].map(function (s) {
         return '<button class="chip-btn ' + (s[0] === "DELAY" ? "danger " : s[0] === "LONG" ? "long " : "") + (f.status === s[0] ? "active" : "") + '" data-action="taskStatus" data-status="' + s[0] + '">' + s[1] + "</button>";
       }).join("") +
+      (state.user ? '<button class="chip-btn mine ' + (f.mine ? "active" : "") + '" data-action="taskMine" style="margin-left:8px">👤 내 과제 ' + all.filter(function (x) { return isTaskOwner(x.task); }).length + "</button>" : "") +
       '</div><div class="filter-group"><span class="filter-label">부문</span><select class="select" data-filter="task.sector">' +
       ['<option value="ALL">전체 부문</option>'].concat(SECTORS.map(function (s) {
         return '<option value="' + esc(s) + '"' + (f.sector === s ? " selected" : "") + ">" + esc(s) + "</option>";
@@ -805,7 +827,8 @@
         '<td style="font-weight:600">' + esc(t.target || "미정") + (t.extensions.length ? ' <span class="badge badge-ext">연장 ' + t.extensions.length + "</span>" : "") +
         (x.delay ? '<div><span class="badge badge-delay">🚨 지연 (+' + x.delay + "일)</span></div>" : "") + (x.long ? "<div>" + longBadge(x.long) + "</div>" : "") + (isDone && t.doneAt ? '<div class="muted" style="font-size:11px">완료 ' + esc(t.doneAt) + "</div>" : "") + "</td>" +
         '<td><button class="btn btn-sm ' + (isDone ? "btn-teal" : "btn-secondary") + '" data-action="taskToggle" data-id="' + esc(x.item.id) + '" data-task="' + esc(t.id) + '"' +
-        (state.isAdmin ? "" : ' disabled title="관리자 모드에서 변경 가능"') + ">" + (isDone ? "✓ 완료" : "⏳ 진행중") + "</button></td></tr>";
+        (state.isAdmin ? "" : ' disabled title="관리자 모드에서 변경 가능"') + ">" + (isDone ? "✓ 완료" : "⏳ 진행중") + "</button>" +
+        '<div style="margin-top:4px">' + taskTrackBtn(x.item, t) + "</div></td></tr>" + taskTrackRow(x.item, t, 9);
     }).join("");
   }
 
@@ -1345,7 +1368,7 @@
   function syncServerFields(updated) {
     replaceItem(updated);
     if (!state.detail || state.detail.id !== updated.id) return;
-    ["rev", "attachments", "accepted", "notify", "updatedAt"].forEach(function (k) {
+    ["rev", "attachments", "accepted", "notify", "updatedAt", "audit", "finalNotify"].forEach(function (k) {
       state.detail.draft[k] = clone(updated[k]);
       state.detail.orig[k] = clone(updated[k]);
     });
@@ -1356,7 +1379,7 @@
     var myTeam = !admin && state.user && d.reviews[state.user.team] ? state.user.team : "";
     var roleBanner = admin ? ""
       : myTeam ? '<div class="banner info"><span>🖊 <b>' + esc(myTeam) + "</b> 이(가) 검토 팀으로 선정되었습니다. 아래 [3]의 " + esc(myTeam) +
-        " 줄에서 <b>✅ OK</b>(이상 없음) 또는 <b>⚠️ Risk</b>를 고르고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다. (작성 이력이 남습니다)</span></div>"
+        " 줄에서 <b>✅ 이상 없음</b> 또는 <b>⚠️ Risk 있음</b>을 고르고 <b>[✅ 작성 완료]</b>를 누르면 간사에게 메일이 발송됩니다. (작성 이력이 남습니다)</span></div>"
       : '<div class="banner warn"><span>🔒 열람 모드입니다. ' + (state.user ? "우리 팀(" + esc(state.user.team) + ")은 이 안건의 검토 팀으로 선정되지 않았습니다." : "검토 의견 작성은 로그인 후, 전체 수정은 [관리자 모드]에서 가능합니다.") + "</span>" +
         (state.user ? "" : '<button class="btn btn-secondary btn-sm" data-action="nav" data-route="account">👤 로그인</button>') + "</div>";
     $("#detailHeader").innerHTML =
@@ -1373,6 +1396,9 @@
       (d.accepted === false ? '<div class="banner wait"><span>🆕 접수대기 안건입니다. 내용을 확인한 뒤 접수 승인하세요.</span>' +
         (admin ? '<button class="btn btn-primary btn-sm" data-action="acceptItem" data-id="' + esc(d.id) + '">✓ 접수 승인</button>' : "") + "</div>" : "") +
       notify +
+      (d.finalNotify ? '<div class="banner ' + (d.finalNotify.status === "failed" ? "warn" : "info") + '"><span>🏁 최종승인 알림 메일: ' +
+        ({ sent: "발송 완료", failed: "발송 실패", skipped: "발송 안 함" }[d.finalNotify.status] || d.finalNotify.status) + " — " + esc(d.finalNotify.message || "") +
+        ' <span class="muted">(' + esc(d.finalNotify.at || "") + ")</span></span></div>" : "") +
       roleBanner +
 
       '<div class="section"><div class="section-head"><div class="section-title">📌 기본 정보</div></div><div class="info-grid">' +
@@ -1399,12 +1425,14 @@
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">3</span>전문소위원 검토 의견 — 선정된 검토 팀</div>' +
       '<span id="reviewSummary"></span></div>' +
-      '<div class="card-sub">선정된 팀이 ✅ OK(이상 없음, 의견 선택) / ⚠️ Risk 를 작성합니다. Risk 는 2단계 검증소위원회에서 간사가 <b>[🛠 과제 등록]</b> 또는 <b>[✔ 수용]</b>으로 결정합니다.</div>' +
+      '<div class="card-sub">선정된 팀이 ✅ 이상 없음(의견 선택) / ⚠️ Risk 있음을 작성합니다. Risk 는 2단계 검증소위원회에서 간사가 <b>[🛠 과제 등록]</b> 또는 <b>[✔ 수용]</b>으로 결정합니다.</div>' +
       '<div class="review-grid" id="reviewGrid"></div></div>' +
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">4</span>🛠 보완 과제</div><span id="taskSummary"></span></div>' +
       '<div class="card-sub">중요도 <b>상</b> = 양산이관 전 완료 필수(미완료 시 최종승인 불가) · <b>중·하</b> = 남아 있어도 조건부 승인 가능 · 목표일 변경은 [⏰ 연장](사유 필수)</div>' +
       '<div id="taskBox"></div></div>' +
+
+      '<div class="section"><div id="auditBox"></div></div>' +
 
       (admin ? '<div class="section admin-section"><div class="section-head"><div class="section-title"><span class="section-num">5</span>전문(소)위원 선정 · 검토 요청 메일 <span class="badge badge-gray">관리자 전용</span></div>' +
         '<span class="card-sub">메일 본문은 저장된 안건 내용 기준으로 작성됩니다</span></div><div id="teamPick"></div><div id="mailHost-detail"></div></div>' : "");
@@ -1415,7 +1443,7 @@
       (admin ? '<button class="btn btn-primary" data-action="detailSave">💾 저장 (공유폴더 즉시 반영)</button>' : "") +
       (myTeam ? '<button class="btn btn-teal" data-action="teamSave">💾 임시 저장</button><button class="btn btn-primary" data-action="teamComplete">✅ ' + esc(myTeam) + " 작성 완료 (간사에게 메일)</button>" : "") + "</div>";
 
-    renderAttachments(); renderStepper(); renderMeetings(); renderTeamPick(); renderMailPanel(); renderReviews(); renderTaskBox();
+    renderAttachments(); renderStepper(); renderMeetings(); renderAudit(); renderTeamPick(); renderMailPanel(); renderReviews(); renderTaskBox();
   }
 
   function renderAttachments() {
@@ -1480,6 +1508,18 @@
   }
 
 
+  // ---- 변경 이력 (누가·언제·무엇을) ----
+  function renderAudit() {
+    var box = $("#auditBox");
+    if (!box) return;
+    var d = state.detail.draft, list = (d.audit || []).slice().reverse(), open = !!state.detail.showAudit;
+    box.innerHTML = '<div class="section-head"><div class="section-title">🕘 변경 이력 <span class="badge badge-gray">' + list.length + "건</span></div>" +
+      '<button class="btn btn-secondary btn-sm" data-action="auditToggle">' + (open ? "접기 ▲" : "펼치기 ▼") + "</button></div>" +
+      (!open ? "" : list.length ? '<div class="audit-list">' + list.map(function (a) {
+        return '<div class="audit-row"><span class="audit-at">' + esc(a.at) + '</span><span class="audit-by">' + esc(a.by) + '</span><span class="audit-act">' + esc(a.action) + "</span></div>";
+      }).join("") + "</div>" : '<div class="muted">기록된 변경 이력이 없습니다. (v12 설치 이후 변경부터 기록됩니다)</div>');
+  }
+
   // ---- 2단계(검증소위원회)·4단계(검증위원회) 회의 차수 · 회의록 ----
   var MEETING_STAGES = ["step2", "step4"];
   var MEETING_RESULTS = ["통과", "조건부 통과", "재심의", "보류"];
@@ -1499,36 +1539,33 @@
       if (st.skipped) return '<div class="mtg-card skipped">' + head + '<div class="muted">🚫 생략(Skip)된 단계입니다.</div></div>';
       var rows = ms.length ? ms.map(function (m, i) {
         var a = ' data-stage="' + key + '" data-no="' + m.no + '"';
+        // 예전(v11) 파일 회의록은 열람만 유지
         var files = m.minutes.map(function (f) {
-          return '<span class="file-chip">📄 <a href="' + base + "/minutes/" + encodeURIComponent(f.name) + '" download title="' + esc((f.uploadedAt || "") + " · " + (f.by || "")) + '">' + esc(f.name) + "</a>" +
+          return '<span class="file-chip">📄 <a href="' + base + "/minutes/" + encodeURIComponent(f.name) + '" download>' + esc(f.name) + "</a>" +
             (admin ? '<button class="x" data-action="mtgFileDel"' + a + ' data-name="' + esc(f.name) + '" title="삭제">✕</button>' : "") + "</span>";
-        }).join("") || '<span class="muted">회의록 없음</span>';
+        }).join("");
+        var open = !!state.mtgOpen[key + "-" + m.no], hasText = !!(m.minutesText || "").trim();
         var resCls = { "통과": "ok", "조건부 통과": "ok", "재심의": "re", "보류": "hold" }[m.result] || "";
+        var toggle = (admin || hasText)
+          ? '<button class="btn btn-xs ' + (open ? "btn-primary" : "btn-secondary") + '" data-action="mtgToggle"' + a + ">📝 회의록" + (hasText ? " ✓" : "") + (open ? " ▲" : " ▼") + "</button>"
+          : '<span class="muted" style="font-size:11.5px">회의록 없음</span>';
+        var minutesBox = !open ? "" : admin
+          ? '<textarea class="textarea mtg-text" data-mtg="minutesText"' + a + ' placeholder="메일 본문의 회의록을 그대로 붙여넣으세요. (입력 칸 밖을 누르면 자동 저장)">' + esc(m.minutesText || "") + "</textarea>"
+          : '<div class="mtg-text-view">' + esc(m.minutesText || "") + "</div>";
         return '<div class="mtg-row ' + resCls + '"><span class="mtg-no">' + m.no + "차</span>" +
           (admin
             ? '<input type="date" class="input mini" data-mtg="date"' + a + ' value="' + esc(m.date) + '" />' +
               '<select class="select mini" data-mtg="result"' + a + '><option value="">결과 선택</option>' + MEETING_RESULTS.map(function (r) { return '<option' + (m.result === r ? " selected" : "") + ">" + r + "</option>"; }).join("") + "</select>" +
-              '<input class="input mtg-note" data-mtg="note"' + a + ' value="' + esc(m.note) + '" placeholder="회의 요약 / 재심의 사유" />'
+              '<input class="input mtg-note" data-mtg="note"' + a + ' value="' + esc(m.note) + '" placeholder="한 줄 요약 / 재심의 사유" />'
             : '<b>' + esc(m.date ? fmtDay(m.date) : "-") + "</b>" + (m.result ? '<span class="mtg-res ' + resCls + '">' + esc(m.result) + "</span>" : "") +
               (m.note ? '<span class="mtg-note-text">' + esc(m.note) + "</span>" : "")) +
-          '<div class="mtg-files">' + files +
-          (admin ? '<button class="btn btn-upload btn-xs" data-action="mtgFilePick"' + a + '>📤 회의록</button>' +
-            (i === ms.length - 1 ? '<button class="link-btn" data-action="mtgDel"' + a + ">차수 삭제</button>" : "") : "") + "</div></div>";
-      }).join("") : '<div class="muted" style="padding:6px 2px">' + (admin ? "회의를 열면 [+ 1차 회의 추가]로 기록하고 회의록을 첨부하세요." : "기록된 회의가 없습니다.") + "</div>";
+          '<div class="mtg-files">' + toggle + files +
+          (admin && i === ms.length - 1 ? '<button class="link-btn" data-action="mtgDel"' + a + ">차수 삭제</button>" : "") + "</div>" + minutesBox + "</div>";
+      }).join("") : '<div class="muted" style="padding:6px 2px">' + (admin ? "회의를 열면 [+ 1차 회의 추가]로 기록하고 [📝 회의록]에 메일 본문 회의록을 붙여넣으세요." : "기록된 회의가 없습니다.") + "</div>";
       var last = ms[ms.length - 1];
       var hint = admin && last && last.result === "재심의" && !st.done ? '<div class="card-sub">↻ 재심의 결정 → [+ ' + (ms.length + 1) + "차 회의 추가] 후, 필요하면 위 단계의 [⏰ 목표일 연장]으로 일정을 조정하세요.</div>" : "";
       return '<div class="mtg-card">' + head + rows + hint + "</div>";
-    }).join("") + (admin ? '<input id="mtgFiles" type="file" multiple style="display:none" />' : "");
-    var inp = $("#mtgFiles");
-    if (inp) inp.onchange = function () {
-      var t = state.mtgUpload, files = this.files;
-      if (!t || !files.length) return;
-      var fd = new FormData();
-      Array.prototype.forEach.call(files, function (f) { fd.append("files", f, f.name); });
-      toast("회의록 업로드 중… (" + files.length + "개)");
-      meetingApi("POST", t.stage + "/" + t.no + "/minutes", fd, "회의록을 저장했습니다.");
-      this.value = "";
-    };
+    }).join("");
   }
   // 회의 API 는 즉시 저장된다 → 서버 값으로 회의·rev 만 맞춘다 (작성 중인 다른 수정은 그대로)
   function meetingApi(method, path, body, okMsg) {
@@ -1548,7 +1585,7 @@
   function meetingField(el) {
     var p = {};
     p[el.getAttribute("data-mtg")] = el.value;
-    meetingApi("PUT", el.getAttribute("data-stage") + "/" + el.getAttribute("data-no"), p, "회의 정보를 저장했습니다.");
+    meetingApi("PUT", el.getAttribute("data-stage") + "/" + el.getAttribute("data-no"), p, el.getAttribute("data-mtg") === "minutesText" ? "회의록을 저장했습니다." : "회의 정보를 저장했습니다.");
   }
 
   // ---- [3] 전문소위원 검토 의견: 부문별로 묶고 팀마다 한 줄 ----
@@ -1560,41 +1597,29 @@
       grid.innerHTML = '<div class="empty-state" style="padding:18px">검토 팀이 아직 선정되지 않았습니다.' +
         (admin ? " 아래 [5] 전문(소)위원 선정에서 팀을 선택하세요." : " (간사가 선정합니다)") + "</div>";
     } else {
-      var groups = SECTORS.map(function (sec) {
-        return { sec: sec, teams: order.filter(function (t) { return d.reviews[t].sector === sec; }) };
-      }).filter(function (g) { return g.teams.length; });
-      var sectorHtml = function (g, cols) {
-        var doneCnt = g.teams.filter(function (t) { return d.reviews[t].done; }).length;
-        return '<div class="rv-sector" style="--rv-cols:' + cols + (g.teams.length <= SMALL_SECTOR ? ";--rv-span:" + g.teams.length : "") + '"><div class="rv-sector-head"><b>' + esc(g.sec) + '</b><span class="muted">' + g.teams.length + "팀 · 완료 " + doneCnt + "</span></div>" +
-          '<div class="rv-rows">' + g.teams.map(function (team) { return reviewRow(d, team); }).join("") + "</div></div>";
-      };
-      var small = groups.filter(function (g) { return g.teams.length <= SMALL_SECTOR; });
-      var big = groups.filter(function (g) { return g.teams.length > SMALL_SECTOR; });
-      grid.innerHTML = (small.length ? '<div class="rv-small">' + small.map(function (g) { return sectorHtml(g, g.teams.length); }).join("") + "</div>" : "") +
-        big.map(function (g) { return sectorHtml(g, bestCols(g.teams.length, Math.max(1, Math.floor((grid.clientWidth || 1300) / RV_ROW_MIN)))); }).join("");
+      // 한 줄에 2개씩: 품질/수율·생산성 / 장비·Process / 제조·손익
+      grid.innerHTML = REVIEW_LAYOUT.map(function (sec) {
+        var teams = order.filter(function (t) { return d.reviews[t].sector === sec; });
+        if (!teams.length) return "";
+        var doneCnt = teams.filter(function (t) { return d.reviews[t].done; }).length;
+        return '<div class="rv-sector"><div class="rv-sector-head"><b>' + esc(sec) + '</b><span class="muted">' + teams.length + "팀 · 완료 " + doneCnt + "</span></div>" +
+          teams.map(function (team) { return reviewRow(d, team); }).join("") + "</div>";
+      }).join("");
     }
     var sm = reviewSummary(d);
     $("#reviewSummary").innerHTML = '<span class="badge badge-gray">작성 완료 ' + sm.completed + "/" + sm.total + "</span>" +
       (sm.riskCount ? ' <span class="badge badge-gray">Risk ' + sm.riskCount + "건</span>" : "") +
       (sm.undecided ? ' <span class="badge badge-wait">결정 대기 ' + sm.undecided + "건</span>" : "");
   }
-  // 팀이 2개 이하인 부문은 한 줄에 나란히, 그보다 많으면 빈칸이 가장 적은 열 수(2~3열)로 팀 줄을 나눠 배치
-  var SMALL_SECTOR = 2, RV_ROW_MIN = 420;
-  function bestCols(n, maxCols) {
-    var top = Math.max(1, Math.min(maxCols, n)), best = top;
-    for (var c = top - 1; c >= 2; c--) {
-      if (Math.ceil(n / c) * c - n < Math.ceil(n / best) * best - n) best = c;
-    }
-    return best;
-  }
+  var REVIEW_LAYOUT = ["품질/수율", "생산성", "장비", "Process", "제조", "손익"];
   function reviewRow(d, team) {
     var c = d.reviews[team], admin = state.isAdmin, edit = canEditTeam(team), mine = edit && !admin;
     var tAttr = ' data-team="' + esc(team) + '"';
     var toggle = edit
       ? '<span class="rv-mini">' +
-        '<button class="rv-opt ok sm' + (c.result === "ok" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="ok" title="이상 없음 (의견 선택)">✅ OK</button>' +
-        '<button class="rv-opt risk sm' + (c.result === "risk" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="risk" title="Risk 있음">⚠️ Risk</button></span>'
-      : (c.result === "ok" ? '<span class="rv-chip ok">✅ OK</span>' : c.result === "risk" ? '<span class="rv-chip risk">⚠️ Risk ' + c.risks.length + "건</span>" : '<span class="rv-chip none">⬜ 미작성</span>');
+        '<button class="rv-opt ok sm' + (c.result === "ok" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="ok">✅ 이상 없음</button>' +
+        '<button class="rv-opt risk sm' + (c.result === "risk" ? " on" : "") + '" data-action="rvResult"' + tAttr + ' data-val="risk">⚠️ Risk 있음</button></span>'
+      : (c.result === "ok" ? '<span class="rv-chip ok">✅ 이상 없음</span>' : c.result === "risk" ? '<span class="rv-chip risk">⚠️ Risk ' + c.risks.length + "건</span>" : '<span class="rv-chip none">⬜ 미작성</span>');
     var hist = c.history && c.history.length ? '<span class="rv-hist" title="' + esc(c.history.map(function (h) { return h.at + "  " + h.by + "  " + h.action; }).join("\n")) + '">🕘 이력 ' + c.history.length + "</span>" : "";
     var status = c.done
       ? '<span class="rv-done">✓ 완료 · ' + esc(c.done.name) + (c.done.title ? " " + esc(c.done.title) : "") + " " + esc((c.done.at || "").slice(5, 16)) +
@@ -1613,7 +1638,7 @@
     }
     var actions = mine ? '<div class="rv-actions"><button class="btn btn-teal btn-sm" data-action="teamSave">💾 임시 저장</button>' +
       '<button class="btn btn-primary btn-sm" data-action="teamComplete">✅ 작성 완료</button></div>' : "";
-    return '<div class="rv-row ' + (c.result || "none") + (mine ? " mine" : "") + (c.result === "risk" && c.risks.length ? " wide" : "") + '"><div class="rv-line"><span class="rv-team">' + esc(team) + "</span>" + toggle +
+    return '<div class="rv-row ' + (c.result || "none") + (mine ? " mine" : "") + '"><div class="rv-line"><span class="rv-team">' + esc(team) + "</span>" + toggle +
       '<span class="rv-status">' + status + hist + "</span></div>" + (body || actions ? '<div class="rv-body">' + body + actions + "</div>" : "") + "</div>";
   }
   function riskHtml(team, r, edit) {
@@ -1729,8 +1754,68 @@
             : '<div style="font-weight:700">' + esc(t.org || "-") + '</div><div class="muted">' + esc(t.ownerName || t.ownerEmail || "") + "</div>") + "</td>" +
           "<td>" + target + "</td>" +
           "<td>" + (admin ? '<select class="select"' + a("status") + '><option value="진행중"' + (t.status !== "완료" ? " selected" : "") + '>진행중</option><option value="완료"' + (t.status === "완료" ? " selected" : "") + ">완료</option></select>"
-            : (t.status === "완료" ? '<span class="badge badge-done">완료</span>' : '<span class="badge badge-ing">진행중</span>')) + "</td></tr>";
+            : (t.status === "완료" ? '<span class="badge badge-done">완료</span>' : '<span class="badge badge-ing">진행중</span>')) +
+          '<div style="margin-top:4px">' + taskTrackBtn(d, t) + "</div></td></tr>" + taskTrackRow(d, t, 6);
       }).join("") + "</tbody></table></div>";
+  }
+
+  // ---- 보완 과제 진행 기록: 담당자 진행 입력·완료 요청 / 관리자 승인·반려 ----
+  var TASK_LOG_LABEL = { progress: "📝 진행", request: "🙋 완료 요청", approve: "✅ 완료 승인", reject: "↩ 반려", reopen: "↺ 완료 해제" };
+  function isTaskOwner(t) {
+    var u = state.user;
+    if (!u) return false;
+    return !!((t.ownerEmpId && t.ownerEmpId === u.empId) || (t.ownerEmail && u.email && t.ownerEmail.toLowerCase() === u.email.toLowerCase()));
+  }
+  function trackKey(item, t) { return item.id + "/" + t.id; }
+  // 상태 칸 아래: 완료 요청 표시 + [진행 기록] 펼치기 버튼
+  function taskTrackBtn(item, t) {
+    var k = trackKey(item, t), open = !!state.taskOpen[k], mine = isTaskOwner(t) && t.status !== "완료";
+    return (t.request ? '<div><span class="badge badge-req" title="' + esc(t.request.by + " " + t.request.at) + '">🙋 완료 요청됨</span></div>' : "") +
+      '<button class="btn btn-xs ' + (open ? "btn-primary" : mine ? "btn-amber" : "btn-secondary") + '" data-action="taskTrackToggle" data-id="' + esc(item.id) + '" data-task="' + esc(t.id) + '">' +
+      (mine ? "✍️ 진행 입력" : "📒 진행 기록") + ((t.log || []).length ? " " + t.log.length : "") + (open ? " ▲" : " ▼") + "</button>";
+  }
+  function taskTrackRow(item, t, colspan) {
+    var k = trackKey(item, t);
+    if (!state.taskOpen[k]) return "";
+    var admin = state.isAdmin, a = ' data-id="' + esc(item.id) + '" data-task="' + esc(t.id) + '"';
+    var base = "/api/items/" + encodeURIComponent(item.id) + "/taskfiles/";
+    var log = (t.log || []).length ? '<div class="tl-list">' + t.log.slice().reverse().map(function (x) {
+      return '<div class="tl-item k-' + x.kind + '"><div class="tl-head"><span class="tl-kind">' + (TASK_LOG_LABEL[x.kind] || x.kind) + "</span><b>" + esc(x.by) + '</b><span class="muted">' + esc(x.at) + "</span></div>" +
+        (x.note ? '<div class="tl-note">' + esc(x.note) + "</div>" : "") +
+        (x.files.length ? '<div class="tl-files">' + x.files.map(function (f) { return '<span class="file-chip">📎 <a href="' + base + encodeURIComponent(f.name) + '" download>' + esc(f.name) + "</a></span>"; }).join("") + "</div>" : "") + "</div>";
+    }).join("") + "</div>" : '<div class="muted" style="padding:4px 0">아직 진행 기록이 없습니다.</div>';
+    var form = "";
+    if (isTaskOwner(t) && t.status !== "완료") {
+      form = '<div class="tl-form"><div class="lbl">✍️ 진행 상황 입력 <span class="muted">(담당자: ' + esc(state.user.name) + ")</span></div>" +
+        '<textarea class="textarea" data-tp-note="' + esc(k) + '" placeholder="진행 내용 / 완료 근거를 적어 주세요. (메일 본문 붙여넣기 가능)">' + esc(state.taskForm[k] || "") + "</textarea>" +
+        '<div class="tl-btns"><input type="file" multiple data-tp-files="' + esc(k) + '" />' +
+        '<button class="btn btn-teal btn-sm" data-action="taskProgress"' + a + '>💾 진행 상황 저장</button>' +
+        (t.request ? '<span class="muted">완료 요청 승인 대기 중</span>' : '<button class="btn btn-primary btn-sm" data-action="taskProgress" data-request="1"' + a + ">🙋 완료 요청 (간사에게 메일)</button>") + "</div></div>";
+    }
+    if (admin && t.status !== "완료") {
+      form += '<div class="tl-form admin"><div class="lbl">🔒 관리자 ' + (t.request ? "— 완료 요청 검토" : "— 완료 처리") + "</div>" +
+        '<div class="tl-btns"><input class="input" data-tp-comment="' + esc(k) + '" placeholder="' + (t.request ? "의견 (반려 시 사유 필수)" : "의견 (선택)") + '" value="' + esc(state.taskForm[k + "#c"] || "") + '" />' +
+        '<button class="btn btn-primary btn-sm" data-action="taskDecide" data-approve="1"' + a + ">✅ 완료 승인</button>" +
+        (t.request ? '<button class="btn btn-danger btn-sm" data-action="taskDecide"' + a + ">↩ 반려</button>" : "") + "</div></div>";
+    }
+    return '<tr class="track-row"><td colspan="' + colspan + '"><div class="tl-wrap">' + log + form + "</div></td></tr>";
+  }
+  function rerenderTasks() {
+    if (state.detail) renderTaskBox();
+    else if (state.route === "tasks") renderTasksTable();
+    else if (state.route === "dashboard") renderDashboard();
+  }
+  // 서버 응답으로 과제 진행 기록·상태만 반영 (상세에서 편집 중인 다른 내용은 유지)
+  function syncTaskTracking(updated) {
+    replaceItem(updated); updateNavBadges();
+    if (!state.detail || state.detail.id !== updated.id) return;
+    [state.detail.draft, state.detail.orig].forEach(function (o) {
+      o.rev = updated.rev; o.updatedAt = updated.updatedAt; o.audit = clone(updated.audit);
+      updated.tasks.forEach(function (ut) {
+        var t = (o.tasks || []).find(function (x) { return x.id === ut.id; });
+        if (t) { t.log = clone(ut.log); t.request = clone(ut.request); t.status = ut.status; t.doneAt = ut.doneAt; }
+      });
+    });
   }
 
   // ---- 회원: 우리 팀 검토 의견 저장 (팀장·Pro 상관없이, 서버가 이력 기록) ----
@@ -2268,7 +2353,47 @@
     listCat: function (el) { state.f.list.cat = el.getAttribute("data-cat"); renderItems(); },
     taskGrade: function (el) { state.f.task.grade = el.getAttribute("data-grade"); renderTasks(); },
     taskStatus: function (el) { state.f.task.status = el.getAttribute("data-status"); renderTasks(); },
-    taskReset: function () { state.f.task = { grade: "ALL", sector: "ALL", status: "ALL", q: "" }; renderTasks(); },
+    taskReset: function () { state.f.task = { grade: "ALL", sector: "ALL", status: "ALL", q: "", mine: false }; renderTasks(); },
+    taskMine: function () { state.f.task.mine = !state.f.task.mine; renderTasks(); },
+    taskTrackToggle: function (el) {
+      var k = el.getAttribute("data-id") + "/" + el.getAttribute("data-task");
+      state.taskOpen[k] = !state.taskOpen[k];
+      rerenderTasks();
+    },
+    taskProgress: function (el) {
+      var id = el.getAttribute("data-id"), tid = el.getAttribute("data-task"), k = id + "/" + tid, req = el.getAttribute("data-request") === "1";
+      var note = (state.taskForm[k] || "").trim(), inp = document.querySelector('[data-tp-files="' + k + '"]'), files = inp ? inp.files : [];
+      if (!note && !files.length) { toast("진행 내용 또는 증빙 파일을 입력하세요.", "err"); return; }
+      if (req && !confirm("과제 " + tid + " 완료를 요청할까요?\n간사(관리자)가 확인 후 승인하면 완료 처리됩니다.")) return;
+      var fd = new FormData();
+      fd.append("note", note); if (req) fd.append("request", "1");
+      Array.prototype.forEach.call(files, function (f) { fd.append("files", f, f.name); });
+      el.disabled = true;
+      api("POST", "/api/items/" + encodeURIComponent(id) + "/tasks/" + encodeURIComponent(tid) + "/progress", fd).then(function (updated) {
+        delete state.taskForm[k];
+        syncTaskTracking(updated); rerenderTasks();
+        toast(req ? "완료를 요청했습니다. 간사에게 메일이 발송됩니다." : "진행 상황을 저장했습니다.", "ok");
+      }).catch(function (e) { el.disabled = false; fail(e); });
+    },
+    taskDecide: function (el) {
+      var id = el.getAttribute("data-id"), tid = el.getAttribute("data-task"), k = id + "/" + tid, approve = el.getAttribute("data-approve") === "1";
+      var comment = (state.taskForm[k + "#c"] || "").trim();
+      if (!approve && !comment) { toast("반려 사유를 입력하세요.", "err"); return; }
+      if (!confirm("과제 " + tid + (approve ? " 을(를) 완료 승인할까요?" : " 완료 요청을 반려할까요?") + "\n담당자에게 메일이 발송됩니다.")) return;
+      el.disabled = true;
+      api("POST", "/api/items/" + encodeURIComponent(id) + "/tasks/" + encodeURIComponent(tid) + "/decide", { approve: approve, comment: comment }).then(function (updated) {
+        delete state.taskForm[k + "#c"];
+        syncTaskTracking(updated); rerenderTasks();
+        toast(approve ? "완료 승인했습니다." : "반려했습니다.", "ok");
+      }).catch(function (e) { el.disabled = false; fail(e); });
+    },
+    reportXlsx: function () {
+      var y = state.route === "dashboard" ? state.f.dashYear : state.route === "items" ? state.f.list.year : "ALL";
+      toast("보고서를 만드는 중…");
+      api("GET", "/api/report.xlsx?year=" + encodeURIComponent(y || "ALL"), undefined, { raw: true }).then(function (res) { return res.blob(); })
+        .then(function (b) { downloadBlob(b, "양산이관_현황보고서_" + today() + ".xlsx"); toast("보고서를 내려받았습니다.", "ok"); }).catch(fail);
+    },
+    auditToggle: function () { state.detail.showAudit = !state.detail.showAudit; renderAudit(); },
     taskToggle: function (el) {
       el.disabled = true;
       api("POST", "/api/items/" + encodeURIComponent(el.getAttribute("data-id")) + "/tasks/" + encodeURIComponent(el.getAttribute("data-task")) + "/toggle")
@@ -2470,15 +2595,19 @@
     },
     mtgAdd: function (el) {
       var key = el.getAttribute("data-stage"), n = (state.detail.draft.stages[key].meetings || []).length + 1;
-      meetingApi("POST", key, { date: today() }, n + "차 회의를 추가했습니다. 날짜·결과를 입력하고 회의록을 첨부하세요.");
+      state.mtgOpen[key + "-" + n] = true;
+      meetingApi("POST", key, { date: today() }, n + "차 회의를 추가했습니다. 날짜·결과를 입력하고 회의록을 붙여넣으세요.");
     },
     mtgDel: function (el) {
       if (!confirm(el.getAttribute("data-no") + "차 회의 기록을 삭제할까요? (첨부된 회의록은 백업 폴더로 옮겨집니다)")) return;
       meetingApi("DELETE", el.getAttribute("data-stage") + "/" + el.getAttribute("data-no"), undefined, "회의 기록을 삭제했습니다.");
     },
-    mtgFilePick: function (el) {
-      state.mtgUpload = { stage: el.getAttribute("data-stage"), no: el.getAttribute("data-no") };
-      $("#mtgFiles").click();
+    mtgToggle: function (el) {
+      var k = el.getAttribute("data-stage") + "-" + el.getAttribute("data-no");
+      state.mtgOpen[k] = !state.mtgOpen[k];
+      renderMeetings();
+      var ta = state.mtgOpen[k] && $('.mtg-text[data-stage="' + el.getAttribute("data-stage") + '"][data-no="' + el.getAttribute("data-no") + '"]');
+      if (ta) ta.focus();
     },
     mtgFileDel: function (el) {
       if (!confirm("회의록 '" + el.getAttribute("data-name") + "' 을(를) 삭제할까요?")) return;
@@ -2609,6 +2738,8 @@
 
   function onField(el) {
     if (el.hasAttribute("data-filter")) { setFilter(el.getAttribute("data-filter"), el.value); return; }
+    if (el.hasAttribute("data-tp-note")) { state.taskForm[el.getAttribute("data-tp-note")] = el.value; return; }
+    if (el.hasAttribute("data-tp-comment")) { state.taskForm[el.getAttribute("data-tp-comment") + "#c"] = el.value; return; }
     if (!state.detail && !state.mail && !state.admin && !state.teamDraft && !state.matrixDraft) return;
     if (el.hasAttribute("data-dfield")) {
       var d = state.detail.draft, f = el.getAttribute("data-dfield");

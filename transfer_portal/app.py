@@ -246,6 +246,55 @@ def normalize_review_risk(r: Any) -> Optional[Dict[str, Any]]:
             "taskId": _s(r.get("taskId"))[:12] if decision == "task" else ""}
 
 
+TASK_LOG_KINDS = ("progress", "request", "approve", "reject", "reopen")
+AUDIT_MAX = 300
+
+
+def normalize_task_log(v: Any) -> List[Dict[str, Any]]:
+    out = []
+    for x in v if isinstance(v, list) else []:
+        if not isinstance(x, dict):
+            continue
+        out.append({"at": _s(x.get("at"))[:19], "by": _s(x.get("by"))[:80],
+                    "kind": x.get("kind") if x.get("kind") in TASK_LOG_KINDS else "progress",
+                    "note": _text(x.get("note"))[:5000],
+                    "files": [a for a in (normalize_attachment(f) for f in (x.get("files") or [])) if a]})
+    return out[-100:]
+
+
+def normalize_request(v: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(v, dict) or not _s(v.get("at")):
+        return None
+    return {"at": _s(v.get("at"))[:19], "by": _s(v.get("by"))[:80], "empId": _s(v.get("empId"))[:20], "note": _text(v.get("note"))[:5000]}
+
+
+def normalize_audit(v: Any) -> List[Dict[str, str]]:
+    return [{"at": _s(x.get("at"))[:19], "by": _s(x.get("by"))[:80], "action": _text(x.get("action"))[:500]}
+            for x in (v if isinstance(v, list) else []) if isinstance(x, dict) and _s(x.get("action"))][-AUDIT_MAX:]
+
+
+def add_audit(item: Dict[str, Any], by: str, *actions: str) -> None:
+    """변경 이력(누가·언제·무엇을). 지우지 않고 최근 300건까지 보관."""
+    log = item.setdefault("audit", [])
+    for a in actions:
+        if a:
+            log.append({"at": now_str(), "by": by, "action": a[:500]})
+    item["audit"] = log[-AUDIT_MAX:]
+
+
+def task_log(t: Dict[str, Any], by: str, kind: str, note: str = "", files: Optional[List[Dict[str, Any]]] = None) -> None:
+    t["log"] = (t["log"] + [{"at": now_str(), "by": by, "kind": kind, "note": note, "files": files or []}])[-100:]
+
+
+def set_task_done(t: Dict[str, Any], done: bool, by: str, note: str = "") -> None:
+    if done:
+        task_log(t, by, "approve", note or ("완료 요청 승인" if t["request"] else "완료 처리"))
+        t.update(status="완료", doneAt=today_str(), request=None)
+    else:
+        t.update(status="진행중", doneAt="")
+        task_log(t, by, "reopen", note or "완료 해제 (진행중으로 변경)")
+
+
 def normalize_task(t: Any) -> Optional[Dict[str, Any]]:
     if not isinstance(t, dict) or not TASK_ID_RE.match(_s(t.get("id"))):
         return None
@@ -262,6 +311,8 @@ def normalize_task(t: Any) -> Optional[Dict[str, Any]]:
         "target": st["target"], "targetOriginal": st["targetOriginal"], "extensions": st["extensions"],
         "status": "완료" if t.get("status") == "완료" else "진행중",
         "doneAt": st["doneAt"], "createdAt": _s(t.get("createdAt"))[:19] or today_str(),
+        "log": normalize_task_log(t.get("log")),
+        "request": None if t.get("status") == "완료" else normalize_request(t.get("request")),
     }
 
 
@@ -440,6 +491,7 @@ def normalize_meeting(v: Any) -> Optional[Dict[str, Any]]:
         "date": _date(v.get("date")),
         "result": result if result in MEETING_RESULTS else "",
         "note": _text(v.get("note"))[:2000],
+        "minutesText": _text(v.get("minutesText"))[:100000],
         "minutes": [a for a in (normalize_attachment(x) for x in (v.get("minutes") or [])) if a],
         "createdAt": _s(v.get("createdAt"))[:19] or now_str(),
     }
@@ -451,6 +503,90 @@ def normalize_meetings(v: Any) -> List[Dict[str, Any]]:
         if m and m["no"] not in out:
             out[m["no"]] = m
     return [out[k] for k in sorted(out)]
+
+
+def keep_task_tracking(new: Dict[str, Any], old: Dict[str, Any], by: str) -> None:
+    """과제 진행 기록·완료 요청은 서버가 관리. 관리자가 상태를 바꾸면 기록에 남긴다."""
+    olds = {t["id"]: t for t in old["tasks"]}
+    for t in new["tasks"]:
+        o = olds.get(t["id"])
+        if not o:
+            continue
+        t["log"], t["request"] = o["log"], o["request"]
+        if t["status"] != o["status"]:
+            if t["status"] == "완료":
+                task_log(t, by, "approve", "완료 요청 승인" if t["request"] else "완료 처리")
+                t["request"] = None
+            else:
+                task_log(t, by, "reopen", "완료 해제 (진행중으로 변경)")
+
+
+ITEM_FIELD_LABELS = [("category", "구분"), ("npSp", "NP/SP"), ("productSize", "구경"), ("productType", "PW/EPI"), ("title", "제품/기술명"),
+                     ("requester", "요청자"), ("requesterDept", "소속 부서"), ("requesterEmail", "요청자 이메일"), ("proposalDate", "발제일")]
+
+
+def diff_item(old: Dict[str, Any], new: Dict[str, Any]) -> List[str]:
+    """관리자 저장 시 무엇이 바뀌었는지 사람이 읽을 수 있는 문장으로."""
+    out: List[str] = []
+    for k, label in ITEM_FIELD_LABELS:
+        if old.get(k) != new.get(k):
+            out.append(f"{label}: {old.get(k) or '(없음)'} → {new.get(k) or '(없음)'}")
+    for k, label in (("summary", "주요 내용"), ("note", "비고")):
+        if old.get(k) != new.get(k):
+            out.append(f"{label} 수정")
+    for i, k in enumerate(STAGE_KEYS):
+        o, n, name = old["stages"][k], new["stages"][k], f"{i + 1}단계 {STAGE_NAMES[i]}"
+        if o["skipped"] != n["skipped"]:
+            out.append(f"{name} {'생략(Skip)' if n['skipped'] else '생략 해제'}")
+        if o["done"] != n["done"]:
+            out.append(f"{name} {'완료 처리 (' + n['doneAt'] + ')' if n['done'] else '완료 해제'}")
+        elif n["done"] and o["doneAt"] != n["doneAt"]:
+            out.append(f"{name} 완료일 변경 {o['doneAt']} → {n['doneAt']}")
+        for e in n["extensions"][len(o["extensions"]):]:
+            out.append(f"{name} 목표일 {'연장 ' + e['from'] + ' → ' if e['from'] else '지정 '}{e['to']}" + (f" (사유: {e['reason']})" if e["reason"] else ""))
+    added = [t for t in new["reviews"] if t not in old["reviews"]]
+    removed = [t for t in old["reviews"] if t not in new["reviews"]]
+    if added:
+        out.append("검토 팀 선정: " + ", ".join(added))
+    if removed:
+        out.append("검토 팀 제외: " + ", ".join(removed))
+    old_risks = {r["id"]: r for c in old["reviews"].values() for r in c["risks"]}
+    for team, c in new["reviews"].items():
+        oc = old["reviews"].get(team)
+        if oc and (oc["result"], oc["comment"]) != (c["result"], c["comment"]):
+            out.append(f"[{team}] 검토 의견 관리자 수정")
+        for r in c["risks"]:
+            o = old_risks.get(r["id"])
+            if not o or o["decision"] == r["decision"]:
+                continue
+            if r["decision"] == "task":
+                out.append(f"Risk {r['id']} → 보완 과제 {r['taskId']} 등록")
+            elif r["decision"] == "accept":
+                out.append(f"Risk {r['id']} 수용 (사유: {r['reason']})")
+            else:
+                out.append(f"Risk {r['id']} 결정 취소")
+    old_tasks = {t["id"]: t for t in old["tasks"]}
+    new_ids = {t["id"] for t in new["tasks"]}
+    for tid in old_tasks:
+        if tid not in new_ids:
+            out.append(f"과제 {tid} 삭제")
+    for t in new["tasks"]:
+        o = old_tasks.get(t["id"])
+        if not o:
+            continue
+        if o["importance"] != t["importance"]:
+            out.append(f"과제 {t['id']} 중요도 {o['importance']} → {t['importance']}")
+        if o["status"] != t["status"]:
+            out.append(f"과제 {t['id']} {'완료 처리' if t['status'] == '완료' else '진행중으로 변경'}")
+        if (o["org"], o["ownerName"], o["ownerEmail"]) != (t["org"], t["ownerName"], t["ownerEmail"]):
+            out.append(f"과제 {t['id']} 담당: {t['org'] or '-'} {t['ownerName'] or t['ownerEmail'] or ''}".rstrip())
+        if (o["title"], o["plan"]) != (t["title"], t["plan"]):
+            out.append(f"과제 {t['id']} 내용/보완 방안 수정")
+        for e in t["extensions"][len(o["extensions"]):]:
+            out.append(f"과제 {t['id']} 목표일 {'연장 ' + e['from'] + ' → ' if e['from'] else '지정 '}{e['to']}" + (f" (사유: {e['reason']})" if e["reason"] else ""))
+        if not t["extensions"] and o["target"] != t["target"]:
+            out.append(f"과제 {t['id']} 목표일 {o['target'] or '(없음)'} → {t['target'] or '(없음)'}")
+    return out[:30]
 
 
 def keep_meetings(new: Dict[str, Any], old: Dict[str, Any]) -> None:
@@ -577,6 +713,8 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "remindLog": [{k: _s(x.get(k))[:300] for k in ("kind", "key", "to", "at", "by")}
                       for x in (raw.get("remindLog") or []) if isinstance(x, dict)][-200:],
         "applicantEmpId": _s(raw.get("applicantEmpId")),
+        "audit": normalize_audit(raw.get("audit")),
+        "finalNotify": raw.get("finalNotify") if isinstance(raw.get("finalNotify"), dict) else None,
         "createdAt": _s(raw.get("createdAt")) or now_str(),
         "updatedAt": _s(raw.get("updatedAt")) or now_str(),
         "rev": int(raw.get("rev") or 1),
@@ -1970,6 +2108,7 @@ def h_apply(req: Req):
             "applicantEmpId": user["empId"] if user else "",
             "notify": {"status": "pending", "message": "알림 메일 발송 대기", "at": now_str()},
         })
+        add_audit(item, f"{dept} {requester}".strip(), "양산이관 신청 등록")
         data["items"].insert(0, item)
         return item
 
@@ -1996,9 +2135,10 @@ def h_update_item(req: Req):
         if not payload.get("force") and int(payload.get("rev") or 0) != cur["rev"]:
             raise HTTPException(409, {"message": "다른 사용자가 먼저 이 안건을 수정했습니다.", "item": cur})
         merged = normalize_item({**incoming, "id": item_id})
-        for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog"):
+        for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog", "audit", "finalNotify"):
             merged[keep] = cur[keep]
         keep_meetings(merged, cur)
+        keep_task_tracking(merged, cur, "관리자")
         # 접수 승인일은 서버가 기록 (처음 접수 처리된 날)
         merged["acceptedAt"] = cur["acceptedAt"] or (_date(incoming.get("acceptedAt")) or today_str() if merged["accepted"] else "")
         if not merged["accepted"]:
@@ -2017,11 +2157,19 @@ def h_update_item(req: Req):
         apply_stage_targets(merged, holiday_set())
         if merged["stages"]["step5"]["done"] and not cur["stages"]["step5"]["done"] and open_tasks(merged, "상"):
             raise HTTPException(400, f"중요도 '상' 과제 {len(open_tasks(merged, '상'))}건이 완료되지 않아 최종승인할 수 없습니다.")
+        if merged["accepted"] and not cur["accepted"]:
+            add_audit(merged, "관리자", "접수 승인")
+        add_audit(merged, "관리자", *diff_item(cur, merged))
+        final["now"] = merged["stages"]["step5"]["done"] and not cur["stages"]["step5"]["done"]
         merged["rev"] = cur["rev"] + 1
         merged["updatedAt"] = now_str()
         data["items"][data["items"].index(cur)] = merged
         return merged
-    return store.mutate(_update)
+    final: Dict[str, bool] = {}
+    item = store.mutate(_update)
+    if final.get("now"):
+        threading.Thread(target=notify_final, args=(item_id,), daemon=True).start()
+    return item
 
 
 def h_delete_item(req: Req):
@@ -2045,6 +2193,7 @@ def h_accept_item(req: Req):
         cur["acceptedAt"] = cur["acceptedAt"] or today_str()
         apply_review_matrix(cur, store.settings())
         apply_stage_targets(cur, holiday_set())
+        add_audit(cur, "관리자", "접수 승인" + (f" · 검토 팀 {len(cur['reviews'])}팀 자동 선정" if cur["reviews"] else ""))
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
         return cur
@@ -2057,10 +2206,8 @@ def h_toggle_task(req: Req):
         t = next((x for x in cur["tasks"] if x["id"] == req.params["taskId"]), None)
         if not t:
             raise HTTPException(404, "과제를 찾을 수 없습니다.")
-        if t["status"] == "완료":
-            t.update(status="진행중", doneAt="")
-        else:
-            t.update(status="완료", doneAt=today_str())
+        set_task_done(t, t["status"] != "완료", "관리자")
+        add_audit(cur, "관리자", f"과제 {t['id']} {'완료 처리' if t['status'] == '완료' else '진행중으로 변경'}")
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
         return cur
@@ -2086,9 +2233,13 @@ def h_bulk_replace(req: Req):
             seen.add(it["id"])
             old = cur.get(it["id"])
             if old:
-                for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog"):
+                for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog", "audit", "finalNotify"):
                     it[keep] = old[keep]
                 keep_meetings(it, old)
+                keep_task_tracking(it, old, "관리자")
+                add_audit(it, "관리자", "엑셀 일괄 업로드로 갱신")
+            else:
+                add_audit(it, "관리자", "엑셀 일괄 업로드로 등록")
                 it["rev"] = old["rev"] + 1
             it["updatedAt"] = now_str()
             out.append(it)
@@ -2101,7 +2252,398 @@ def h_backup(req: Req):
     return FileResp(store.data_path, f"data_backup_{dt.datetime.now():%Y%m%d_%H%M}.json")
 
 
+# --- 보완 과제: 담당자 진행 입력 · 완료 요청 / 관리자 승인 ------------------
+def _find_task(item: Dict[str, Any], task_id: str) -> Dict[str, Any]:
+    t = next((x for x in item["tasks"] if x["id"] == task_id), None)
+    if not t:
+        raise HTTPException(404, "과제를 찾을 수 없습니다.")
+    return t
+
+
+def is_task_owner(user: Optional[Dict[str, Any]], t: Dict[str, Any]) -> bool:
+    if not user:
+        return False
+    if t["ownerEmpId"] and t["ownerEmpId"] == user["empId"]:
+        return True
+    return bool(t["ownerEmail"] and user.get("email") and t["ownerEmail"].lower() == user["email"].lower())
+
+
+def user_label(user: Dict[str, Any]) -> str:
+    return f"{user.get('team', '')} {user.get('name', '')} {user.get('title', '')}".strip()
+
+
+def task_files_dir(item_id: str) -> Path:
+    return store.item_dir(item_id) / "tasks"
+
+
+def h_task_progress(req: Req):
+    """과제 담당자(또는 관리자): 진행 상황·증빙 입력, 완료 요청."""
+    item_id, task_id = req.params["id"], req.params["taskId"]
+    user = req.user()
+    f, files = req.form()
+    note = _text(f.get("note"))[:5000]
+    request = _s(f.get("request")) in ("1", "true")
+    t0 = _find_task(find_item(store.load(), item_id), task_id)
+    owner = is_task_owner(user, t0)
+    if not req.is_admin and not owner:
+        raise HTTPException(403, "이 과제의 담당자로 지정된 회원만 진행 상황을 입력할 수 있습니다.")
+    if t0["status"] == "완료":
+        raise HTTPException(400, "이미 완료된 과제입니다.")
+    if not note and not files:
+        raise HTTPException(400, "진행 내용 또는 증빙 파일을 입력하세요.")
+    by = user_label(user) if owner else "관리자"
+    saved = save_uploads(task_files_dir(item_id), files, by) if files else []
+
+    def _save(data):
+        cur = find_item(data, item_id)
+        t = _find_task(cur, task_id)
+        if t["status"] == "완료":
+            raise HTTPException(400, "이미 완료된 과제입니다.")
+        task_log(t, by, "request" if request else "progress", note, saved)
+        if request:
+            t["request"] = {"at": now_str(), "by": by, "empId": user["empId"] if owner else "", "note": note}
+        add_audit(cur, by, f"과제 {task_id} " + ("완료 요청" if request else "진행 상황 입력") + (f" (증빙 {len(saved)}개)" if saved else ""))
+        return _touch(cur)
+    item = store.mutate(_save)
+    if request:
+        threading.Thread(target=notify_task_event, args=(item_id, task_id, "request", by, note), daemon=True).start()
+    return item
+
+
+def h_task_decide(req: Req):
+    """관리자: 완료 요청 승인 / 반려(사유 필수)."""
+    item_id, task_id = req.params["id"], req.params["taskId"]
+    p = req.json()
+    approve, comment = bool(p.get("approve")), _text(p.get("comment"))[:2000]
+
+    def _decide(data):
+        cur = find_item(data, item_id)
+        t = _find_task(cur, task_id)
+        if t["status"] == "완료":
+            raise HTTPException(400, "이미 완료된 과제입니다.")
+        if approve:
+            set_task_done(t, True, "관리자", ("완료 요청 승인" if t["request"] else "완료 처리") + (f" — {comment}" if comment else ""))
+        else:
+            if not t["request"]:
+                raise HTTPException(400, "완료 요청이 없는 과제입니다.")
+            if not comment:
+                raise HTTPException(400, "반려 사유를 입력하세요.")
+            t["request"] = None
+            task_log(t, "관리자", "reject", comment)
+        add_audit(cur, "관리자", f"과제 {task_id} 완료 " + ("승인" if approve else f"요청 반려 (사유: {comment})"))
+        return _touch(cur)
+    item = store.mutate(_decide)
+    threading.Thread(target=notify_task_event, args=(item_id, task_id, "approve" if approve else "reject", "관리자", comment), daemon=True).start()
+    return item
+
+
+def h_task_file(req: Req):
+    return FileResp(_attachment_path(task_files_dir(req.params["id"]), req.params["name"]))
+
+
+def notify_task_event(item_id: str, task_id: str, kind: str, by: str, note: str) -> None:
+    """완료 요청 → 간사 / 승인·반려 → 담당자(참조 간사)."""
+    settings = store.settings()
+    try:
+        item = find_item(store.load(), item_id)
+        t = _find_task(item, task_id)
+        link = f"{portal_base(settings)}#items/{quote(item['id'])}"
+        sec = _emails(settings.get("secretaryEmails"))
+        label = {"request": "완료 요청", "approve": "완료 승인", "reject": "완료 요청 반려"}[kind]
+        if kind == "request":
+            to, cc = sec, []
+        else:
+            to, cc = ([t["ownerEmail"]] if t["ownerEmail"] else []), sec
+        if not to:
+            print(f"[mail] 과제 {item_id}/{task_id} {label}: 받는 사람 없음")
+            return
+        subject = f"[보완과제 {label}] {task_id} {t['title'][:40]} - {item['title']}"
+        inner = (f"<p>보완 과제 <b>{html.escape(task_id)}</b> — <b>{html.escape(label)}</b> ({html.escape(by)})</p>"
+                 + _mail_table([("안건", f"<b>{html.escape(item['title'])}</b> ({html.escape(item['id'])})"),
+                                ("과제", _br(t["title"])), ("중요도", html.escape(t["importance"])),
+                                ("담당", html.escape(f"{t['org']} {t['ownerName']}".strip() or "-")),
+                                ("목표일", html.escape(t["target"] or "-")),
+                                ("내용" if kind == "request" else "의견", _br(note) or "-")])
+                 + f'<p>▶ 안건 상세 보기: <a href="{html.escape(link)}">{html.escape(link)}</a></p>')
+        text = f"보완 과제 {task_id} {label} ({by})\n안건: {item['title']} ({item['id']})\n{note}\n{link}\n"
+        method = send_mail(settings, to, [c for c in cc if c.lower() not in {x.lower() for x in to}], subject,
+                           _mail_wrap(f"보완 과제 {label}", inner), text)
+        print(f"[mail] 과제 {item_id}/{task_id} {label}: {method}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[mail] 과제 {item_id}/{task_id} {kind} 알림 실패: {e}")
+
+
+# --- 최종승인 알림 (요청자 + 개발팀, 참조 간사) -----------------------------
+def final_recipients(item: Dict[str, Any], settings: Dict[str, Any]) -> Tuple[List[str], List[str]]:
+    users = store.users()
+    teams = {item["requesterDept"]} if item["requesterDept"] else set()
+    applicant = users.get(item["applicantEmpId"]) if item["applicantEmpId"] else None
+    if applicant and applicant.get("team"):
+        teams.add(applicant["team"])
+    to: List[str] = [item["requesterEmail"]] if item["requesterEmail"] else []
+    to += [u["email"] for u in users.values() if u.get("status") == "approved" and u.get("email") and u.get("team") in teams]
+    seen, uniq_to = set(), []
+    for e in to:
+        if e.lower() not in seen:
+            seen.add(e.lower())
+            uniq_to.append(e)
+    cc = [e for e in _emails(settings.get("secretaryEmails")) if e.lower() not in seen]
+    return uniq_to, cc
+
+
+def build_final_mail(item: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
+    link = f"{portal_base(settings)}#items/{quote(item['id'])}"
+    rest = open_tasks(item)
+    cond = " (조건부 승인)" if rest else ""
+    subject = f"[양산이관 최종승인{cond}] {category_label(item)} {item['title']}"
+    th = 'style="background:#f1f5f9;border:1px solid #cbd5e1;padding:6px 8px;font-size:12.5px;text-align:left;"'
+    td = 'style="border:1px solid #cbd5e1;padding:6px 8px;font-size:12.5px;vertical-align:top;"'
+    rest_html = ""
+    if rest:
+        rows = "".join(f"<tr><td {td}>{html.escape(t['id'])}</td><td {td}>{html.escape(t['importance'])}</td><td {td}>{_br(t['title'])}</td>"
+                       f"<td {td}>{html.escape((t['org'] + ' ' + t['ownerName']).strip() or '-')}</td><td {td}>{html.escape(t['target'] or '-')}</td></tr>"
+                       for t in rest)
+        rest_html = ('<p style="font-weight:bold;color:#b45309;">■ 조건부 승인 — 아래 보완 과제는 양산이관 후에도 계속 추적합니다.</p>'
+                     '<table style="border-collapse:collapse;width:100%;max-width:900px;margin:8px 0 16px;">'
+                     f"<tr><th {th}>과제</th><th {th}>중요도</th><th {th}>내용</th><th {th}>담당</th><th {th}>목표일</th></tr>{rows}</table>")
+    size = f"{item['productSize']} {item['productType']}".strip()
+    inner = (f"<p>아래 안건이 양산이관 검증위원회 <b>최종승인{cond}</b> 되었습니다.</p>"
+             + _mail_table([("안건 ID", html.escape(item["id"])), ("구분", html.escape(category_label(item) + (f" · {size}" if size else ""))),
+                            ("제품/기술명", f"<b>{html.escape(item['title'])}</b>"),
+                            ("요청자", html.escape(f"{item['requester']} ({item['requesterDept']})")),
+                            ("발제일", html.escape(item["proposalDate"])), ("최종승인일", html.escape(item["stages"]["step5"]["doneAt"] or today_str())),
+                            ("보완 과제", html.escape(f"전체 {len(item['tasks'])}건 · 완료 {len(item['tasks']) - len(rest)}건 · 잔여 {len(rest)}건"))])
+             + rest_html + f'<p>▶ 안건 상세 보기: <a href="{html.escape(link)}">{html.escape(link)}</a></p>')
+    text = f"양산이관 최종승인{cond}: {item['title']} ({item['id']})\n잔여 보완 과제 {len(rest)}건\n{link}\n"
+    return {"subject": subject, "html": _mail_wrap(f"양산이관 최종승인{cond}", inner), "text": text}
+
+
+def notify_final(item_id: str) -> None:
+    settings = store.settings()
+    try:
+        item = find_item(store.load(), item_id)
+        to, cc = final_recipients(item, settings)
+        if not to:
+            result = {"status": "skipped", "message": "요청자 이메일과 개발팀 회원 이메일이 없어 보내지 않았습니다."}
+        else:
+            mail = build_final_mail(item, settings)
+            method = send_mail(settings, to, cc, mail["subject"], mail["html"], mail["text"])
+            result = {"status": "sent", "message": f"{method}로 {len(to)}명에게 발송 (" + "; ".join(to) + ")"}
+    except Exception as e:  # noqa: BLE001
+        result = {"status": "failed", "message": str(e)[:300]}
+    print(f"[mail] {item_id} 최종승인 알림: {result['status']} - {result['message']}")
+
+    def _record(data):  # rev 는 올리지 않음 (편집 중인 관리자 화면과 충돌 방지)
+        cur = find_item(data, item_id)
+        cur["finalNotify"] = {**result, "at": now_str()}
+        add_audit(cur, "시스템", f"최종승인 알림 메일 {({'sent': '발송', 'skipped': '생략', 'failed': '실패'})[result['status']]} — {result['message']}")
+    try:
+        store.mutate(_record)
+    except HTTPException:
+        pass
+
+
+# --- 엑셀(xlsx) 현황 보고서 (openpyxl 필요) --------------------------------
+LONG_TERM_MONTHS = 3
+
+
+def add_months(date: str, n: int) -> str:
+    d = dt.date.fromisoformat(date)
+    y, m = divmod(d.month - 1 + n, 12)
+    y, m = d.year + y, m + 1
+    last = (dt.date(y + (m == 12), m % 12 + 1, 1) - dt.timedelta(days=1)).day
+    return dt.date(y, m, min(d.day, last)).isoformat()
+
+
+def long_term_months(item: Dict[str, Any], t: Dict[str, Any]) -> int:
+    """발제일 + 3개월이 지난 미완료 과제 → 경과 개월 수 (아니면 0)."""
+    if t["status"] == "완료" or not item["proposalDate"]:
+        return 0
+    t0 = today_str()
+    if t0 < add_months(item["proposalDate"], LONG_TERM_MONTHS):
+        return 0
+    m = LONG_TERM_MONTHS
+    while m < 240 and t0 >= add_months(item["proposalDate"], m + 1):
+        m += 1
+    return m
+
+
+def _days_late(target: str) -> int:
+    t0 = today_str()
+    return (dt.date.fromisoformat(t0) - dt.date.fromisoformat(target)).days if target and target < t0 else 0
+
+
+def stage_now(item: Dict[str, Any]) -> Tuple[str, str, int]:
+    """(현재 단계명, 목표일, 지연일)."""
+    if not item["accepted"]:
+        return "접수대기", "", 0
+    st = item["stages"]
+    if st["step5"]["done"]:
+        return "최종승인 완료" + (" (조건부)" if open_tasks(item) else ""), "", 0
+    for i, k in enumerate(STAGE_KEYS):
+        if not (st[k]["done"] or st[k]["skipped"]):
+            return f"{i + 1}. {STAGE_NAMES[i]}", st[k]["target"], _days_late(st[k]["target"])
+    return f"5. {STAGE_NAMES[4]}", st["step5"]["target"], _days_late(st["step5"]["target"])
+
+
+def build_report_xlsx(items: List[Dict[str, Any]]) -> bytes:
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = Workbook()
+    head_fill, head_font = PatternFill("solid", fgColor="1E3A8A"), Font(bold=True, color="FFFFFF")
+    red, purple, green, grey = (PatternFill("solid", fgColor=c) for c in ("FEE2E2", "F3E8FF", "DCFCE7", "F1F5F9"))
+    thin = Side(style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    wrap = Alignment(wrap_text=True, vertical="top")
+
+    def sheet(ws, title, head, rows, widths, fills=None):
+        ws.title = title
+        ws.append(head)
+        for c in ws[1]:
+            c.fill, c.font, c.border = head_fill, head_font, border
+            c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for i, r in enumerate(rows):
+            ws.append(r)
+            fill = fills[i] if fills else None
+            for c in ws[ws.max_row]:
+                c.border, c.alignment = border, wrap
+                if fill:
+                    c.fill = fill
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        ws.freeze_panes = "A2"
+        if rows:
+            ws.auto_filter.ref = ws.dimensions
+
+    # 1) 요약
+    ws = wb.active
+    ws.title = "요약"
+    tasks = [(it, t) for it in items for t in it["tasks"]]
+    stage_rows = [stage_now(it) for it in items]
+    done = [it for it in items if it["accepted"] and it["stages"]["step5"]["done"]]
+    kpis = [
+        ("전체 안건", len(items)), ("검토 진행중", sum(1 for it in items if it["accepted"] and not it["stages"]["step5"]["done"])),
+        ("최종승인", len(done)), ("  └ 조건부 승인", sum(1 for it in done if open_tasks(it))),
+        ("접수대기", sum(1 for it in items if not it["accepted"])), ("단계 지연 안건", sum(1 for r in stage_rows if r[2])),
+        ("보완 과제 전체", len(tasks)), ("진행 중 과제", sum(1 for _, t in tasks if t["status"] != "완료")),
+        ("지연 과제", sum(1 for _, t in tasks if t["status"] != "완료" and _days_late(t["target"]))),
+        (f"장기 과제 (발제 +{LONG_TERM_MONTHS}개월)", sum(1 for it, t in tasks if long_term_months(it, t))),
+        ("완료 승인 대기", sum(1 for _, t in tasks if t["request"])),
+    ]
+    ws["A1"] = "양산이관 검증위원회 현황 보고서"
+    ws["A1"].font = Font(bold=True, size=15, color="1E3A8A")
+    ws["A2"] = f"기준일 {today_str()} · 작성 {now_str()}"
+    ws["A2"].font = Font(color="64748B")
+    ws.append([])
+    ws.append(["구분", "건수"])
+    for c in ws[4]:
+        c.fill, c.font, c.border = head_fill, head_font, border
+    for k, v in kpis:
+        ws.append([k, v])
+        for c in ws[ws.max_row]:
+            c.border = border
+    ws.append([])
+    ws.append(["현재 단계", "안건 수", "지연"])
+    for c in ws[ws.max_row]:
+        c.fill, c.font, c.border = head_fill, head_font, border
+    names = ["접수대기"] + [f"{i + 1}. {n}" for i, n in enumerate(STAGE_NAMES)] + ["최종승인 완료"]
+    for n in names:
+        cnt = sum(1 for r in stage_rows if r[0].startswith(n))
+        late = sum(1 for r in stage_rows if r[0].startswith(n) and r[2])
+        ws.append([n, cnt, late or ""])
+        for c in ws[ws.max_row]:
+            c.border = border
+    ws.column_dimensions["A"].width, ws.column_dimensions["B"].width, ws.column_dimensions["C"].width = 30, 12, 10
+
+    # 2) 안건 목록
+    rows, fills = [], []
+    for it, (sname, target, late) in zip(items, stage_rows):
+        cards = it["reviews"].values()
+        risks = [r for c in cards for r in c["risks"]]
+        mt = lambda k: " / ".join(f"{m['no']}차 {m['date']} {m['result']}".strip() for m in it["stages"][k]["meetings"])
+        rows.append([it["id"], category_label(it), it["productSize"], it["productType"], it["title"], it["requester"], it["requesterDept"],
+                     it["proposalDate"], it["acceptedAt"], sname, target, late or "",
+                     f"{sum(1 for c in cards if c['done'])}/{len(it['reviews'])}", len(risks), sum(1 for r in risks if not r["decision"]),
+                     f"{sum(1 for t in it['tasks'] if t['status'] == '완료')}/{len(it['tasks'])}", len(open_tasks(it, "상")) or "",
+                     mt("step2"), mt("step4"), it["stages"]["step5"]["doneAt"]])
+        fills.append(red if late else green if it["stages"]["step5"]["done"] else None)
+    sheet(wb.create_sheet(), "안건 목록",
+          ["안건ID", "구분", "구경", "PW/EPI", "제품/기술명", "요청자", "소속", "발제일", "접수일", "현재 단계", "단계 목표일", "지연일",
+           "검토 완료", "Risk", "결정 대기", "과제(완료/전체)", "상 미완료", "검증소위원회 회의", "검증위원회 회의", "최종승인일"],
+          rows, [14, 9, 8, 8, 34, 12, 16, 11, 11, 22, 11, 7, 9, 6, 8, 10, 8, 26, 26, 11], fills)
+
+    # 3) 보완 과제
+    rows, fills = [], []
+    for it, t in tasks:
+        late, lt = (_days_late(t["target"]) if t["status"] != "완료" else 0), long_term_months(it, t)
+        last = next((x for x in reversed(t["log"]) if x["kind"] in ("progress", "request")), None)
+        rows.append([it["id"], it["title"], t["id"], t["team"], t["sector"], t["importance"], t["title"], t["plan"], t["org"],
+                     t["ownerName"] or t["ownerEmail"], t["target"], t["targetOriginal"] if t["extensions"] else "", len(t["extensions"]) or "",
+                     t["status"], t["doneAt"], late or "", f"{lt}개월+" if lt else "", "요청됨 " + t["request"]["at"][:10] if t["request"] else "",
+                     f"{last['at'][:10]} {last['note']}" if last else ""])
+        fills.append(red if late else purple if lt else green if t["status"] == "완료" else None)
+    sheet(wb.create_sheet(), "보완 과제",
+          ["안건ID", "안건명", "과제ID", "검토팀", "부문", "중요도", "과제 내용", "보완 방안", "담당조직", "담당자", "목표일", "원래 목표일", "연장",
+           "상태", "완료일", "지연일", "장기", "완료 요청", "최근 진행 내용"],
+          rows, [14, 26, 7, 14, 9, 7, 36, 36, 14, 12, 11, 11, 6, 8, 11, 7, 9, 14, 40], fills)
+
+    # 4) 검토 의견
+    rows, fills = [], []
+    for it in items:
+        for team in card_order(it):
+            c = it["reviews"][team]
+            res = {"ok": "이상 없음", "risk": "Risk 있음"}.get(c["result"], "미작성")
+            done_by = f"{c['done']['name']} {c['done'].get('title', '')} ({c['done']['at'][:10]})" if c["done"] else ""
+            base = [it["id"], it["title"], c["sector"], team, res, c["comment"], done_by]
+            if not c["risks"]:
+                rows.append(base + ["", "", "", "", ""])
+                fills.append(None if c["done"] else grey)
+            for r in c["risks"]:
+                dec = {"task": "과제 " + r["taskId"], "accept": "수용"}.get(r["decision"], "결정 대기")
+                rows.append(base + [r["id"], r["content"], r["proposal"], dec, r["reason"]])
+                fills.append(None)
+    sheet(wb.create_sheet(), "검토 의견",
+          ["안건ID", "안건명", "부문", "검토팀", "결과", "의견", "작성 완료", "RiskID", "예상 Risk", "제안 보완 방안", "결정", "수용 사유"],
+          rows, [14, 26, 9, 16, 10, 30, 22, 7, 36, 32, 10, 24], fills)
+
+    # 5) 회의
+    rows = [[it["id"], it["title"], f"{i + 1}단계 {STAGE_NAMES[i]}", f"{m['no']}차", m["date"], m["result"], m["note"], m["minutesText"]]
+            for it in items for i, k in enumerate(STAGE_KEYS) if k in MEETING_STAGES for m in it["stages"][k]["meetings"]]
+    sheet(wb.create_sheet(), "회의", ["안건ID", "안건명", "단계", "차수", "회의일", "결과", "요약", "회의록"],
+          rows, [14, 26, 22, 6, 11, 10, 30, 80])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def h_report_xlsx(req: Req):
+    if not req.is_admin and not req.user():
+        raise HTTPException(403, "로그인한 회원만 보고서를 내려받을 수 있습니다.")
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        raise HTTPException(500, "서버 PC에 openpyxl 이 설치되어 있지 않아 xlsx 보고서를 만들 수 없습니다. (pip install openpyxl 또는 CSV 내보내기 사용)")
+    items = store.load()["items"]
+    from urllib.parse import parse_qs
+    year = (parse_qs(req.query or "").get("year") or [""])[0]
+    if year and year != "ALL":
+        items = [it for it in items if (it["proposalDate"] or "")[:4] == year]
+    data = build_report_xlsx(items)
+    fname = f"양산이관_현황보고서_{today_str()}.xlsx"
+    return Resp(data, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={"Content-Disposition": content_disposition(fname)})
+
+
 # --- 2단계·4단계 회의 차수 / 회의록 ---------------------------------------
+def _stage_name(key: str) -> str:
+    i = STAGE_KEYS.index(key)
+    return f"{i + 1}단계 {STAGE_NAMES[i]}"
+
+
 def _meeting_stage(req: Req) -> str:
     key = req.params["stage"]
     if key not in MEETING_STAGES:
@@ -2142,6 +2684,8 @@ def _meeting_fields(m: Dict[str, Any], p: Dict[str, Any]) -> None:
         m["result"] = _s(p.get("result")) if _s(p.get("result")) in MEETING_RESULTS else ""
     if "note" in p:
         m["note"] = _text(p.get("note"))[:2000]
+    if "minutesText" in p:
+        m["minutesText"] = _text(p.get("minutesText"))[:100000]
 
 
 def h_meeting_add(req: Req):
@@ -2156,6 +2700,7 @@ def h_meeting_add(req: Req):
         m = normalize_meeting({"no": no, "date": p.get("date") or today_str()})
         _meeting_fields(m, {k: v for k, v in p.items() if k in ("result", "note")})
         st["meetings"].append(m)
+        add_audit(cur, "관리자", f"{_stage_name(key)} {no}차 회의 추가")
         return _touch(cur)
     return store.mutate(_add)
 
@@ -2165,7 +2710,15 @@ def h_meeting_update(req: Req):
 
     def _upd(data):
         cur = find_item(data, req.params["id"])
-        _meeting_fields(_find_meeting(cur, key, req.params["no"]), p)
+        m = _find_meeting(cur, key, req.params["no"])
+        before = dict(m)
+        _meeting_fields(m, p)
+        head = f"{_stage_name(key)} {m['no']}차 회의"
+        add_audit(cur, "관리자",
+                  f"{head} 회의일 {m['date']}" if before["date"] != m["date"] else "",
+                  f"{head} 결과: {m['result'] or '(미정)'}" if before["result"] != m["result"] else "",
+                  f"{head} 요약 수정" if before["note"] != m["note"] else "",
+                  f"{head} 회의록 {'입력' if not before['minutesText'] else '수정'}" if before["minutesText"] != m["minutesText"] else "")
         return _touch(cur)
     return store.mutate(_upd)
 
@@ -2181,6 +2734,7 @@ def h_meeting_delete(req: Req):
             raise HTTPException(400, "마지막 차수 회의부터 삭제할 수 있습니다.")
         st["meetings"].remove(m)
         removed.extend(a["name"] for a in m["minutes"])
+        add_audit(cur, "관리자", f"{_stage_name(key)} {m['no']}차 회의 삭제")
         return _touch(cur)
     item = store.mutate(_del)
     _trash_minutes(item["id"], removed)
@@ -2241,6 +2795,7 @@ def h_upload_attachments(req: Req):
     def _attach(data):
         it = find_item(data, item_id)
         it["attachments"].extend(saved)
+        add_audit(it, "관리자", "첨부파일 추가: " + ", ".join(a["name"] for a in saved))
         it["rev"] += 1
         return it
     return store.mutate(_attach)
@@ -2260,6 +2815,7 @@ def h_delete_attachment(req: Req):
     def _detach(data):
         it = find_item(data, item_id)
         it["attachments"] = [a for a in it["attachments"] if a["name"] != path.name]
+        add_audit(it, "관리자", f"첨부파일 삭제: {path.name}")
         it["rev"] += 1
         return it
     return store.mutate(_detach)
@@ -2520,6 +3076,7 @@ def h_team_review_save(req: Req):
         if complete:
             card["done"] = {"empId": writer["empId"], "name": writer["name"], "title": writer.get("title", ""),
                             "team": writer["team"], "at": now_str()}
+            add_audit(cur, who, f"[{team}] 검토 의견 작성 완료 — " + ("이상 없음" if result == "ok" else f"Risk {len(card['risks'])}건"))
         cur["rev"] += 1
         cur["updatedAt"] = now_str()
         return cur
@@ -2545,6 +3102,7 @@ def h_team_review_reopen(req: Req):
             raise HTTPException(404, "검토 팀을 찾을 수 없습니다.")
         card["done"] = None
         card["history"] = (card["history"] + [{"at": now_str(), "by": "관리자", "action": "작성 완료 해제(재작성 요청)"}])[-50:]
+        add_audit(cur, "관리자", f"[{team}] 작성 완료 해제(재작성 요청)")
         cur["rev"] += 1
         return cur
     return store.mutate(_reopen)
@@ -2681,6 +3239,7 @@ def h_remind(req: Req):
         cur = find_item(data, item["id"])
         cur["remindLog"].append({"kind": kind, "key": mail["key"], "to": "; ".join(mail["to"]), "at": now_str(), "by": "관리자"})
         cur["remindLog"] = cur["remindLog"][-200:]
+        add_audit(cur, "관리자", f"✉️ Remind 메일 ({'과제 ' + mail['key'] if kind == 'task' else '검토 미작성'}) → {', '.join(mail['names']) or '; '.join(mail['to'])}")
         cur["rev"] += 1
         return cur
     updated = store.mutate(_log)
@@ -2745,6 +3304,10 @@ route("DELETE", "/api/items/{id}/meetings/{stage}/{no}", h_meeting_delete, admin
 route("POST", "/api/items/{id}/meetings/{stage}/{no}/minutes", h_minutes_upload, admin=True)
 route("DELETE", "/api/items/{id}/meetings/{stage}/{no}/minutes/{name}", h_minutes_delete, admin=True)
 route("GET", "/api/items/{id}/minutes/{name}", h_minutes_download)
+route("POST", "/api/items/{id}/tasks/{taskId}/progress", h_task_progress)
+route("POST", "/api/items/{id}/tasks/{taskId}/decide", h_task_decide, admin=True)
+route("GET", "/api/items/{id}/taskfiles/{name}", h_task_file)
+route("GET", "/api/report.xlsx", h_report_xlsx)
 
 STATIC_DIR = (BASE_DIR / "static").resolve()
 

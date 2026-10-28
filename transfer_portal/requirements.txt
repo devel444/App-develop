@@ -3,3 +3,6 @@
 # 선택: 아래 패키지가 설치되어 있으면 Outlook 연동에 사용하고,
 #       없으면 Windows 기본 PowerShell 로 Outlook 을 제어합니다.
 # pywin32>=306; sys_platform == "win32"
+#
+# 선택: xlsx 현황 보고서([📊 현황 보고서(xlsx)] 버튼)에 사용합니다. 없으면 CSV 내보내기만 가능합니다.
+# openpyxl>=3.0
