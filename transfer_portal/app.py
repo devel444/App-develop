@@ -882,16 +882,8 @@ def default_settings(with_password: bool = False) -> Dict[str, Any]:
         "portalUrl": "",
         "mail": {"preferOutlook": True},
         "smtp": {"host": "", "port": 25, "useTls": False, "username": "", "password": "", "sender": ""},
-        "reviewers": [
-            {"sector": "품질/수율", "level": "sub", "name": "박품질", "title": "팀장", "email": "quality.lead@example.com"},
-            {"sector": "장비", "level": "sub", "name": "최설비", "title": "팀장", "email": "equip.lead@example.com"},
-            {"sector": "생산성", "level": "sub", "name": "정생산", "title": "팀장", "email": "prod.lead@example.com"},
-            {"sector": "Process", "level": "sub", "name": "오공정", "title": "팀장", "email": "process.lead@example.com"},
-            {"sector": "제조", "level": "sub", "name": "한제조", "title": "팀장", "email": "mfg.lead@example.com"},
-            {"sector": "손익", "level": "sub", "name": "윤손익", "title": "팀장", "email": "pl.lead@example.com"},
-            {"sector": "품질/수율", "level": "main", "name": "강품질", "title": "담당", "email": "quality.head@example.com"},
-            {"sector": "장비", "level": "main", "name": "조설비", "title": "본부장", "email": "equip.head@example.com"},
-        ],
+        "reviewers": [],
+        "teamEmails": {},
         "criteria": copy.deepcopy(DEFAULT_CRITERIA),
         "teams": copy.deepcopy(DEFAULT_TEAMS),
         "holidays": [],
@@ -911,6 +903,26 @@ def normalize_teams(v: Any) -> List[Dict[str, Any]]:
         out.append({"name": name, "sector": t.get("sector") if t.get("sector") in SECTORS else "",
                     "canApply": bool(t.get("canApply"))})
     return out
+
+
+def normalize_team_emails(v: Any) -> Dict[str, List[str]]:
+    """팀별 메일 주소록 {팀: [이메일…]} — 검토 요청 메일·Remind 받는 사람 (가입 여부와 무관)."""
+    out: Dict[str, List[str]] = {}
+    for team, emails in (v.items() if isinstance(v, dict) else []):
+        lst = _emails(emails if isinstance(emails, str) else "; ".join(_s(e) for e in (emails or [])))
+        if _s(team) and lst:
+            out[_s(team)[:40]] = lst[:20]
+    return out
+
+
+def team_email_book(settings: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+    """이메일 → {sector, name, title} (메일 본문의 받는 사람 표용)."""
+    book: Dict[str, Dict[str, str]] = {}
+    for team, emails in settings.get("teamEmails", {}).items():
+        sec = team_info(settings, team)["sector"] or "-"
+        for e in emails:
+            book.setdefault(e.lower(), {"sector": f"{sec} · {team}", "name": team, "title": ""})
+    return book
 
 
 def normalize_reviewers(v: Any) -> List[Dict[str, str]]:
@@ -1055,6 +1067,7 @@ class Store:
                 teams = copy.deepcopy(DEFAULT_TEAMS)
             base["teams"] = teams
             base["reviewMatrix"] = normalize_matrix(base.get("reviewMatrix"))
+            base["teamEmails"] = normalize_team_emails(base.get("teamEmails"))
             return base
 
     def save_settings(self, s: Dict[str, Any]) -> None:
@@ -1659,7 +1672,7 @@ def build_review_mail(item: Dict[str, Any], settings: Dict[str, Any], level: str
     subject = f"[양산이관 검토요청] {category_label(item)} {item['title']} - {LEVEL_NAMES[level]} 검토의 건"
     requester = item["requester"] + (f" ({item['requesterDept']})" if item["requesterDept"] else "")
 
-    book = {r["email"].lower(): r for r in normalize_reviewers(settings.get("reviewers"))}
+    book = team_email_book(settings)
     for u in store.users().values():
         if u.get("status") == "approved" and u.get("email"):
             book.setdefault(u["email"].lower(), {"sector": f"{team_info(settings, u.get('team', ''))['sector'] or '-'} · {u.get('team', '')}",
@@ -1981,6 +1994,7 @@ def h_get_settings(req: Optional[Req] = None):
         "mailDiag": mail_diagnostics(),
         "holidays": holiday_list(s),
         "reviewMatrix": s["reviewMatrix"],
+        "teamEmails": s["teamEmails"],
     }
 
 
@@ -2013,6 +2027,11 @@ def h_put_settings(req: Req):
         s["reviewers"] = normalize_reviewers(payload["reviewers"])
     if isinstance(payload.get("reviewMatrix"), dict):
         s["reviewMatrix"] = normalize_matrix(payload["reviewMatrix"])
+    if isinstance(payload.get("teamEmails"), dict):
+        bad = [f"{t}: {x}" for t, v in payload["teamEmails"].items() for x in re.split(r"[;,\s]+", _s(v)) if x and not EMAIL_RE.match(x)]
+        if bad:
+            raise HTTPException(400, "이메일 형식을 확인하세요 — " + ", ".join(bad[:5]))
+        s["teamEmails"] = normalize_team_emails(payload["teamEmails"])
     if "holidays" in payload:
         raw = payload["holidays"]
         s["holidays"] = holiday_list({"holidays": raw if isinstance(raw, list) else re.split(r"[\s,;]+", _s(raw))})
@@ -3187,13 +3206,21 @@ def _remind_targets(item: Dict[str, Any], kind: str, sectors: List[str], task_id
             raise HTTPException(400, "Remind 할 미작성 검토 팀이 없습니다.")
         to: List[str] = []
         names: List[str] = []
-        for u in store.users().values():
-            if u.get("status") == "approved" and u.get("team") in teams and u.get("email"):
+        reached = set()
+        for team in teams:  # 관리자 모드 팀별 주소록
+            for e in settings.get("teamEmails", {}).get(team, []):
+                if e.lower() not in {x.lower() for x in to}:
+                    to.append(e)
+                    names.append(f"{team} ({e})")
+                reached.add(team)
+        for u in store.users().values():  # 가입 회원
+            if u.get("status") == "approved" and u.get("team") in teams and u.get("email") and u["email"].lower() not in {x.lower() for x in to}:
                 to.append(u["email"])
                 names.append(f"{u['team']} {u['name']} {u.get('title', '')}".strip())
-        missing = [t for t in teams if t not in {u.get("team") for u in store.users().values() if u.get("status") == "approved"}]
+                reached.add(u["team"])
+        missing = [t for t in teams if t not in reached]
         if missing and not to:
-            raise HTTPException(400, f"가입한 회원이 없는 팀입니다: {', '.join(missing)} (해당 팀원이 포털에 가입해야 Remind 를 받을 수 있습니다)")
+            raise HTTPException(400, f"메일 주소가 없는 팀입니다: {', '.join(missing)} (관리자 모드 > 검토 팀 주소록에 입력하거나 팀원이 포털에 가입해야 합니다)")
         sectors = teams
         target = item["stages"]["step1"]["target"]
         delay = (dt.date.today() - dt.date.fromisoformat(target)).days if target and target < today_str() else 0
@@ -3202,7 +3229,7 @@ def _remind_targets(item: Dict[str, Any], kind: str, sectors: List[str], task_id
         inner = (
             f"<p>안녕하십니까. 양산이관 검증위원회 간사입니다.<br>아래 안건의 <b>{html.escape('·'.join(sectors))}</b> "
             "전문소위원 검토 의견이 아직 작성되지 않아 Remind 드립니다.</p>"
-            + (f"<p style='color:#b91c1c'>※ 가입 회원이 없어 메일을 받지 못한 팀: {html.escape(', '.join(missing))}</p>" if missing else "")
+            + (f"<p style='color:#b91c1c'>※ 메일 주소가 없어 받지 못한 팀: {html.escape(', '.join(missing))}</p>" if missing else "")
             + _mail_table(info_rows + [("1단계 목표일", html.escape(target or "-") + (f' <b style="color:#b91c1c">(+{delay}일 지연)</b>' if delay else "")),
                                        ("작성 방법", "포털 로그인 → 안건 상세 → [3] 우리 팀 줄에서 ✅ 이상 없음 / ⚠️ Risk 있음 선택 후 [✅ 작성 완료]")])
             + f'<p>▶ 바로 작성하기: <a href="{html.escape(link)}">{html.escape(link)}</a></p><p>감사합니다.</p>'
