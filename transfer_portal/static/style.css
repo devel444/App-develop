@@ -640,3 +640,19 @@ tbody tr.row-pending { background: #f5f3ff; }
 .rc-team { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; border-top: 1px dashed var(--border); font-size: 12.5px; }
 .rc-team:first-of-type { border-top: 0; }
 .rc-none { font-size: 11.5px; color: #b45309; }
+
+/* ===== v15: 장기 안건 · 화면 정리 ===== */
+.banner.long { background: #faf5ff; border: 1px solid #d8b4fe; color: #581c87; flex-wrap: wrap; gap: 8px; }
+.banner.long .long-reason { flex: 1; min-width: 260px; max-width: 520px; padding: 4px 8px; font-size: 12.5px; }
+.long-cause { color: #7e22ce; font-weight: 700; }
+.task-sum { font-weight: 700; font-size: 12px; cursor: help; border-bottom: 1px dotted var(--text-sub); }
+.ext-chip { border: 1px solid #fcd34d; background: #fef3c7; color: #92400e; border-radius: 999px; padding: 1px 8px; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+.ext-chip:hover { background: #fde68a; }
+.mtg-card.compact { padding: 6px 12px; }
+.mtg-card.compact .mtg-head { margin-bottom: 0; }
+.mtg-head.clickable { cursor: pointer; border-radius: 6px; }
+.mtg-head.clickable:hover b { text-decoration: underline; }
+.section.collapsed .sec-body { display: none; }
+.section.collapsed .section-head { margin-bottom: 0; }
+.sec-peek { font-size: 12px; font-weight: 600; margin-left: 8px; }
+.act-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }

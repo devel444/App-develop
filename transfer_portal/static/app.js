@@ -35,6 +35,7 @@
     reviewMatrix: {},
     matrixDraft: null,
     mtgOpen: {},            // 펼친 회의록 ("step2-1": true)
+    mtgExpand: {},          // 펼친 회의 칸 ("step2": true)
     taskOpen: {},           // 펼친 과제 진행 기록 ("TR-2026-001/T01": true)
     taskForm: {},           // 진행 입력 중인 내용 (다시 그려도 유지)
     leadDays: { step1: 5, step2: 7, step3: 7, step4: 7, step5: 7 },
@@ -258,6 +259,40 @@
     var m = LONG_TERM_MONTHS;
     while (m < 240 && t0 >= addMonths(item.proposalDate, m + 1)) m++;
     return m;
+  }
+  // 장기 안건: 최종승인 전인데 발제일 + 3개월이 지난 안건 → 경과 개월 수
+  function longItemOf(item) {
+    if ((item.stages.step5 || {}).done || !item.proposalDate) return 0;
+    var t0 = today();
+    if (t0 < addMonths(item.proposalDate, LONG_TERM_MONTHS)) return 0;
+    var m = LONG_TERM_MONTHS;
+    while (m < 240 && t0 >= addMonths(item.proposalDate, m + 1)) m++;
+    return m;
+  }
+  // 장기 안건의 원인 (현재 단계 기준 자동 판단)
+  function longCause(item) {
+    var si = stageInfo(item), hi = openTaskCount(item, "상"), cause;
+    if (si.phase === "WAIT") return "접수 승인 대기";
+    if (si.idx === 0) {
+      var sm = reviewSummary(item);
+      cause = sm.pending.length ? "검토 미작성 " + sm.pending.length + "팀" : sm.total ? "1단계 완료 처리 대기" : "검토 팀 미선정";
+    } else if (si.idx === 1 || si.idx === 3) {
+      var ms = item.stages[STAGES[si.idx].key].meetings || [], lastM = ms[ms.length - 1], und = reviewSummary(item).undecided;
+      cause = lastM && lastM.result === "재심의" ? STAGES[si.idx].name + " 재심의(" + lastM.no + "차)"
+        : si.idx === 1 && und ? "Risk 결정 대기 " + und + "건" : (si.idx + 1) + "단계 " + STAGES[si.idx].name + " 진행 중";
+    } else if (si.idx === 2) cause = "3단계 전문위원 검토 진행 중";
+    else cause = hi ? "보완 과제(상) 미완료 " + hi + "건" : "최종승인 대기";
+    if (hi && si.idx < 4) cause += " · 상 과제 " + hi + "건 진행";
+    return cause;
+  }
+  function longItemBadge(item) {
+    var m = longItemOf(item);
+    if (!m) return "";
+    return '<span class="badge badge-long" title="발제일(' + esc(item.proposalDate) + ') + ' + LONG_TERM_MONTHS + '개월 경과 · 원인: ' + esc(longCause(item)) + (item.longReason ? " · 사유: " + esc(item.longReason) : "") + '">⏳ 장기 ' + m + "개월</span>";
+  }
+  // 조건부 승인 후에도 발제일 + 3개월이 지나 남아 있는 과제
+  function longTasksAfterApproval(item) {
+    return (item.stages.step5 || {}).done ? (item.tasks || []).filter(function (t) { return longTermOf(item, t); }) : [];
   }
   function longBadge(months) {
     return months ? '<span class="badge badge-long" title="안건 발제일로부터 ' + LONG_TERM_MONTHS + '개월이 지난 미완료 과제">⏳ 장기 ' + months + "개월+</span>" : "";
@@ -513,7 +548,9 @@
   function actionItems(items) {
     var out = [], t0 = today();
     items.forEach(function (it) {
-      var si = stageInfo(it), sm = reviewSummary(it);
+      var si = stageInfo(it), sm = reviewSummary(it), lm = longItemOf(it), lt = longTasksAfterApproval(it);
+      if (lm) out.push({ kind: "long", sev: 2, item: it, label: "⏳ 장기 안건", text: "원인: " + longCause(it) + (it.longReason ? " / 사유: " + it.longReason : "") + " · 발제 " + it.proposalDate, days: lm, unit: "개월+ 경과" });
+      if (lt.length) out.push({ kind: "long", sev: 2, item: it, label: "🛠 장기 과제", text: "조건부 승인 후 미완료 " + lt.length + "건 — " + lt.map(function (t) { return t.id + "(" + t.importance + ")"; }).join(", "), days: longTermOf(it, lt[0]), unit: "개월+ 경과" });
       if (si.phase === "WAIT") {
         out.push({ kind: "wait", sev: 2, item: it, label: "🆕 접수 대기", text: "접수 승인 대기 (신청 " + (it.proposalDate || "-") + ")",
           days: it.proposalDate ? Math.max(0, daysBetween(it.proposalDate, t0)) : 0, unit: "일 경과" });
@@ -533,8 +570,6 @@
       (it.tasks || []).forEach(function (t) {
         if (t.status === "완료") return;
         var d = taskDelay(t);
-        var lt = longTermOf(it, t);
-        if (lt) out.push({ kind: "long", sev: 2, item: it, task: t, label: "⏳ 장기 과제", text: t.id + " " + t.title + " (" + t.importance + ")" + (t.org || t.ownerName ? " · " + (t.ownerName || t.org) : "") + " · 발제 " + it.proposalDate, days: lt, unit: "개월+ 경과", remindKey: t.ownerEmail ? t.id : "" });
         if (t.request) out.push({ kind: "approve", sev: 1, item: it, task: t, label: "🙋 완료 승인 대기", text: t.id + " " + t.title + " · 요청 " + t.request.by, days: daysBetween(t.request.at.slice(0, 10), t0), unit: "일 경과" });
         if (d) out.push({ kind: "task", sev: 0, item: it, task: t, label: "🚨 과제 지연", text: t.id + " " + t.title + (t.org || t.ownerName ? " · " + (t.ownerName || t.org) : ""), days: d, unit: "일 지연", remindKey: t.id });
         else if (!t.target) out.push({ kind: "notarget", sev: 3, item: it, task: t, label: "📅 목표일 미지정", text: t.id + " " + t.title, days: 0, unit: "" });
@@ -549,7 +584,7 @@
   function remindBtn(a) {
     if (!state.isAdmin) return "";
     if (a.kind === "review") return '<button class="btn btn-amber btn-sm" data-action="remind" data-kind="review" data-id="' + esc(a.item.id) + '" data-sectors="' + esc(a.sectors.join(",")) + '">✉️ Remind</button>';
-    if (a.kind === "task" || a.kind === "long") return a.task.ownerEmail
+    if (a.kind === "task") return a.task.ownerEmail
       ? '<button class="btn btn-amber btn-sm" data-action="remind" data-kind="task" data-id="' + esc(a.item.id) + '" data-task="' + esc(a.task.id) + '">✉️ Remind</button>'
       : '<button class="btn btn-secondary btn-sm" disabled title="안건 상세 [4]에서 담당자(이메일)를 지정하면 Remind 할 수 있습니다">담당자 미지정</button>';
     return "";
@@ -587,7 +622,7 @@
     var openTasks = tasks.filter(function (t) { return t.task.status !== "완료"; });
     var delayedTasks = tasks.filter(function (t) { return t.delay > 0; });
     var maxTaskDelay = delayedTasks.reduce(function (m, t) { return Math.max(m, t.delay); }, 0);
-    var longTasks = tasks.filter(function (t) { return t.long; });
+    var longItems = items.filter(function (i) { return longItemOf(i); });
     var actions = actionItems(items);
     var pendingReview = actions.filter(function (a) { return a.kind === "review"; });
     var pendingSectors = pendingReview.reduce(function (n, a) { return n + a.sectors.length; }, 0);
@@ -607,16 +642,23 @@
     }).join("");
 
     // 조치 필요 목록
+    var ACT_TABS = [["all", "전체", null], ["delay", "🚨 지연", ["stage", "task"]], ["review", "⏳ 검토", ["review", "decide"]], ["approve", "🙋 승인", ["approve", "wait"]], ["long", "⏳ 장기", ["long"]]];
+    var tab = ACT_TABS.find(function (t) { return t[0] === state.actTab; }) || ACT_TABS[0];
+    var tabList = tab[2] ? actions.filter(function (a) { return tab[2].indexOf(a.kind) !== -1; }) : actions;
     var actionHtml = !member ? "" : '<div class="card"><div class="card-title">📌 지금 조치가 필요한 항목 <span class="card-sub">늦은 순 · 행을 누르면 상세로 이동</span>' +
       '<span class="badge badge-gray">' + actions.length + "건</span></div>" +
-      (actions.length ? '<div class="table-wrap"><table class="action-table"><tbody>' + actions.slice(0, state.showAllActions ? 999 : 12).map(function (a) {
+      '<div class="act-tabs">' + ACT_TABS.map(function (t) {
+        var n = t[2] ? actions.filter(function (a) { return t[2].indexOf(a.kind) !== -1; }).length : actions.length;
+        return '<button class="chip-btn ' + (t === tab ? "active" : "") + '" data-action="actTab" data-tab="' + t[0] + '">' + t[1] + " " + n + "</button>";
+      }).join("") + "</div>" +
+      (tabList.length ? '<div class="table-wrap"><table class="action-table"><tbody>' + tabList.slice(0, state.showAllActions ? 999 : 8).map(function (a) {
         return '<tr class="row-link sev' + a.sev + '" data-action="openDetail" data-id="' + esc(a.item.id) + '"><td style="width:120px"><span class="act-label k-' + a.kind + '">' + a.label + "</span></td>" +
           '<td style="width:260px"><b>' + esc(a.item.title) + '</b><div class="muted" style="font-size:11px">' + esc(a.item.id) + "</div></td>" +
           '<td class="pre">' + esc(a.text) + "</td>" +
           '<td style="width:90px;text-align:right">' + (a.days ? '<b class="' + (a.unit === "일 지연" ? "txt-delay" : "") + '">' + (a.unit === "일 지연" ? "+" : "") + a.days + "</b>" + '<span class="muted" style="font-size:11px">' + a.unit + "</span>" : "") + "</td>" +
           '<td style="width:180px;text-align:right">' + (a.remindKey ? remindInfo(a.item, a.remindKey) + " " : "") + remindBtn(a) + "</td></tr>";
       }).join("") + "</tbody></table></div>" +
-        (actions.length > 12 ? '<button class="btn btn-secondary btn-sm" data-action="toggleActions">' + (state.showAllActions ? "접기" : "전체 " + actions.length + "건 보기") + "</button>" : "")
+        (tabList.length > 8 ? '<button class="btn btn-secondary btn-sm" data-action="toggleActions">' + (state.showAllActions ? "접기" : "나머지 " + (tabList.length - 8) + "건 더 보기") + "</button>" : "")
         : '<div class="empty-state" style="padding:20px">🎉 지금 조치가 필요한 항목이 없습니다.</div>') + "</div>";
 
     // 회원: 내 할 일 요약 → [✅ 내 할 일] 메뉴로
@@ -646,13 +688,14 @@
       '<div class="kpi-hint">제품 NP ' + np + " · SP " + sp + " · 기술 " + tech + "</div></div>" +
 
       '<div class="kpi-card delay ' + (stageDelayed.length ? "has-delay" : "") + '" data-action="kpiGo" data-go="stageDelay"><div class="kpi-label"><span>🚨 지연 안건</span><span class="badge" style="background:#fee2e2;color:#b91c1c">단계 목표일 경과</span></div>' +
-      '<div class="kpi-value">' + stageDelayed.length + '건</div><div class="kpi-sub">' + (maxStageDelay ? '<span class="kpi-pill" style="color:#b91c1c">최장 +' + maxStageDelay + "일</span>" : '<span class="kpi-pill">지연 없음</span>') + "</div>" +
+      '<div class="kpi-value">' + stageDelayed.length + '건</div><div class="kpi-sub">' + (maxStageDelay ? '<span class="kpi-pill" style="color:#b91c1c">최장 +' + maxStageDelay + "일</span>" : '<span class="kpi-pill">지연 없음</span>') +
+      '<span class="kpi-pill long" data-action="kpiGo" data-go="taskLong" title="최종승인 전, 발제일 + ' + LONG_TERM_MONTHS + '개월이 지난 안건">⏳ 장기 안건 ' + longItems.length + "</span></div>" +
       '<div class="kpi-hint">클릭 → 세부현황(단계 지연)</div></div>' +
 
       '<div class="kpi-card delay ' + (delayedTasks.length ? "has-delay" : "") + '" data-action="kpiGo" data-go="taskDelay"><div class="kpi-label"><span>🚨 지연 과제</span><span class="badge" style="background:#fee2e2;color:#b91c1c">과제 목표일 경과</span></div>' +
       '<div class="kpi-value">' + delayedTasks.length + '건</div><div class="kpi-sub"><span class="kpi-pill">진행 중 과제 ' + openTasks.length + "</span>" +
       (maxTaskDelay ? '<span class="kpi-pill" style="color:#b91c1c">최장 +' + maxTaskDelay + "일</span>" : "") +
-      '<span class="kpi-pill long" data-action="kpiGo" data-go="taskLong" title="발제일 + ' + LONG_TERM_MONTHS + '개월이 지난 미완료 과제">⏳ 장기 ' + longTasks.length + "</span></div>" +
+"</div>" +
       '<div class="kpi-hint">클릭 → 보완 과제 현황(지연)</div></div>' +
 
       '<div class="kpi-card wait-card" data-action="kpiGo" data-go="actions"><div class="kpi-label"><span>⏳ 조치 대기</span><span class="badge badge-wait">회신·결정 필요</span></div>' +
@@ -761,7 +804,8 @@
       if (f.cat === "기술" && i.category !== "기술") return false;
       if (f.year !== "ALL" && yearOf(i.proposalDate) !== f.year) return false;
       if (f.status === "DELAY") { if (!stageInfo(i).delay) return false; }
-      else if (f.status === "LONG") { if (!(i.tasks || []).some(function (t) { return longTermOf(i, t); })) return false; }
+      else if (f.status === "LONG") { if (!longItemOf(i)) return false; }
+      else if (f.status === "LONGTASK") { if (!longTasksAfterApproval(i).length) return false; }
       else if (f.status !== "ALL" && stageInfo(i).phase !== f.status) return false;
       if (q && (i.title + " " + i.requester + " " + i.requesterDept + " " + i.id).toLowerCase().indexOf(q) === -1) return false;
       return true;
@@ -785,7 +829,7 @@
       }).join("") +
       '</div><div class="filter-group"><span class="filter-label">발제연도</span><select class="select" data-filter="list.year">' + yearOptions(f.year) + "</select>" +
       '<span class="filter-label">상태</span><select class="select" data-filter="list.status">' +
-      [["ALL", "전체"], ["WAIT", "접수대기"], ["ING", "검토진행중"], ["DELAY", "🚨 단계 지연"], ["LONG", "⏳ 장기 과제(발제 +" + LONG_TERM_MONTHS + "개월)"], ["DONE", "최종승인완료"]].map(function (o) {
+      [["ALL", "전체"], ["WAIT", "접수대기"], ["ING", "검토진행중"], ["DELAY", "🚨 단계 지연"], ["LONG", "⏳ 장기 안건(발제 +" + LONG_TERM_MONTHS + "개월)"], ["DONE", "최종승인완료"], ["LONGTASK", "🛠 장기 과제(조건부 승인 후)"]].map(function (o) {
         return '<option value="' + o[0] + '"' + (f.status === o[0] ? " selected" : "") + ">" + o[1] + "</option>";
       }).join("") + "</select>" +
       '<input class="input" style="width:200px" placeholder="제품/기술명, 요청자 검색" data-filter="list.q" value="' + esc(f.q) + '" /></div></div>' +
@@ -807,24 +851,22 @@
       var si = stageInfo(item);
       var tasks = tasksOf([item]);
       var gc = { "상": 0, "중": 0, "하": 0 }, dn = 0, dl = 0;
-      var lg = 0;
-      tasks.forEach(function (t) { gc[t.task.importance || "중"]++; if (t.task.status === "완료") dn++; if (t.delay) dl++; if (t.long) lg = Math.max(lg, t.long); });
-      var lgCnt = tasks.filter(function (t) { return t.long; }).length;
+      tasks.forEach(function (t) { gc[t.task.importance || "중"]++; if (t.task.status === "완료") dn++; if (t.delay) dl++; });
+      var lgCnt = tasks.filter(function (t) { return t.long; }).length, hiOpen = openTaskCount(item, "상");
       var rsum = reviewSummary(item);
-      var chips = GRADES.filter(function (g) { return gc[g]; }).map(function (g) {
-        return '<span class="grade-chip ' + GRADE_CLS[g] + '">' + g + ":" + gc[g] + "</span>";
-      }).join("");
       return '<tr class="row-link" data-action="openDetail" data-id="' + esc(item.id) + '">' +
         '<td class="muted" style="font-weight:700">' + (list.length - idx) + "</td><td>" + catBadge(item) + "</td>" +
-        '<td><div style="font-weight:700">' + esc(item.title) + trackBadges(si) + '</div><div class="muted" style="font-size:11px">' + esc(item.id) + "</div></td>" +
+        '<td><div style="font-weight:700">' + esc(item.title) + trackBadges(si) + " " + longItemBadge(item) + '</div><div class="muted" style="font-size:11px">' + esc(item.id) +
+        (longItemOf(item) ? ' · <span class="long-cause">원인: ' + esc(longCause(item)) + (item.longReason ? " / " + esc(item.longReason) : "") + "</span>" : "") + "</div></td>" +
         "<td>" + esc(item.requester) + (item.requesterDept ? '<div class="muted" style="font-size:11px">' + esc(item.requesterDept) + "</div>" : "") + "</td>" +
         '<td style="font-weight:600">' + esc(item.proposalDate || "-") + "</td>" +
         '<td><div style="display:flex;align-items:center;flex-wrap:wrap;gap:3px">' + miniDots(item) + '<span style="font-size:12px;font-weight:700">' + esc(si.name) + "</span>" +
         (si.delay ? '<span class="badge badge-delay">🚨 +' + si.delay + "일</span>" : "") +
         (si.phase === "ING" && MEETING_STAGES.indexOf(STAGES[si.idx].key) !== -1 && (item.stages[STAGES[si.idx].key].meetings || []).length ? '<span class="badge badge-mtg">🗓 ' + meetingLabel(item.stages[STAGES[si.idx].key]) + "</span>" : "") + "</div></td>" +
-        "<td>" + (tasks.length ? '<span style="font-weight:700;font-size:12px;margin-right:4px">완료 ' + dn + "/" + tasks.length + "</span>" + chips +
-          (dl ? '<span class="badge badge-delay">지연 ' + dl + "</span>" : "") +
-          (lgCnt ? '<span class="badge badge-long" title="발제일 + ' + LONG_TERM_MONTHS + '개월이 지난 미완료 과제">⏳ 장기 ' + lgCnt + "건 (" + lg + "개월+)</span>" : "") : '<span class="muted" style="font-size:12px">없음</span>') +
+        "<td>" + (tasks.length ? '<span class="task-sum" title="' + esc(GRADES.map(function (g) { return g + ":" + gc[g]; }).join(" · ") + (dl ? " · 지연 " + dl : "") + (lgCnt ? " · 장기 과제 " + lgCnt : "")) + '">과제 ' + dn + "/" + tasks.length + "</span>" +
+          (hiOpen ? ' <span class="grade-chip ' + GRADE_CLS["상"] + '" title="중요도 상 미완료">상 ' + hiOpen + "</span>" : "") +
+          (dl ? ' <span class="badge badge-delay" title="목표일 지난 과제">🚨' + dl + "</span>" : "") +
+          (lgCnt && longTasksAfterApproval(item).length ? ' <span class="badge badge-long" title="조건부 승인 후 발제일 + ' + LONG_TERM_MONTHS + '개월이 지난 미완료 과제">🛠 장기 과제 ' + lgCnt + "</span>" : "") : '<span class="muted" style="font-size:12px">없음</span>') +
           (rsum.undecided ? '<div><span class="badge badge-wait" title="2단계에서 과제 등록/수용 결정 필요">결정 대기 Risk ' + rsum.undecided + "</span></div>" : "") +
           (item.accepted !== false && !stageInfo(item).isDone && (!rsum.total || rsum.completed < rsum.total) ? '<div class="muted" style="font-size:11px">' + (rsum.total ? "검토 " + rsum.completed + "/" + rsum.total : "검토 팀 미선정") + "</div>" : "") + "</td>" +
         "<td>" + (item.attachments.length ? '<span title="' + esc(item.attachments.map(function (a) { return a.name; }).join("\n")) + '">📎 ' + item.attachments.length + "</span>" : '<span class="muted">-</span>') + "</td>" +
@@ -1441,6 +1483,9 @@
 
   function renderDetail() {
     var d = state.detail.draft, si = stageInfo(d), admin = state.isAdmin, dis = admin ? "" : "disabled";
+    if (!state.detail.collapsed) state.detail.collapsed = { info: !admin, note: !admin };
+    var col = state.detail.collapsed;
+    var secBtn = function (k) { return '<button class="btn btn-secondary btn-xs" data-action="secToggle" data-sec="' + k + '">' + (col[k] ? "펼치기 ▼" : "접기 ▲") + "</button>"; };
     var myTeam = !admin && state.user && d.reviews[state.user.team] ? state.user.team : "";
     var roleBanner = admin ? ""
       : myTeam ? '<div class="banner info"><span>🖊 <b>' + esc(myTeam) + "</b> 이(가) 검토 팀으로 선정되었습니다. 아래 [3]의 " + esc(myTeam) +
@@ -1448,7 +1493,7 @@
       : '<div class="banner warn"><span>🔒 열람 모드입니다. ' + (state.user ? "우리 팀(" + esc(state.user.team) + ")은 이 안건의 검토 팀으로 선정되지 않았습니다." : "검토 의견 작성은 로그인 후, 전체 수정은 [관리자 모드]에서 가능합니다.") + "</span>" +
         (state.user ? "" : '<button class="btn btn-secondary btn-sm" data-action="nav" data-route="account">👤 로그인</button>') + "</div>";
     $("#detailHeader").innerHTML =
-      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3>' + esc(d.title || "(제목 없음)") + "</h3>" + catBadge(d) + trackBadges(si) +
+      '<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3>' + esc(d.title || "(제목 없음)") + "</h3>" + catBadge(d) + trackBadges(si) + longItemBadge(d) +
       '<span class="muted" style="font-size:12.5px">' + esc(d.id) + " · 요청자 " + esc(d.requester) + " · 발제일 " + esc(d.proposalDate) + "</span></div>" +
       '<div style="display:flex;gap:8px"><button class="btn btn-excel btn-sm" data-action="csvSingle">📥 이 안건만 엑셀 저장</button>' +
       '<button class="btn btn-secondary btn-sm" data-action="closeDetail">✕ 닫기</button></div>';
@@ -1461,12 +1506,16 @@
       (d.accepted === false ? '<div class="banner wait"><span>🆕 접수대기 안건입니다. 내용을 확인한 뒤 접수 승인하세요.</span>' +
         (admin ? '<button class="btn btn-primary btn-sm" data-action="acceptItem" data-id="' + esc(d.id) + '">✓ 접수 승인</button>' : "") + "</div>" : "") +
       notify +
+      (longItemOf(d) ? '<div class="banner long"><span>⏳ <b>장기 안건</b> — 발제일 + ' + longItemOf(d) + "개월 경과 · 원인: <b>" + esc(longCause(d)) + "</b>" +
+        (admin ? "" : d.longReason ? " · 사유: " + esc(d.longReason) : "") + "</span>" +
+        (admin ? '<input class="input long-reason" data-dfield="longReason" value="' + esc(d.longReason || "") + '" placeholder="장기 사유 메모 (예: 고객 승인 일정, 설비 입고 대기) — 저장 시 반영" />' : "") + "</div>" : "") +
       (d.finalNotify ? '<div class="banner ' + (d.finalNotify.status === "failed" ? "warn" : "info") + '"><span>🏁 최종승인 알림 메일: ' +
         ({ sent: "발송 완료", failed: "발송 실패", skipped: "발송 안 함" }[d.finalNotify.status] || d.finalNotify.status) + " — " + esc(d.finalNotify.message || "") +
         ' <span class="muted">(' + esc(d.finalNotify.at || "") + ")</span></span></div>" : "") +
       roleBanner +
 
-      '<div class="section"><div class="section-head"><div class="section-title">📌 기본 정보</div></div><div class="info-grid">' +
+      '<div class="section' + (col.info ? " collapsed" : "") + '" data-sec-body="info"><div class="section-head"><div class="section-title">📌 기본 정보' +
+      (col.info ? ' <span class="muted sec-peek">' + esc(d.requester + " · " + (d.requesterDept || "") + " · 발제 " + d.proposalDate) + "</span>" : "") + "</div>" + secBtn("info") + '</div><div class="info-grid sec-body">' +
       '<div class="field"><label>구분</label><select class="select" data-dfield="category" ' + dis + '><option value="제품"' + (d.category === "제품" ? " selected" : "") + '>제품</option><option value="기술"' + (d.category === "기술" ? " selected" : "") + ">기술</option></select></div>" +
       '<div class="field"><label>NP / SP</label><select class="select" data-dfield="npSp" ' + (admin && d.category === "제품" ? "" : "disabled") + ">" +
       (d.category === "제품" ? '<option value="NP"' + (d.npSp === "NP" ? " selected" : "") + '>NP</option><option value="SP"' + (d.npSp === "SP" ? " selected" : "") + ">SP</option>" : '<option value="">해당없음</option>') + "</select></div>" +
@@ -1481,8 +1530,9 @@
       '<div class="field span4"><label>양산이관 주요 내용 및 변경점</label><textarea class="textarea" data-dfield="summary" ' + dis + ">" + esc(d.summary) + "</textarea></div>" +
       '<div class="field span4"><span class="lbl">첨부파일</span><div id="attBox"></div></div></div></div>' +
 
-      '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">1</span>비고란 (Note)</div></div>' +
-      '<textarea class="textarea note" data-dfield="note" placeholder="회의 요약 및 특이사항 기록..." ' + dis + ">" + esc(d.note) + "</textarea></div>" +
+      '<div class="section' + (col.note ? " collapsed" : "") + '" data-sec-body="note"><div class="section-head"><div class="section-title"><span class="section-num">1</span>비고란 (Note)' +
+      (col.note && d.note ? ' <span class="muted sec-peek">' + esc(d.note.split("\n")[0].slice(0, 50)) + (d.note.length > 50 ? "…" : "") + "</span>" : "") + "</div>" + secBtn("note") + "</div>" +
+      '<textarea class="textarea note sec-body" data-dfield="note" placeholder="회의 요약 및 특이사항 기록..." ' + dis + ">" + esc(d.note) + "</textarea></div>" +
 
       '<div class="section"><div class="section-head"><div class="section-title"><span class="section-num">2</span>5단계 진행 현황 및 전결(Skip) 제어</div>' +
       '<span id="stageBadge"></span></div><div class="stepper" id="stepperBox"></div><div id="extHistory"></div><div id="meetingBox" class="mtg-grid"></div>' +
@@ -1536,8 +1586,7 @@
       if (!o.skipped) {
         info = '<div class="step-dates">' +
           (o.target ? '<div><span class="lbl">목표</span><b>' + fmtDay(o.target) + "</b>" + (delay ? ' <span class="badge badge-delay">+' + delay + "일</span>" : "") + "</div>" : "") +
-          (o.extensions.length ? '<div class="muted" title="' + esc(o.extensions.map(function (e) { return e.from + " → " + e.to + " : " + e.reason; }).join("\n")) + '">' +
-            '<span class="lbl">원래</span><s>' + fmtDay(o.targetOriginal) + '</s> <span class="badge badge-ext">연장 ' + o.extensions.length + "회</span></div>" : "") +
+          (o.extensions.length ? '<div><button class="ext-chip" data-action="extHistToggle" title="원래 목표 ' + esc(o.targetOriginal) + ' · 눌러서 변경 이력 보기">⏰ 연장 ' + o.extensions.length + "회 " + (state.detail.showExt ? "▲" : "▼") + "</button></div>" : "") +
           (o.done ? '<div><span class="lbl">완료</span>' + (admin ? '<input type="date" class="input mini" data-stage-done="' + s.key + '" value="' + esc(o.doneAt) + '" />' : "<b>" + fmtDay(o.doneAt) + "</b>") + "</div>" : "") +
           (o.meetings && o.meetings.length ? '<div><span class="badge badge-mtg" title="' + esc(o.meetings.map(function (m) { return m.no + "차 " + (m.date || "-") + " " + (m.result || "결과 미입력"); }).join("\n")) + '">🗓 ' + meetingLabel(o) + "</span></div>" : "") +
           (!o.target && !o.done ? '<div class="muted">' + (d.accepted === false ? "접수 승인 후 목표일 자동 지정" : i === 0 ? "접수 승인일 + " + state.leadDays[s.key] + "영업일" : "앞 단계 완료 시 +" + state.leadDays[s.key] + "영업일") + "</div>" : "") +
@@ -1566,7 +1615,7 @@
     STAGES.forEach(function (s, i) {
       st[s.key].extensions.forEach(function (e) { hist.push({ no: i + 1, name: s.name, e: e }); });
     });
-    $("#extHistory").innerHTML = hist.length ? '<div class="ext-hist"><div class="lbl">⏰ 목표일 변경 이력</div>' + hist.map(function (h) {
+    $("#extHistory").innerHTML = hist.length && state.detail.showExt ? '<div class="ext-hist"><div class="lbl">⏰ 목표일 변경 이력 <button class="link-btn" data-action="extHistToggle">접기 ▲</button></div>' + hist.map(function (h) {
       return "<div><b>" + h.no + "단계 " + esc(h.name) + "</b> " + (h.e.from ? esc(h.e.from) + " → " : "지정 ") + "<b>" + esc(h.e.to) + "</b> · " + esc(h.e.reason || "-") +
         ' <span class="muted">(' + esc(h.e.by) + " " + esc(h.e.at) + ")</span></div>";
     }).join("") + "</div>" : "";
@@ -1598,10 +1647,13 @@
     var d = state.detail.draft, admin = state.isAdmin, base = "/api/items/" + encodeURIComponent(d.id);
     box.innerHTML = MEETING_STAGES.map(function (key) {
       var idx = STAGES.findIndex(function (s) { return s.key === key; }), st = d.stages[key], ms = st.meetings || [];
-      var head = '<div class="mtg-head"><b>' + (idx + 1) + "단계 " + esc(STAGES[idx].name) + " 회의</b>" +
-        (ms.length ? '<span class="muted">' + ms.length + "회 개최</span>" : "") +
-        (admin && !st.skipped && d.accepted !== false ? '<button class="btn btn-secondary btn-xs" data-action="mtgAdd" data-stage="' + key + '">+ ' + (ms.length + 1) + "차 회의 추가</button>" : "") + "</div>";
-      if (st.skipped) return '<div class="mtg-card skipped">' + head + '<div class="muted">🚫 생략(Skip)된 단계입니다.</div></div>';
+      if (st.skipped || (!ms.length && (!admin || d.accepted === false))) return "";  // 생략 단계 · 기록 없는 회의는 숨김
+      var lastM = ms[ms.length - 1], open = !!state.mtgExpand[key];
+      var head = '<div class="mtg-head' + (ms.length ? " clickable" : "") + '"' + (ms.length ? ' data-action="mtgExpand" data-stage="' + key + '"' : "") + ">" +
+        "<b>🗓 " + (idx + 1) + "단계 " + esc(STAGES[idx].name) + " 회의</b>" +
+        (ms.length ? '<span class="muted">' + ms.length + "회 · 최근: " + lastM.no + "차 " + esc(lastM.date ? fmtDay(lastM.date) : "-") + (lastM.result ? " " + esc(lastM.result) : "") + (open ? " ▲" : " ▼") + "</span>" : '<span class="muted">기록 없음</span>') +
+        (admin && d.accepted !== false ? '<button class="btn btn-secondary btn-xs" data-action="mtgAdd" data-stage="' + key + '">+ ' + (ms.length + 1) + "차 회의 추가</button>" : "") + "</div>";
+      if (!ms.length || !open) return '<div class="mtg-card compact">' + head + "</div>";
       var rows = ms.length ? ms.map(function (m, i) {
         var a = ' data-stage="' + key + '" data-no="' + m.no + '"';
         // 예전(v11) 파일 회의록은 열람만 유지
@@ -1627,10 +1679,11 @@
           '<div class="mtg-files">' + toggle + files +
           (admin && i === ms.length - 1 ? '<button class="link-btn" data-action="mtgDel"' + a + ">차수 삭제</button>" : "") + "</div>" + minutesBox + "</div>";
       }).join("") : '<div class="muted" style="padding:6px 2px">' + (admin ? "회의를 열면 [+ 1차 회의 추가]로 기록하고 [📝 회의록]에 메일 본문 회의록을 붙여넣으세요." : "기록된 회의가 없습니다.") + "</div>";
-      var last = ms[ms.length - 1];
+      var last = lastM;
       var hint = admin && last && last.result === "재심의" && !st.done ? '<div class="card-sub">↻ 재심의 결정 → [+ ' + (ms.length + 1) + "차 회의 추가] 후, 필요하면 위 단계의 [⏰ 목표일 연장]으로 일정을 조정하세요.</div>" : "";
       return '<div class="mtg-card">' + head + rows + hint + "</div>";
     }).join("");
+    box.style.display = box.innerHTML ? "" : "none";
   }
   // 회의 API 는 즉시 저장된다 → 서버 값으로 회의·rev 만 맞춘다 (작성 중인 다른 수정은 그대로)
   function meetingApi(method, path, body, okMsg) {
@@ -2408,6 +2461,7 @@
       if (g === "taskLong") { state.f.list = { cat: "ALL", year: "ALL", status: "LONG", q: "" }; go("items"); }
       if (g === "actions") { var c = $(".action-table"); if (c) c.scrollIntoView({ behavior: "smooth", block: "center" }); else if (!isLoggedIn()) go("account"); }
     },
+    actTab: function (el) { state.actTab = el.getAttribute("data-tab"); state.showAllActions = false; renderDashboard(); },
     toggleActions: function () { state.showAllActions = !state.showAllActions; renderDashboard(); },
     remind: function (el) {
       var body = { itemId: el.getAttribute("data-id"), kind: el.getAttribute("data-kind"), taskId: el.getAttribute("data-task") || "",
@@ -2467,6 +2521,14 @@
       toast("보고서를 만드는 중…");
       api("GET", "/api/report.xlsx?year=" + encodeURIComponent(y || "ALL"), undefined, { raw: true }).then(function (res) { return res.blob(); })
         .then(function (b) { downloadBlob(b, "양산이관_현황보고서_" + today() + ".xlsx"); toast("보고서를 내려받았습니다.", "ok"); }).catch(fail);
+    },
+    extHistToggle: function () { state.detail.showExt = !state.detail.showExt; renderStepper(); },
+    secToggle: function (el) {
+      var k = el.getAttribute("data-sec"), c = state.detail.collapsed;
+      c[k] = !c[k];
+      var sec = document.querySelector('#detailBody [data-sec-body="' + k + '"]');
+      if (sec) sec.classList.toggle("collapsed", c[k]);
+      el.textContent = c[k] ? "펼치기 ▼" : "접기 ▲";
     },
     auditToggle: function () { state.detail.showAudit = !state.detail.showAudit; renderAudit(); },
     taskToggle: function (el) {
@@ -2665,12 +2727,17 @@
     },
     mtgAdd: function (el) {
       var key = el.getAttribute("data-stage"), n = (state.detail.draft.stages[key].meetings || []).length + 1;
-      state.mtgOpen[key + "-" + n] = true;
+      state.mtgOpen[key + "-" + n] = true; state.mtgExpand[key] = true;
       meetingApi("POST", key, { date: today() }, n + "차 회의를 추가했습니다. 날짜·결과를 입력하고 회의록을 붙여넣으세요.");
     },
     mtgDel: function (el) {
       if (!confirm(el.getAttribute("data-no") + "차 회의 기록을 삭제할까요? (첨부된 회의록은 백업 폴더로 옮겨집니다)")) return;
       meetingApi("DELETE", el.getAttribute("data-stage") + "/" + el.getAttribute("data-no"), undefined, "회의 기록을 삭제했습니다.");
+    },
+    mtgExpand: function (el, e) {
+      if (e && e.target.closest("[data-action=mtgAdd]")) return;
+      var k = el.getAttribute("data-stage");
+      state.mtgExpand[k] = !state.mtgExpand[k]; renderMeetings();
     },
     mtgToggle: function (el) {
       var k = el.getAttribute("data-stage") + "-" + el.getAttribute("data-no");

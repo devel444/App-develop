@@ -531,7 +531,7 @@ def diff_item(old: Dict[str, Any], new: Dict[str, Any]) -> List[str]:
     for k, label in ITEM_FIELD_LABELS:
         if old.get(k) != new.get(k):
             out.append(f"{label}: {old.get(k) or '(없음)'} → {new.get(k) or '(없음)'}")
-    for k, label in (("summary", "주요 내용"), ("note", "비고")):
+    for k, label in (("summary", "주요 내용"), ("note", "비고"), ("longReason", "장기 사유")):
         if old.get(k) != new.get(k):
             out.append(f"{label} 수정")
     for i, k in enumerate(STAGE_KEYS):
@@ -701,6 +701,7 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "proposalDate": _date(raw.get("proposalDate")),
         "summary": _text(raw.get("summary")),
         "note": _text(raw.get("note")),
+        "longReason": _text(raw.get("longReason"))[:500],
         # 기존 data.js 로 이관된 안건은 이미 접수된 것으로 본다.
         "accepted": bool(raw.get("accepted", True)),
         "acceptedAt": _date(raw.get("acceptedAt")),
@@ -2487,6 +2488,48 @@ def long_term_months(item: Dict[str, Any], t: Dict[str, Any]) -> int:
     return m
 
 
+def long_item_months(item: Dict[str, Any]) -> int:
+    """장기 안건: 최종승인 전인데 발제일 + 3개월이 지난 안건 → 경과 개월 수 (아니면 0)."""
+    if item["stages"]["step5"]["done"] or not item["proposalDate"]:
+        return 0
+    t0 = today_str()
+    if t0 < add_months(item["proposalDate"], LONG_TERM_MONTHS):
+        return 0
+    m = LONG_TERM_MONTHS
+    while m < 240 and t0 >= add_months(item["proposalDate"], m + 1):
+        m += 1
+    return m
+
+
+def long_item_cause(item: Dict[str, Any]) -> str:
+    """장기 안건이 된 원인 (현재 단계 기준 자동 판단)."""
+    if not item["accepted"]:
+        return "접수 승인 대기"
+    st = item["stages"]
+    idx = next((i for i, k in enumerate(STAGE_KEYS[:4]) if not (st[k]["done"] or st[k]["skipped"])), 4)
+    hi = len(open_tasks(item, "상"))
+    risks = [r for c in item["reviews"].values() for r in c["risks"]]
+    if idx == 0:
+        pending = [t for t, c in item["reviews"].items() if not c["done"]]
+        cause = f"검토 미작성 {len(pending)}팀" if pending else ("검토 팀 미선정" if not item["reviews"] else "1단계 완료 처리 대기")
+    elif idx in (1, 3):
+        ms = st[STAGE_KEYS[idx]]["meetings"]
+        undecided = sum(1 for r in risks if not r["decision"])
+        if ms and ms[-1]["result"] == "재심의":
+            cause = f"{STAGE_NAMES[idx]} 재심의({ms[-1]['no']}차)"
+        elif idx == 1 and undecided:
+            cause = f"Risk 결정 대기 {undecided}건"
+        else:
+            cause = f"{idx + 1}단계 {STAGE_NAMES[idx]} 진행 중"
+    elif idx == 2:
+        cause = "3단계 전문위원 검토 진행 중"
+    else:
+        cause = f"보완 과제(상) 미완료 {hi}건" if hi else "최종승인 대기"
+    if hi and idx < 4:
+        cause += f" · 상 과제 {hi}건 진행"
+    return cause
+
+
 def _days_late(target: str) -> int:
     t0 = today_str()
     return (dt.date.fromisoformat(t0) - dt.date.fromisoformat(target)).days if target and target < t0 else 0
@@ -2561,6 +2604,7 @@ def build_report_xlsx(items: List[Dict[str, Any]]) -> bytes:
         ("접수대기", sum(1 for it in items if not it["accepted"])), ("단계 지연 안건", sum(1 for r in stage_rows if r[2])),
         ("보완 과제 전체", len(tasks)), ("진행 중 과제", sum(1 for _, t in tasks if t["status"] != "완료")),
         ("지연 과제", sum(1 for _, t in tasks if t["status"] != "완료" and _days_late(t["target"]))),
+        (f"장기 안건 (발제 +{LONG_TERM_MONTHS}개월, 미승인)", sum(1 for it in items if long_item_months(it))),
         (f"장기 과제 (발제 +{LONG_TERM_MONTHS}개월)", sum(1 for it, t in tasks if long_term_months(it, t))),
         ("완료 승인 대기", sum(1 for _, t in tasks if t["request"])),
     ]
@@ -2599,12 +2643,14 @@ def build_report_xlsx(items: List[Dict[str, Any]]) -> bytes:
                      it["proposalDate"], it["acceptedAt"], sname, target, late or "",
                      f"{sum(1 for c in cards if c['done'])}/{len(it['reviews'])}", len(risks), sum(1 for r in risks if not r["decision"]),
                      f"{sum(1 for t in it['tasks'] if t['status'] == '완료')}/{len(it['tasks'])}", len(open_tasks(it, "상")) or "",
-                     mt("step2"), mt("step4"), it["stages"]["step5"]["doneAt"]])
-        fills.append(red if late else green if it["stages"]["step5"]["done"] else None)
+                     mt("step2"), mt("step4"), it["stages"]["step5"]["doneAt"],
+                     f"{long_item_months(it)}개월+" if long_item_months(it) else "",
+                     (long_item_cause(it) + (f" / 사유: {it['longReason']}" if it["longReason"] else "")) if long_item_months(it) else ""])
+        fills.append(red if late else purple if long_item_months(it) else green if it["stages"]["step5"]["done"] else None)
     sheet(wb.create_sheet(), "안건 목록",
           ["안건ID", "구분", "구경", "PW/EPI", "제품/기술명", "요청자", "소속", "발제일", "접수일", "현재 단계", "단계 목표일", "지연일",
-           "검토 완료", "Risk", "결정 대기", "과제(완료/전체)", "상 미완료", "검증소위원회 회의", "검증위원회 회의", "최종승인일"],
-          rows, [14, 9, 8, 8, 34, 12, 16, 11, 11, 22, 11, 7, 9, 6, 8, 10, 8, 26, 26, 11], fills)
+           "검토 완료", "Risk", "결정 대기", "과제(완료/전체)", "상 미완료", "검증소위원회 회의", "검증위원회 회의", "최종승인일", "장기 안건", "장기 원인 / 사유"],
+          rows, [14, 9, 8, 8, 34, 12, 16, 11, 11, 22, 11, 7, 9, 6, 8, 10, 8, 26, 26, 11, 9, 36], fills)
 
     # 3) 보완 과제
     rows, fills = [], []
