@@ -528,6 +528,7 @@
     var view = $("#view");
     view.classList.toggle("account-view", state.route === "account");
     if (MEMBER_ROUTES.indexOf(state.route) !== -1 && !isLoggedIn()) renderLoginRequired();
+    else if (state.route === "account") keepInputs(ACCOUNT_INPUTS, VIEWS.account);
     else VIEWS[state.route]();
     if (animate) { view.classList.remove("enter"); void view.offsetWidth; view.classList.add("enter"); }
   }
@@ -998,6 +999,7 @@
         '<div style="display:flex;gap:6px"><select id="apSize" class="select" style="flex:1"><option value="">구경 선택</option><option value="300mm">300mm</option><option value="200mm">200mm</option></select>' +
         '<select id="apType" class="select" style="flex:1"><option value="">PW / EPI</option><option value="PW">PW</option><option value="EPI">EPI</option></select></div></div>' +
       '<div class="field"><label for="apDate">발제일</label><input id="apDate" type="date" class="input" value="' + today() + '" /></div>' +
+      '<div class="field"><label for="apMs">제품 MS <span class="muted">(사업계획 반영 여부 확인용 · 여러 개는 , 로 구분)</span></label><input id="apMs" class="input" maxlength="300" placeholder="예) MS-12345" /></div>' +
       '<div class="field full"><label for="apTitle">제품 / 기술명 <span class="req">*</span></label><input id="apTitle" class="input" maxlength="200" placeholder="예) 차세대 SiC 전력반도체 모듈 Gen-4" /></div>' +
       '<div class="field"><label for="apReq">요청자 성명 <span class="req">*</span></label><input id="apReq" class="input" maxlength="100" placeholder="예) 홍길동 책임" value="' + esc(me.name ? me.name + (me.title ? " " + me.title : "") : "") + '" /></div>' +
       '<div class="field"><label for="apDept">소속 부서 <span class="req">*</span></label><input id="apDept" class="input" maxlength="100" placeholder="예) 제품개발팀" value="' + esc(me.team || "") + '" /></div>' +
@@ -1046,6 +1048,7 @@
     fd.append("title", title); fd.append("requester", req); fd.append("requesterDept", dept);
     fd.append("requesterEmail", email); fd.append("proposalDate", $("#apDate").value || today());
     fd.append("summary", $("#apSummary").value);
+    fd.append("ms", $("#apMs").value.trim());
     state.apply.files.forEach(function (f) { fd.append("files", f, f.name); });
     var btn = $("[data-action=applySubmit]");
     btn.disabled = true; btn.textContent = "⏳ 등록 중...";
@@ -1129,7 +1132,7 @@
       '<div class="page-head"><div><h2>📖 양산이관 기준</h2><p>프로세스 안내 및 표준 양식 자료실</p></div></div>' +
       '<div class="card"><div class="tabs">' + tabs.map(function (t) {
         return '<button class="tab-btn ' + (c.tab === t[0] ? "active" : "") + '" data-action="critTab" data-tab="' + t[0] + '">' + t[1] + "</button>";
-      }).join("") + "</div>" + body + "</div>"
+      }).join("") + '</div><div class="crit-body">' + body + "</div></div>"
     );
     if (c.tab === "forms" && c.forms === null) loadForms();
   }
@@ -1327,6 +1330,10 @@
       '<div class="table-wrap" id="matrixBody"></div><div style="display:flex;justify-content:flex-end;gap:6px">' +
       '<button class="btn btn-primary btn-sm" data-action="matrixSave">💾 매트릭스 · 주소록 저장</button></div></div>' +
 
+      // 사업계획 (제품 MS 반영 여부)
+      '<div class="card full"><div class="card-title">📊 사업계획 (제품 MS 반영 여부) <span class="card-sub">엑셀 1개 파일 · 시트 4개(300mm PW / 300mm EPI / 200mm PW / 200mm EPI) · 시트마다 MS 시작 칸부터 아래로 읽어 안건의 제품 MS 와 비교</span></div>' +
+      '<div id="bizBody"><div class="muted">불러오는 중…</div></div></div>' +
+
       // 휴일 (영업일 계산)
       '<div class="card"><div class="card-title">📅 휴일 (영업일 계산에서 제외) <span class="card-sub">' + s.holidays.length + "일 등록</span></div>" +
       '<div class="card-sub">주말은 자동 제외됩니다. 공휴일·회사 휴무일을 YYYY-MM-DD 형식으로 한 줄에 하나씩(또는 쉼표로) 입력하세요.</div>' +
@@ -1356,6 +1363,8 @@
       Object.keys(s.teamEmails || {}).forEach(function (t) { state.teamEmailsDraft[t] = s.teamEmails[t].join("; "); });
     }
     renderMatrix();
+    renderBizplan();
+    if (!state.bizplan) api("GET", "/api/admin/bizplan").then(function (b) { state.bizplan = b; renderBizplan(); }).catch(function () { });
     renderTeamRows();
     if (state.adminUsers) renderUserRows();
     else api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; renderUserRows(); renderMailPanel(); }).catch(fail);
@@ -1386,16 +1395,56 @@
       '<thead><tr><th>부문</th><th class="mx-team">검토 팀</th>' + MATRIX_KEYS.map(function (k) { return "<th>" + k + "</th>"; }).join("") +
       '<th class="mx-mail">📒 메일 주소록 <span class="muted">(여러 명은 ; 로 구분)</span></th></tr></thead><tbody>' + SECTORS.map(function (sec) {
         var teams = state.teams.filter(function (t) { return t.sector === sec; });
+        var addRow = '<tr class="mx-add' + (teams.length ? "" : " mx-first") + '">' + (teams.length ? "" : '<td class="mx-sec">' + esc(sec) + "</td>") +
+          '<td colspan="' + (MATRIX_KEYS.length + 2) + '"><button class="link-btn" data-action="mxAddTeam" data-sector="' + esc(sec) + '">+ ' + esc(sec) + " 팀 추가</button></td></tr>";
         return teams.map(function (t, i) {
-          return '<tr class="' + (i === 0 ? "mx-first" : "") + '">' + (i === 0 ? '<td rowspan="' + teams.length + '" class="mx-sec">' + esc(sec) + "</td>" : "") +
+          return '<tr class="' + (i === 0 ? "mx-first" : "") + '">' + (i === 0 ? '<td rowspan="' + (teams.length + 1) + '" class="mx-sec">' + esc(sec) + "</td>" : "") +
             '<td class="mx-team">' + esc(t.name) + "</td>" +
             MATRIX_KEYS.map(function (k) {
               return '<td class="mx-cell"><input type="checkbox" data-mx-key="' + k + '" data-mx-team="' + esc(t.name) + '"' + ((mx[k] || []).indexOf(t.name) !== -1 ? " checked" : "") + " /></td>";
             }).join("") +
             '<td class="mx-mail"><input class="input" data-te-team="' + esc(t.name) + '" value="' + esc(te[t.name] || "") + '" placeholder="팀장 메일 (예: name@company.com; name2@company.com)" /></td></tr>';
-        }).join("");
+        }).join("") + addRow;
       }).join("") + '</tbody><tfoot><tr><td colspan="2"><b>선정 팀 수</b></td>' + MATRIX_KEYS.map(function (k) { return "<td><b>" + (mx[k] || []).length + "</b></td>"; }).join("") +
       '<td class="mx-mail muted">주소 입력 팀 ' + Object.keys(te).filter(function (k) { return (te[k] || "").trim(); }).length + "개</td></tr></tfoot></table>";
+  }
+  function renderBizplan() {
+    var box = $("#bizBody");
+    if (!box) return;
+    var b = state.bizplan;
+    if (!b) return;
+    var sheets = b.sheets || [], st = b.itemStatus;
+    box.innerHTML = '<div class="biz-head">' + (b.fileName ? '<span>📄 <b>' + esc(b.fileName) + '</b> <span class="muted">업로드 ' + esc(b.uploadedAt) + "</span></span>" : '<span class="muted">등록된 사업계획이 없습니다.</span>') +
+      '<button class="btn btn-upload btn-sm" data-action="bizPick">📤 사업계획 업로드 (.xlsx)</button><input id="bizFile" type="file" accept=".xlsx,.xlsm" style="display:none" /></div>' +
+      (b.fileName ? '<table class="biz-table"><thead><tr><th style="width:110px">구분</th><th style="width:200px">시트</th><th style="width:100px">MS 시작 칸</th><th style="width:90px">읽은 MS</th><th>예시 (앞 3개)</th></tr></thead><tbody>' +
+        MATRIX_KEYS.map(function (k) {
+          var c = (b.config || {})[k] || {}, err = (b.errors || {})[k];
+          return "<tr><td><b>" + k + "</b></td><td><select class=\"select\" data-bz-key=\"" + k + '" data-bz-f="sheet"><option value="">(시트 선택)</option>' +
+            sheets.map(function (n) { return '<option value="' + esc(n) + '"' + (c.sheet === n ? " selected" : "") + ">" + esc(n) + "</option>"; }).join("") + "</select></td>" +
+            '<td><input class="input" data-bz-key="' + k + '" data-bz-f="cell" value="' + esc(c.cell || "") + '" /></td>' +
+            "<td><b>" + ((b.counts || {})[k] || 0) + "</b>개</td>" +
+            "<td>" + (err ? '<span class="biz out">' + esc(err) + "</span>" : '<span class="muted">' + esc(((b.samples || {})[k] || []).join(", ")) + "</span>") + "</td></tr>";
+        }).join("") + "</tbody></table>" +
+        '<div class="biz-foot"><span class="card-sub">시트 이름에 300/200 과 PW/EPI 가 들어 있으면 자동으로 찾습니다. 다르면 시트·시작 칸을 고친 뒤 [다시 읽기].</span>' +
+        '<button class="btn btn-secondary btn-sm" data-action="bizReparse">🔄 이 설정으로 다시 읽기</button></div>' +
+        (st ? '<div class="biz-result">안건 확인 결과: ' + [["in", "✅ 반영"], ["partial", "◐ 일부"], ["other", "⚠️ 다른 구분"], ["out", "❌ 미반영"], ["noms", "MS 미입력"], ["notype", "구경 미지정"]].map(function (x) {
+          return x[1] + " <b>" + (st[x[0]] || 0) + "</b>";
+        }).join(" · ") + "</div>" : "")
+        : '<div class="card-sub">한 파일에 4개 시트로 넣어 업로드하세요. 기본 시작 칸: 300mm PW = C6, 300mm EPI = D4, 200mm PW = C4, 200mm EPI = A6 (업로드 후 바꿀 수 있음)</div>');
+    var inp = $("#bizFile");
+    if (inp) inp.onchange = function () {
+      if (!this.files.length) return;
+      var fd = new FormData(); fd.append("file", this.files[0], this.files[0].name);
+      toast("사업계획을 읽는 중…");
+      api("POST", "/api/admin/bizplan", fd).then(bizDone).catch(fail);
+      this.value = "";
+    };
+  }
+  function bizDone(b) {
+    state.bizplan = b; renderBizplan();
+    loadAll().then(function () { if (state.detail) renderDetail(); });
+    var total = Object.keys(b.counts || {}).reduce(function (n, k) { return n + b.counts[k]; }, 0);
+    toast("사업계획 MS " + total + "개를 읽고 안건 반영 여부를 다시 확인했습니다.", "ok");
   }
   function renderUserRows() {
     var body = $("#userBody");
@@ -1527,6 +1576,8 @@
       '<div class="field"><label>소속 부서</label><input class="input" data-dfield="requesterDept" value="' + esc(d.requesterDept) + '" ' + dis + " /></div>" +
       '<div class="field"><label>요청자 이메일</label><input class="input" data-dfield="requesterEmail" value="' + esc(d.requesterEmail) + '" ' + dis + " /></div>" +
       '<div class="field"><label>발제일</label><input type="date" class="input" data-dfield="proposalDate" value="' + esc(d.proposalDate) + '" ' + dis + " /></div>" +
+      '<div class="field"><label>제품 MS</label><input class="input" data-dfield="ms" value="' + esc(d.ms || "") + '" placeholder="여러 개는 , 로 구분" ' + dis + " /></div>" +
+      '<div class="field"><span class="lbl">사업계획 반영 여부</span><div id="bizBox">' + bizBadge(d) + "</div></div>" +
       '<div class="field span4"><label>양산이관 주요 내용 및 변경점</label><textarea class="textarea" data-dfield="summary" ' + dis + ">" + esc(d.summary) + "</textarea></div>" +
       '<div class="field span4"><span class="lbl">첨부파일</span><div id="attBox"></div></div></div></div>' +
 
@@ -1561,6 +1612,22 @@
     renderAttachments(); renderStepper(); renderMeetings(); renderAudit(); renderTeamPick(); renderMailPanel(); renderReviews(); renderTaskBox();
   }
 
+  // 사업계획(관리자 업로드) 대비 제품 MS 반영 여부 — 서버가 계산해 안건에 기록
+  function bizBadge(d) {
+    var orig = state.detail && state.detail.orig, bp = d.bizPlan;
+    if (orig && (orig.ms || "") !== (d.ms || "") || orig && (orig.productSize !== d.productSize || orig.productType !== d.productType)) return '<span class="biz none">💾 저장하면 다시 확인합니다</span>';
+    if (!bp) bp = { status: "noplan" };  // 사업계획을 한 번도 올리지 않았으면 확인 기록이 없음
+    var key = esc(bp.key || "");
+    return {
+      "in": '<span class="biz in">✅ 반영 <small>' + key + " 사업계획</small></span>",
+      partial: '<span class="biz part" title="미반영 MS: ' + esc((bp.missing || []).join(", ")) + '">◐ 일부 반영 <small>미반영 ' + esc((bp.missing || []).join(", ")) + "</small></span>",
+      other: '<span class="biz part">⚠️ 미반영 <small>' + esc((bp.others || []).join(", ")) + " 사업계획에 있음</small></span>",
+      out: '<span class="biz out">❌ 미반영 <small>' + key + " 사업계획에 없음</small></span>",
+      noms: '<span class="biz none">MS 미입력</span>',
+      notype: '<span class="biz none">구경·PW/EPI 미지정</span>',
+      noplan: '<span class="biz none">사업계획 미등록' + (state.isAdmin ? " (관리자 모드에서 업로드)" : "") + "</span>"
+    }[bp.status] || "";
+  }
   function renderAttachments() {
     var d = state.detail.draft, box = $("#attBox");
     box.innerHTML = '<div class="file-list"' + (state.isAdmin ? ' data-drop="detail" title="파일을 끌어다 놓으면 바로 업로드됩니다"' : "") + ">" + (d.attachments.length ? d.attachments.map(function (a) {
@@ -2530,6 +2597,27 @@
       if (sec) sec.classList.toggle("collapsed", c[k]);
       el.textContent = c[k] ? "펼치기 ▼" : "접기 ▲";
     },
+    bizPick: function () { $("#bizFile").click(); },
+    bizReparse: function () {
+      var cfg = {};
+      $all("[data-bz-key]").forEach(function (el) {
+        var k = el.getAttribute("data-bz-key");
+        (cfg[k] = cfg[k] || {})[el.getAttribute("data-bz-f")] = el.value.trim();
+      });
+      api("PUT", "/api/admin/bizplan", { config: cfg }).then(bizDone).catch(fail);
+    },
+    mxAddTeam: function (el) {
+      var sec = el.getAttribute("data-sector"), name = (prompt(sec + " 부문에 추가할 팀 이름을 입력하세요.") || "").trim();
+      if (!name) return;
+      if (state.teams.some(function (t) { return t.name === name; })) { toast("이미 있는 팀입니다: " + name, "err"); return; }
+      var list = state.teams.slice(), last = -1;
+      list.forEach(function (t, i) { if (t.sector === sec) last = i; });
+      list.splice(last === -1 ? list.length : last + 1, 0, { name: name, sector: sec, canApply: false });
+      api("PUT", "/api/admin/teams", { teams: list }).then(function (teams) {
+        state.teams = teams; state.teamDraft = null; renderAdmin();
+        toast(sec + " 부문에 '" + name + "' 팀을 추가했습니다. 매트릭스 체크·주소록 입력 후 [💾 저장]을 누르세요.", "ok");
+      }).catch(fail);
+    },
     auditToggle: function () { state.detail.showAudit = !state.detail.showAudit; renderAudit(); },
     taskToggle: function (el) {
       el.disabled = true;
@@ -2583,7 +2671,10 @@
       var card = $("#signupCard");
       card.classList.toggle("open", state.showSignup);
       el.textContent = state.showSignup ? "▲ 가입 신청 닫기" : "📝 가입 신청";
-      if (state.showSignup) setTimeout(function () { card.scrollIntoView({ behavior: "smooth", block: "start" }); $("#suEmp").focus(); }, 60);
+      if (state.showSignup) setTimeout(function () {
+        card.scrollIntoView({ behavior: "smooth", block: "start" });
+        if (!card.contains(document.activeElement)) $("#suEmp").focus();  // 이미 입력 중이면 커서를 빼앗지 않음
+      }, 60);
     },
     userLogout: function () {
       api("POST", "/api/users/logout").catch(function () { });
@@ -2864,10 +2955,18 @@
 
   // 신청 폼에서 구분을 바꿀 때 입력값 유지
   function keepApplyInputs(fn) {
-    var ids = ["apTitle", "apReq", "apDept", "apEmail", "apSummary", "apDate", "apSize", "apType"], saved = {};
-    ids.forEach(function (id) { var el = $("#" + id); if (el) saved[id] = el.value; });
+    keepInputs(["apTitle", "apReq", "apDept", "apEmail", "apSummary", "apDate", "apSize", "apType", "apMs"], fn);
+  }
+  // 화면을 다시 그려도 입력 중인 값 유지 (데이터 갱신·접속자 갱신 등으로 다시 그려질 때)
+  var ACCOUNT_INPUTS = ["loginEmp", "loginPw", "suEmp", "suName", "suTitle", "suTeam", "suEmail", "suPw", "suPw2"];
+  function keepInputs(ids, fn) {
+    var saved = {}, act = document.activeElement, focusId = act && ids.indexOf(act.id) !== -1 ? act.id : "", sel = null;
+    if (focusId) { try { sel = [act.selectionStart, act.selectionEnd]; } catch (e) { sel = null; } }
+    ids.forEach(function (id) { var el = $("#" + id); if (el && el.value) saved[id] = el.value; });
     fn();
-    ids.forEach(function (id) { var el = $("#" + id); if (el && saved[id] !== undefined) el.value = saved[id]; });
+    ids.forEach(function (id) { var el = $("#" + id); if (el && saved[id] !== undefined && !el.value) el.value = saved[id]; });
+    var f = focusId && $("#" + focusId);  // 입력 중이던 칸에 커서를 그대로 둔다
+    if (f) { f.focus(); if (sel && sel[0] !== null) { try { f.setSelectionRange(sel[0], sel[1]); } catch (e) { /* select 등 */ } } }
   }
 
   function setFilter(path, value) {
@@ -2887,6 +2986,7 @@
       d[f] = el.value;
       if (f === "category") { d.npSp = d.category === "제품" ? (d.npSp || "NP") : ""; renderDetail(); }
       if (f === "productSize" || f === "productType") renderTeamPick();
+      if (f === "ms" || f === "productSize" || f === "productType") { var bb = $("#bizBox"); if (bb) bb.innerHTML = bizBadge(d); }
       return;
     }
     if (el.hasAttribute("data-stage-done")) {

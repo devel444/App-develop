@@ -656,3 +656,22 @@ tbody tr.row-pending { background: #f5f3ff; }
 .section.collapsed .section-head { margin-bottom: 0; }
 .sec-peek { font-size: 12px; font-weight: 600; margin-left: 8px; }
 .act-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+
+/* ===== v16: 화면 흔들림 방지 · 사업계획 · 팀 추가 ===== */
+/* 페이지/탭마다 내용 길이가 달라 스크롤바가 생겼다 사라지며 화면이 좌우로 흔들리던 문제 → 스크롤바 자리를 항상 확보 */
+html { overflow-y: scroll; scrollbar-gutter: stable; }
+.matrix-table tr.mx-add td { text-align: left; padding: 3px 8px; background: #fcfcfd; }
+.biz { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 10px; border-radius: 8px; font-weight: 800; font-size: 13px; border: 1px solid var(--border); background: #f8fafc; color: var(--text-sub); }
+.biz small { font-weight: 600; font-size: 11.5px; }
+.biz.in { background: #f0fdf4; border-color: #86efac; color: #15803d; }
+.biz.part { background: #fffbeb; border-color: #fcd34d; color: #92400e; }
+.biz.out { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
+.biz.none { font-weight: 600; }
+.biz-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.biz-table { width: 100%; border-collapse: collapse; }
+.biz-table th, .biz-table td { padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 12.5px; text-align: left; }
+.biz-table .select, .biz-table .input { width: 100%; padding: 3px 6px; font-size: 12.5px; }
+.biz-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 8px; font-size: 12.5px; }
+.biz-result { margin-top: 8px; font-size: 12.5px; color: var(--text-sub); }
+/* 기준 페이지 탭마다 높이가 달라 화면이 위아래로 튀지 않게 최소 높이 확보 */
+.crit-body { min-height: 640px; }

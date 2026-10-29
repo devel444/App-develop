@@ -63,7 +63,7 @@ PRESENCE_TTL_SEC = 60
 #  - sector  : 6대 부문 검토 담당 팀 (해당 부문 Risk 행 작성 권한)
 REVIEW_TEAMS = {
     "품질/수율": ["종합공정1팀", "종합공정2팀", "종합공정담당"],
-    "장비": ["장비기술1팀", "장비기술2팀", "장비기술3팀", "Metrology기술팀", "MS장비기술팀", "장비기술담당"],
+    "장비": ["장비기술1팀", "장비기술2팀", "장비기술3팀", "Metrology기술팀", "MS장비기술팀", "GR장비기술팀", "장비기술담당"],
     "생산성": ["제조운영팀", "제조혁신담당"],
     "Process": ["LS공정기술1팀", "LS공정기술2팀", "LS공정기술3팀", "오염제어기술팀", "MS공정기술팀", "GR기술1팀", "GR기술2팀",
                 "EPI기술1팀", "EPI기술2팀", "청주EPI기술팀", "LSwafering기술담당", "MSwafering기술담당", "Growing기술담당", "EPI기술담당"],
@@ -78,6 +78,8 @@ DEFAULT_TEAMS = [{"name": t, "sector": "", "canApply": True} for t in DEV_TEAMS]
 OLD_SAMPLE_TEAMS = {"결정성장개발팀", "EPI개발팀", "Wafering개발팀", "제품개발팀", "품질보증팀", "설비기술팀", "생산관리팀",
                     "공정기술팀", "제조팀", "경영기획팀"}
 TITLES = ["팀장", "Pro"]
+# 이전 버전 설치본에 한 번 추가할 팀: (팀 이름, 부문, 이 팀 뒤에 넣기)
+TEAM_ADDITIONS = [("GR장비기술팀", "장비", "MS장비기술팀")]
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +524,8 @@ def keep_task_tracking(new: Dict[str, Any], old: Dict[str, Any], by: str) -> Non
 
 
 ITEM_FIELD_LABELS = [("category", "구분"), ("npSp", "NP/SP"), ("productSize", "구경"), ("productType", "PW/EPI"), ("title", "제품/기술명"),
-                     ("requester", "요청자"), ("requesterDept", "소속 부서"), ("requesterEmail", "요청자 이메일"), ("proposalDate", "발제일")]
+                     ("requester", "요청자"), ("requesterDept", "소속 부서"), ("requesterEmail", "요청자 이메일"), ("proposalDate", "발제일"),
+                     ("ms", "제품 MS")]
 
 
 def diff_item(old: Dict[str, Any], new: Dict[str, Any]) -> List[str]:
@@ -702,6 +705,8 @@ def normalize_item(raw: Dict[str, Any]) -> Dict[str, Any]:
         "summary": _text(raw.get("summary")),
         "note": _text(raw.get("note")),
         "longReason": _text(raw.get("longReason"))[:500],
+        "ms": _s(raw.get("ms"))[:300],
+        "bizPlan": raw.get("bizPlan") if isinstance(raw.get("bizPlan"), dict) else None,
         # 기존 data.js 로 이관된 안건은 이미 접수된 것으로 본다.
         "accepted": bool(raw.get("accepted", True)),
         "acceptedAt": _date(raw.get("acceptedAt")),
@@ -1069,6 +1074,19 @@ class Store:
             base["teams"] = teams
             base["reviewMatrix"] = normalize_matrix(base.get("reviewMatrix"))
             base["teamEmails"] = normalize_team_emails(base.get("teamEmails"))
+            # 한 번만 적용하는 팀 추가 (이미 저장된 팀 목록에도 반영, 나중에 삭제하면 다시 넣지 않음)
+            done = base["migrations"] = list(base.get("migrations") or [])
+            added = False
+            for name, sector, after in TEAM_ADDITIONS:
+                if f"team:{name}" in done:
+                    continue
+                done.append(f"team:{name}")
+                added = True
+                if not any(t["name"] == name for t in teams):
+                    pos = next((i + 1 for i, t in enumerate(teams) if t["name"] == after), len(teams))
+                    teams.insert(pos, {"name": name, "sector": sector, "canApply": False})
+            if added and self.settings_path.exists():  # 팀 목록·적용 기록만 저장 (다른 설정은 건드리지 않음)
+                self._write_json(self.settings_path, {**cur, "teams": teams, "migrations": done})
             return base
 
     def save_settings(self, s: Dict[str, Any]) -> None:
@@ -2122,13 +2140,14 @@ def h_apply(req: Req):
         item = normalize_item({
             "id": next_item_id(data["items"], p_date[:4]), "category": f.get("category", "제품"), "npSp": f.get("npSp", "NP"),
             "title": title[:200], "requester": requester[:100], "requesterDept": dept[:100],
-            "requesterEmail": email, "proposalDate": p_date, "summary": (f.get("summary") or "")[:5000],
+            "requesterEmail": email, "proposalDate": p_date, "summary": (f.get("summary") or "")[:5000], "ms": f.get("ms", ""),
             "productSize": f.get("productSize", ""), "productType": f.get("productType", ""),
             "accepted": False, "source": "신청", "stages": {}, "reviews": {}, "tasks": [],
             "applicantEmpId": user["empId"] if user else "",
             "notify": {"status": "pending", "message": "알림 메일 발송 대기", "at": now_str()},
         })
         add_audit(item, f"{dept} {requester}".strip(), "양산이관 신청 등록")
+        item["bizPlan"] = biz_status(item, load_bizplan())
         data["items"].insert(0, item)
         return item
 
@@ -2181,11 +2200,13 @@ def h_update_item(req: Req):
             add_audit(merged, "관리자", "접수 승인")
         add_audit(merged, "관리자", *diff_item(cur, merged))
         final["now"] = merged["stages"]["step5"]["done"] and not cur["stages"]["step5"]["done"]
+        merged["bizPlan"] = biz_status(merged, plan)
         merged["rev"] = cur["rev"] + 1
         merged["updatedAt"] = now_str()
         data["items"][data["items"].index(cur)] = merged
         return merged
     final: Dict[str, bool] = {}
+    plan = load_bizplan()
     item = store.mutate(_update)
     if final.get("now"):
         threading.Thread(target=notify_final, args=(item_id,), daemon=True).start()
@@ -2241,6 +2262,7 @@ def h_bulk_replace(req: Req):
         raise HTTPException(400, "items 목록이 필요합니다.")
 
     hol = holiday_set()
+    plan = load_bizplan()
 
     def _bulk(data):
         cur = {i["id"]: i for i in data["items"]}
@@ -2262,6 +2284,7 @@ def h_bulk_replace(req: Req):
                 add_audit(it, "관리자", "엑셀 일괄 업로드로 등록")
                 it["rev"] = old["rev"] + 1
             it["updatedAt"] = now_str()
+            it["bizPlan"] = biz_status(it, plan)
             out.append(it)
         data["items"] = out
         return len(out)
@@ -2463,6 +2486,169 @@ def notify_final(item_id: str) -> None:
         pass
 
 
+# --- 사업계획 (제품 MS 반영 여부) -------------------------------------------
+# 한 엑셀 파일에 4개 시트(300mm PW / 300mm EPI / 200mm PW / 200mm EPI). 시트마다 MS 가 시작되는 칸부터 아래로 읽는다.
+BIZPLAN_DEFAULT_CELLS = {"300mm PW": "C6", "300mm EPI": "D4", "200mm PW": "C4", "200mm EPI": "A6"}
+
+
+def bizplan_dir() -> Path:
+    d = store.root / "bizplan"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def load_bizplan() -> Dict[str, Any]:
+    p = bizplan_dir() / "bizplan.json"
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def norm_ms(v: Any) -> str:
+    if isinstance(v, float) and v.is_integer():
+        v = int(v)
+    return re.sub(r"\s+", "", _s(v)).upper()
+
+
+def split_ms(v: Any) -> List[str]:
+    return [m for m in (norm_ms(x) for x in re.split(r"[,;/\n]+", _s(v))) if m]
+
+
+def _guess_sheet(names: List[str], key: str) -> str:
+    size, typ = key.split()
+    for n in names:
+        u = re.sub(r"[\s_\-]+", "", n).upper().replace("MM", "")
+        if size[:3] in u and (("EPI" in u) if typ == "EPI" else ("PW" in u and "EPI" not in u)):
+            return n
+    return ""
+
+
+def parse_bizplan(path: Path, config: Dict[str, Dict[str, str]]) -> Dict[str, Any]:
+    from openpyxl import load_workbook
+    from openpyxl.utils.cell import column_index_from_string, coordinate_from_string
+    wb = load_workbook(path, read_only=True, data_only=True)
+    try:
+        names = wb.sheetnames
+        lists, cfg, errors = {}, {}, {}
+        for key, default_cell in BIZPLAN_DEFAULT_CELLS.items():
+            c = config.get(key) or {}
+            sheet = c.get("sheet") if c.get("sheet") in names else _guess_sheet(names, key)
+            cell = _s(c.get("cell")).upper() or default_cell
+            cfg[key] = {"sheet": sheet, "cell": cell}
+            if not sheet:
+                errors[key] = "시트를 찾지 못했습니다. 시트를 직접 고르세요."
+                lists[key] = []
+                continue
+            try:
+                col_letter, row = coordinate_from_string(cell)
+                col = column_index_from_string(col_letter)
+            except ValueError:
+                errors[key] = f"시작 칸 '{cell}' 형식이 올바르지 않습니다. (예: C6)"
+                lists[key] = []
+                continue
+            out, blanks = [], 0
+            for (v,) in wb[sheet].iter_rows(min_row=row, min_col=col, max_col=col, values_only=True):
+                m = norm_ms(v)
+                if not m:
+                    blanks += 1
+                    if blanks >= 30:  # 빈칸이 30줄 이어지면 목록 끝으로 본다
+                        break
+                    continue
+                blanks = 0
+                if m not in out:
+                    out.append(m)
+            lists[key] = out
+        return {"sheets": names, "config": cfg, "lists": lists, "errors": errors}
+    finally:
+        wb.close()
+
+
+def biz_status(item: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    """제품 MS 가 해당 구분(구경·PW/EPI) 사업계획에 들어 있는지."""
+    lists = plan.get("lists") or {}
+    if not any(lists.values()):
+        return {"status": "noplan"}
+    ms = split_ms(item.get("ms"))
+    if not ms:
+        return {"status": "noms"}
+    key = matrix_key(item.get("productSize", ""), item.get("productType", ""))
+    if not key:
+        return {"status": "notype"}
+    mine = set(lists.get(key) or [])
+    found = [m for m in ms if m in mine]
+    missing = [m for m in ms if m not in mine]
+    others = sorted({k for k, v in lists.items() if k != key and any(m in set(v) for m in missing)})
+    status = "in" if not missing else "partial" if found else "other" if others else "out"
+    return {"status": status, "key": key, "found": found, "missing": missing, "others": others, "planAt": plan.get("uploadedAt", "")}
+
+
+def bizplan_summary(plan: Dict[str, Any]) -> Dict[str, Any]:
+    return {"fileName": plan.get("fileName", ""), "uploadedAt": plan.get("uploadedAt", ""), "sheets": plan.get("sheets", []),
+            "config": plan.get("config") or {k: {"sheet": "", "cell": v} for k, v in BIZPLAN_DEFAULT_CELLS.items()},
+            "errors": plan.get("errors", {}),
+            "counts": {k: len(v) for k, v in (plan.get("lists") or {}).items()},
+            "samples": {k: v[:3] for k, v in (plan.get("lists") or {}).items()}}
+
+
+def _apply_bizplan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    (bizplan_dir() / "bizplan.json").write_text(json.dumps(plan, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def _all(data):  # rev 는 올리지 않음 (편집 중인 화면과 충돌 방지)
+        res = {}
+        for it in data["items"]:
+            it["bizPlan"] = biz_status(it, plan)
+            res[it["bizPlan"]["status"]] = res.get(it["bizPlan"]["status"], 0) + 1
+        return res
+    out = bizplan_summary(plan)
+    out["itemStatus"] = store.mutate(_all)
+    return out
+
+
+def _require_openpyxl() -> None:
+    try:
+        import openpyxl  # noqa: F401
+    except ImportError:
+        raise HTTPException(500, f"[XLSX-1] openpyxl 미설치 (서버 Python: {sys.executable})")
+
+
+def h_bizplan_get(req: Req):
+    return bizplan_summary(load_bizplan())
+
+
+def h_bizplan_upload(req: Req):
+    _require_openpyxl()
+    _, files = req.form()
+    files = [f for f in files if f[1].lower().endswith((".xlsx", ".xlsm"))]
+    if not files:
+        raise HTTPException(400, "사업계획 엑셀 파일(.xlsx)을 선택하세요.")
+    name, data = files[0][1], files[0][2]
+    path = bizplan_dir() / "business_plan.xlsx"
+    if path.exists():  # 이전 파일은 백업
+        bk = store.backup_dir / "bizplan"
+        bk.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, bk / f"business_plan_{dt.datetime.now():%Y%m%d_%H%M%S}.xlsx")
+    path.write_bytes(data)
+    old = load_bizplan()
+    try:
+        parsed = parse_bizplan(path, old.get("config") or {})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        raise HTTPException(400, f"사업계획 파일을 읽지 못했습니다: {type(e).__name__} - {str(e)[:80]}")
+    return _apply_bizplan({**parsed, "fileName": safe_filename(name), "uploadedAt": now_str()})
+
+
+def h_bizplan_config(req: Req):
+    _require_openpyxl()
+    path = bizplan_dir() / "business_plan.xlsx"
+    if not path.exists():
+        raise HTTPException(400, "먼저 사업계획 파일을 업로드하세요.")
+    cfg = req.json().get("config") or {}
+    old = load_bizplan()
+    parsed = parse_bizplan(path, {k: v for k, v in cfg.items() if k in BIZPLAN_DEFAULT_CELLS and isinstance(v, dict)})
+    return _apply_bizplan({**parsed, "fileName": old.get("fileName", ""), "uploadedAt": old.get("uploadedAt", now_str())})
+
+
 # --- 엑셀(xlsx) 현황 보고서 (openpyxl 필요) --------------------------------
 LONG_TERM_MONTHS = 3
 
@@ -2546,6 +2732,10 @@ def stage_now(item: Dict[str, Any]) -> Tuple[str, str, int]:
         if not (st[k]["done"] or st[k]["skipped"]):
             return f"{i + 1}. {STAGE_NAMES[i]}", st[k]["target"], _days_late(st[k]["target"])
     return f"5. {STAGE_NAMES[4]}", st["step5"]["target"], _days_late(st["step5"]["target"])
+
+
+BIZ_LABEL = {"in": "반영", "partial": "일부 반영", "other": "다른 구분에 있음", "out": "미반영", "noms": "MS 미입력",
+             "notype": "구경 미지정", "noplan": "사업계획 미등록"}
 
 
 def build_report_xlsx(items: List[Dict[str, Any]]) -> bytes:
@@ -2645,12 +2835,13 @@ def build_report_xlsx(items: List[Dict[str, Any]]) -> bytes:
                      f"{sum(1 for t in it['tasks'] if t['status'] == '완료')}/{len(it['tasks'])}", len(open_tasks(it, "상")) or "",
                      mt("step2"), mt("step4"), it["stages"]["step5"]["doneAt"],
                      f"{long_item_months(it)}개월+" if long_item_months(it) else "",
+                     it["ms"], BIZ_LABEL.get((it.get("bizPlan") or {}).get("status", ""), ""),
                      (long_item_cause(it) + (f" / 사유: {it['longReason']}" if it["longReason"] else "")) if long_item_months(it) else ""])
         fills.append(red if late else purple if long_item_months(it) else green if it["stages"]["step5"]["done"] else None)
     sheet(wb.create_sheet(), "안건 목록",
           ["안건ID", "구분", "구경", "PW/EPI", "제품/기술명", "요청자", "소속", "발제일", "접수일", "현재 단계", "단계 목표일", "지연일",
-           "검토 완료", "Risk", "결정 대기", "과제(완료/전체)", "상 미완료", "검증소위원회 회의", "검증위원회 회의", "최종승인일", "장기 안건", "장기 원인 / 사유"],
-          rows, [14, 9, 8, 8, 34, 12, 16, 11, 11, 22, 11, 7, 9, 6, 8, 10, 8, 26, 26, 11, 9, 36], fills)
+           "검토 완료", "Risk", "결정 대기", "과제(완료/전체)", "상 미완료", "검증소위원회 회의", "검증위원회 회의", "최종승인일", "장기 안건", "제품 MS", "사업계획 반영", "장기 원인 / 사유"],
+          rows, [14, 9, 8, 8, 34, 12, 16, 11, 11, 22, 11, 7, 9, 6, 8, 10, 8, 26, 26, 11, 9, 16, 12, 36], fills)
 
     # 3) 보완 과제
     rows, fills = [], []
@@ -3401,6 +3592,9 @@ route("POST", "/api/items/{id}/tasks/{taskId}/progress", h_task_progress)
 route("POST", "/api/items/{id}/tasks/{taskId}/decide", h_task_decide, admin=True)
 route("GET", "/api/items/{id}/taskfiles/{name}", h_task_file)
 route("GET", "/api/report.xlsx", h_report_xlsx)
+route("GET", "/api/admin/bizplan", h_bizplan_get, admin=True)
+route("POST", "/api/admin/bizplan", h_bizplan_upload, admin=True)
+route("PUT", "/api/admin/bizplan", h_bizplan_config, admin=True)
 
 STATIC_DIR = (BASE_DIR / "static").resolve()
 
