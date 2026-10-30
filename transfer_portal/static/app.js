@@ -1161,13 +1161,13 @@
     setView(
       '<div class="page-head"><div><h2>👤 로그인 / 가입</h2><p>아이디는 사번입니다 · 가입 신청 후 관리자(간사) 승인이 끝나면 로그인할 수 있습니다</p></div></div>' +
       '<div class="account-col"><div class="card login-card"><div class="card-title">🔐 로그인</div>' +
-      '<div class="field"><label>사번</label><input id="loginEmp" class="input" autocomplete="username" placeholder="예) 2015001" /></div>' +
+      '<div class="field"><label>사번</label><input id="loginEmp" class="input" autocomplete="username" placeholder="예) 250000" /></div>' +
       '<div class="field"><label>비밀번호</label><input id="loginPw" type="password" class="input" autocomplete="current-password" /></div>' +
       '<button class="btn btn-primary btn-lg" data-action="userLogin">로그인</button>' +
       '<div class="login-foot"><span class="card-sub">비밀번호를 잊었으면 관리자에게 임시 비밀번호 발급을 요청하세요.</span>' +
       '<button class="btn btn-secondary btn-sm" data-action="toggleSignup">' + (state.showSignup ? "▲ 가입 신청 닫기" : "📝 가입 신청") + "</button></div></div>" +
       '<div class="card signup-card' + (state.showSignup ? " open" : "") + '" id="signupCard"><div class="card-title">📝 가입 신청 <span class="card-sub">관리자 승인 후 로그인할 수 있습니다</span></div><div class="info-grid" style="grid-template-columns:1fr 1fr">' +
-      '<div class="field"><label>사번 <span class="req">*</span></label><input id="suEmp" class="input" maxlength="20" placeholder="영문/숫자" /></div>' +
+      '<div class="field"><label>사번 <span class="req">*</span></label><input id="suEmp" class="input" maxlength="20" placeholder="예) 250000" /></div>' +
       '<div class="field"><label>이름 <span class="req">*</span></label><input id="suName" class="input" maxlength="30" /></div>' +
       '<div class="field"><label>직급 <span class="req">*</span></label><select id="suTitle" class="select"><option value="">직급 선택</option><option value="팀장">팀장</option><option value="Pro">Pro</option></select></div>' +
       '<div class="field"><label>팀 <span class="req">*</span></label><select id="suTeam" class="select">' + teamOptions("") + "</select></div>" +
@@ -1350,6 +1350,7 @@
       // 메일 발송 설정
       '<div class="card"><div class="card-title">⚙️ 메일 발송 설정</div>' + mailDiagHtml(s.mailDiag) +
       '<label class="check-line"><input type="checkbox" id="stPreferOutlook" ' + (s.mail.preferOutlook ? "checked" : "") + " /> 서버 PC Outlook 자동 발송 우선 사용 (실패 시 SMTP)</label>" +
+      '<label class="check-line"><input type="checkbox" id="stFastDraft" ' + (s.mail.fastDraft !== false ? "checked" : "") + " /> 검토 요청 메일 작성창을 .eml 초안으로 빠르게 열기 (권장 · .eml 이 Outlook 이 아닌 프로그램으로 열리면 해제)</label>" +
       '<div class="info-grid" style="grid-template-columns:2fr 1fr"><div class="field"><label>SMTP 호스트</label><input id="stSmtpHost" class="input" value="' + esc(smtp.host) + '" placeholder="mail.company.com" /></div>' +
       '<div class="field"><label>포트</label><input id="stSmtpPort" type="number" class="input" value="' + esc(smtp.port) + '" /></div>' +
       '<div class="field"><label>계정 (선택)</label><input id="stSmtpUser" class="input" value="' + esc(smtp.username) + '" autocomplete="off" /></div>' +
@@ -2391,6 +2392,7 @@
     }
     if (action === "mailOpen") {
       if (!mailRecipients().length) { toast("받는 사람을 1명 이상 선택하세요.", "err"); return; }
+      toast("Outlook 작성창을 여는 중…");
       api("POST", "/api/mail/review/outlook", mailPayload()).then(function () {
         toast("Outlook 메일 작성창을 열었습니다. [보내기]만 누르세요.", "ok");
       }).catch(function (e) { if (e.status === 409) downloadEml(); else fail(e); });
@@ -2850,7 +2852,7 @@
     },
     saveMailCfg: function () {
       api("PUT", "/api/settings", {
-        mail: { preferOutlook: $("#stPreferOutlook").checked },
+        mail: { preferOutlook: $("#stPreferOutlook").checked, fastDraft: $("#stFastDraft").checked },
         smtp: { host: $("#stSmtpHost").value, port: $("#stSmtpPort").value, username: $("#stSmtpUser").value, password: $("#stSmtpPw").value, sender: $("#stSmtpSender").value, useTls: $("#stSmtpTls").checked }
       }).then(function (s) { state.admin = s; renderAdmin(); toast("메일 발송 설정을 저장했습니다.", "ok"); }).catch(fail);
     },

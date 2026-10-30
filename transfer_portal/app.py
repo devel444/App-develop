@@ -888,7 +888,7 @@ def default_settings(with_password: bool = False) -> Dict[str, Any]:
         "secretaryEmails": [],
         "leaderEmails": [],
         "portalUrl": "",
-        "mail": {"preferOutlook": True},
+        "mail": {"preferOutlook": True, "fastDraft": True},
         "smtp": {"host": "", "port": 25, "useTls": False, "username": "", "password": "", "sender": ""},
         "reviewers": [],
         "teamEmails": {},
@@ -1331,10 +1331,16 @@ def explain_outlook_error(e: Exception) -> str:
     return text
 
 
+_OUTLOOK_STATE: Dict[str, bool] = {}
+
+
 def outlook_mail(to: List[str], cc: List[str], subject: str, html_body: str, display: bool) -> None:
     if os.name != "nt":
         raise RuntimeError("Outlook 연동은 Windows 서버 PC에서만 가능합니다.")
     with OUTLOOK_LOCK:
+        if is_elevated() and _OUTLOOK_STATE.get("directFailedElevated"):
+            _outlook_via_explorer(to, cc, subject, html_body, display)
+            return
         try:
             _outlook_direct(to, cc, subject, html_body, display)
             return
@@ -1344,6 +1350,7 @@ def outlook_mail(to: List[str], cc: List[str], subject: str, html_body: str, dis
                 # → 탐색기(일반 권한)를 통해 별도 작업으로 실행한다.
                 try:
                     _outlook_via_explorer(to, cc, subject, html_body, display)
+                    _OUTLOOK_STATE["directFailedElevated"] = True  # 다음부터는 바로 우회
                     return
                 except Exception as second:  # noqa: BLE001
                     raise RuntimeError(f"{explain_outlook_error(first)} / 일반 권한 우회 실행도 실패: {second}")
@@ -1415,7 +1422,7 @@ def _outlook_via_explorer(to: List[str], cc: List[str], subject: str, html_body:
                 if text == "OK":
                     return
                 raise RuntimeError(text[4:] if text.startswith("ERR ") else text)
-            time.sleep(0.5)
+            time.sleep(0.2)
         raise RuntimeError("60초 안에 응답이 없습니다. (회사 보안 정책으로 PowerShell 실행이 막혔을 수 있습니다)")
     finally:
         for f in (data, result, ps1, cmd):
@@ -1726,6 +1733,9 @@ def build_new_item_mail(item: Dict[str, Any], settings: Dict[str, Any]) -> Dict[
     return {"to": _emails(to), "cc": [], "subject": subject, "html": _mail_wrap("양산이관 검증위원회 신규 안건 알림", inner), "text": text}
 
 
+REVIEW_REQUEST_TEXT = "해당 부문 관점의 양산이관 시 예상 Risk 항목, 과제화 여부(O/X)·등급(상/중/하), 보완 방안 회신"
+
+
 def build_review_mail(item: Dict[str, Any], settings: Dict[str, Any], level: str, to: List[str], cc: List[str],
                       summary: str) -> Dict[str, Any]:
     level = "main" if level == "main" else "sub"
@@ -1739,25 +1749,34 @@ def build_review_mail(item: Dict[str, Any], settings: Dict[str, Any], level: str
         if u.get("status") == "approved" and u.get("email"):
             book.setdefault(u["email"].lower(), {"sector": f"{team_info(settings, u.get('team', ''))['sector'] or '-'} · {u.get('team', '')}",
                                                  "name": u.get("name", ""), "title": u.get("title", "")})
+    # 전문위원 선정 표: 부문 · 검토자(선정된 검토 팀), 같은 부문은 칸을 합쳐 한 번만 표시
+    td = 'style="border:1px solid #cbd5e1;padding:6px 10px;font-size:13px;vertical-align:middle;"'
+    by_sector: Dict[str, List[str]] = {}
+    for team in card_order(item):
+        by_sector.setdefault(item["reviews"][team]["sector"], []).append(team)
+    if not by_sector:  # 검토 팀을 선정하지 않고 보내는 경우 → 받는 사람 기준
+        for email in to:
+            r = book.get(email.lower(), {"sector": "-", "name": "", "title": ""})
+            sec, _, team = r["sector"].partition(" · ")
+            by_sector.setdefault(sec or "-", []).append(team or (r["name"] + " " + r["title"]).strip() or email)
     target_rows = ""
-    for email in to:
-        r = book.get(email.lower(), {"sector": "-", "name": "", "title": ""})
-        target_rows += (
-            f'<tr><td style="border:1px solid #cbd5e1;padding:6px 10px;font-size:13px;">{html.escape(r["sector"])}</td>'
-            f'<td style="border:1px solid #cbd5e1;padding:6px 10px;font-size:13px;">{html.escape((r["name"] + " " + r["title"]).strip() or email)}</td>'
-            f'<td style="border:1px solid #cbd5e1;padding:6px 10px;font-size:13px;">해당 부문 관점의 양산이관 시 예상 Risk 항목, 과제화 여부(O/X)·등급(상/중/하), 보완 방안 회신</td></tr>'
-        )
+    for sec, teams in by_sector.items():
+        for i, team in enumerate(teams):
+            target_rows += "<tr>" + (f'<td {td} rowspan="{len(teams)}"><b>{html.escape(sec)}</b></td>' if i == 0 else "") + f"<td {td}>{html.escape(team)}</td></tr>"
     th = 'style="background:#f1f5f9;border:1px solid #cbd5e1;padding:6px 10px;font-size:13px;text-align:left;"'
     target_table = (
-        '<table style="border-collapse:collapse;width:100%;max-width:760px;margin:8px 0 16px;">'
-        f'<tr><th {th}>부문</th><th {th}>검토자</th><th {th}>검토 요청 사항</th></tr>{target_rows}</table>'
+        '<table style="border-collapse:collapse;min-width:320px;max-width:560px;margin:8px 0 12px;">'
+        f'<tr><th {th}>부문</th><th {th}>검토자</th></tr>{target_rows}</table>'
     )
+    due_stage = "step3" if level == "main" else "step1"
+    due = item["stages"][due_stage]["target"]
     info = _mail_table([
         ("안건 ID", html.escape(item["id"])),
         ("구분", html.escape(category_label(item))),
         ("제품/기술명", f"<b>{html.escape(item['title'])}</b>"),
         ("요청자", html.escape(requester)),
         ("발제일", html.escape(item["proposalDate"])),
+        ("작성 기한", f'<b style="color:#b91c1c;">{html.escape(due)}</b>' if due else "-"),
         ("현재 진행 단계", html.escape(stage_label(item))),
         ("첨부파일", attachment_links(item, base)),
     ])
@@ -1766,15 +1785,19 @@ def build_review_mail(item: Dict[str, Any], settings: Dict[str, Any], level: str
         '<p style="font-weight:bold;margin-top:14px;">■ 양산이관 요약</p>'
         f'<div style="border-left:4px solid #2563eb;background:#eff6ff;padding:10px 12px;max-width:740px;">{_br(summary or item["summary"])}</div>'
         '<p style="font-weight:bold;margin-top:14px;">■ 안건 기본 정보</p>' + info
-        + '<p style="font-weight:bold;">■ 6대 부문별 검토 요청</p>' + target_table
+        + '<p style="font-weight:bold;">■ 전문위원 선정</p>' + target_table
+        + '<p style="font-weight:bold;">■ 검토 요청 사항</p>'
+        + f'<p style="margin:4px 0 14px;">{html.escape(REVIEW_REQUEST_TEXT)}</p>'
         + f'<p>▶ 대시보드 접속(안건 상세): <a href="{html.escape(link)}">{html.escape(link)}</a></p>'
-        + "<p>바쁘시겠지만 검토 후 회신 부탁드립니다.<br>감사합니다.</p>"
+        + "<p>문의사항 있으시면 연락 부탁드립니다.<br>감사합니다.</p>"
     )
     text = (
         f"아래 안건에 대한 {LEVEL_DESC[level]} 검토를 요청드립니다.\n\n"
         f"[양산이관 요약]\n{summary or item['summary'] or '-'}\n\n"
         f"구분: {category_label(item)}\n제품/기술명: {item['title']}\n요청자: {requester}\n발제일: {item['proposalDate']}\n"
-        f"현재 단계: {stage_label(item)}\n\n대시보드 접속: {link}\n"
+        f"작성 기한: {due or '-'}\n현재 단계: {stage_label(item)}\n\n"
+        "[전문위원 선정]\n" + "\n".join(f"{sec}: {', '.join(teams)}" for sec, teams in by_sector.items()) + "\n\n"
+        f"[검토 요청 사항]\n{REVIEW_REQUEST_TEXT}\n\n대시보드 접속: {link}\n\n문의사항 있으시면 연락 부탁드립니다.\n"
     )
     return {"to": to, "cc": cc, "subject": subject,
             "html": _mail_wrap(f"양산이관 {LEVEL_NAMES[level]} 검토 요청", inner), "text": text}
@@ -2103,6 +2126,7 @@ def h_put_settings(req: Req):
         s["portalUrl"] = _s(payload["portalUrl"])
     if isinstance(payload.get("mail"), dict):
         s["mail"]["preferOutlook"] = bool(payload["mail"].get("preferOutlook", True))
+        s["mail"]["fastDraft"] = bool(payload["mail"].get("fastDraft", True))
     if isinstance(payload.get("smtp"), dict):
         p = payload["smtp"]
         try:
@@ -3279,9 +3303,8 @@ def h_review_preview(req: Req):
     return _review_mail(req)
 
 
-def h_review_eml(req: Req):
-    """X-Unsent: 1 헤더가 있는 .eml 초안 → 더블클릭하면 Outlook 새 메일(보내기 버튼 활성) 창으로 열린다."""
-    mail = _review_mail(req)
+def eml_draft_bytes(mail: Dict[str, Any]) -> bytes:
+    """X-Unsent: 1 헤더가 있는 .eml 초안 → 열면 Outlook 새 메일(보내기 버튼 활성) 창으로 열린다."""
     msg = EmailMessage()
     msg["To"] = "; ".join(mail["to"])
     if mail["cc"]:
@@ -3290,8 +3313,31 @@ def h_review_eml(req: Req):
     msg["X-Unsent"] = "1"
     msg.set_content(mail["text"])
     msg.add_alternative(mail["html"], subtype="html")
+    return msg.as_bytes()
+
+
+def h_review_eml(req: Req):
+    mail = _review_mail(req)
     fname = safe_filename(f"검토요청_{mail['subject'][:60]}.eml")
-    return Resp(msg.as_bytes(), "message/rfc822", headers={"Content-Disposition": content_disposition(fname)})
+    return Resp(eml_draft_bytes(mail), "message/rfc822", headers={"Content-Disposition": content_disposition(fname)})
+
+
+def open_eml_on_server(mail: Dict[str, Any]) -> None:
+    """서버 PC에서 .eml 초안을 탐색기로 연다 → Outlook 작성창이 1~2초 안에 뜬다.
+    (PowerShell·COM 을 거치지 않고, 서버가 관리자 권한이어도 탐색기(일반 권한)가 열어 준다)"""
+    if os.name != "nt":
+        raise RuntimeError("Windows 서버 PC에서만 가능합니다.")
+    d = _mail_job_dir()
+    cutoff = time.time() - 86400
+    for old in d.glob("draft_*.eml"):  # 하루 지난 초안 정리
+        try:
+            if old.stat().st_mtime < cutoff:
+                old.unlink()
+        except OSError:
+            pass
+    path = d / f"draft_{dt.datetime.now():%Y%m%d_%H%M%S}_{secrets.token_hex(3)}.eml"
+    path.write_bytes(eml_draft_bytes(mail))
+    subprocess.Popen(["explorer.exe", str(path)])
 
 
 def h_review_outlook(req: Req):
@@ -3299,11 +3345,17 @@ def h_review_outlook(req: Req):
     if not is_local_request(req.client_host):
         raise HTTPException(409, "서버 PC가 아닌 곳에서 접속했습니다. .eml 초안으로 엽니다.")
     mail = _review_mail(req)
+    if store.settings()["mail"].get("fastDraft", True):
+        try:
+            open_eml_on_server(mail)
+            return {"ok": True, "method": "eml"}
+        except Exception as e:  # noqa: BLE001
+            print(f"[mail] .eml 바로 열기 실패 → Outlook 연동으로: {e}")
     try:
         outlook_mail(mail["to"], mail["cc"], mail["subject"], mail["html"], display=True)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(409, f"Outlook 연동 실패({e}). .eml 초안으로 엽니다.")
-    return {"ok": True}
+    return {"ok": True, "method": "outlook"}
 
 
 # --- 회원 (가입 신청 → 관리자 승인) ---------------------------------------

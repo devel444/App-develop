@@ -763,6 +763,14 @@ html[data-theme="dark"] .step-btn:not(.on):not(.fast):not(.subd):not(.ext), html
 html[data-theme="dark"] .step-btn:disabled { opacity:.55; }
 html[data-theme="dark"] .badge-gray, html[data-theme="dark"] .kpi-pill:not([style]) { background:#1e293b; color:#cbd5e1; border-color:#2c3d5c; }
 html[data-theme="dark"] .rv-chip.none { background:#1e293b; color:#a9b8cc; }
+/* 어두운 배경 위의 보라·남색 글자는 연한 색으로 (장기 원인, 배너 등) */
+html[data-theme="dark"] .long-cause { color:#d8b4fe; }
+html[data-theme="dark"] .banner.long { color:#e9d5ff; }
+html[data-theme="dark"] .banner.wait { color:#ddd6fe; }
+html[data-theme="dark"] .banner.info { color:#bfdbfe; }
+html[data-theme="dark"] .pick-def { color:#ddd6fe; }
+html[data-theme="dark"] .step-box.completed .step-status { color:#93c5fd; }
+html[data-theme="dark"] .tg-cnt .txt-delay, html[data-theme="dark"] .txt-delay { color:#f87171; }
 .theme-toggle { width:100%; border:0; background:transparent; cursor:pointer; font:inherit; text-align:left; }
 /* 자동 생성: 밝은 배경·글자·테두리를 어둡게 */
 html[data-theme="dark"] .kpi-card.delay.has-delay { background:#151e30; }
