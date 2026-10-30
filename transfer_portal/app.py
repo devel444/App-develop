@@ -29,6 +29,7 @@ import threading
 import time
 import traceback
 from email.message import EmailMessage
+from email import policy as email_policy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -37,6 +38,7 @@ from urllib.parse import quote, unquote, urlsplit
 # ---------------------------------------------------------------------------
 # 기본 설정
 # ---------------------------------------------------------------------------
+APP_VERSION = "v19"  # static/app.js 의 APP_VERSION 과 같이 올린다
 BASE_DIR = Path(__file__).resolve().parent
 NETWORK_DIR = r"\\10.150.6.49\전사혁신과제관리용_db\(기술혁신)_양산이관_검증위원회"
 LOCAL_DIR = BASE_DIR / "shared_data"
@@ -3311,9 +3313,11 @@ def eml_draft_bytes(mail: Dict[str, Any]) -> bytes:
         msg["Cc"] = "; ".join(mail["cc"])
     msg["Subject"] = mail["subject"]
     msg["X-Unsent"] = "1"
-    msg.set_content(mail["text"])
-    msg.add_alternative(mail["html"], subtype="html")
-    return msg.as_bytes()
+    # Outlook 이 한글을 깨뜨리지 않도록: 본문은 base64, 줄바꿈은 Windows 방식(CRLF)
+    # (quoted-printable + LF 줄바꿈이면 Outlook 이 '=EC' 같은 글자를 그대로 보여 줌)
+    msg.set_content(mail["text"], cte="base64")
+    msg.add_alternative(mail["html"], subtype="html", cte="base64")
+    return msg.as_bytes(policy=email_policy.SMTP)
 
 
 def h_review_eml(req: Req):
@@ -3938,7 +3942,7 @@ if __name__ == "__main__":
         sys.exit(1)
     httpd.daemon_threads = True
     print("=" * 64)
-    print(" 양산이관 검증위원회 통합 관리 포털")
+    print(f" 양산이관 검증위원회 통합 관리 포털 {APP_VERSION}")
     print(f" 저장소 : {store.root} ({'공유폴더' if store.is_network else '로컬 폴백 - 공유폴더 접근 불가'})")
     print(f" 접속   : http://{lan_ip()}:{PORT}  (이 PC: http://localhost:{PORT})")
     for n in host_names():

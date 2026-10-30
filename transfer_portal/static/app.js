@@ -5,6 +5,29 @@
   // =====================================================================
   // 상수
   // =====================================================================
+  // 버전 · 업데이트 내역 (사이드바 버전 표시를 누르면 창으로 보여 줌)
+  var APP_VERSION = "v19";
+  var CHANGELOG = [
+    ["v19", "2026-10-30", ["검토 요청 메일 작성창(.eml)에서 한글이 깨지던 문제 수정", "왼쪽 위 제목을 '양산이관 검증위원회 통합 관리 포털'로 변경, 현재 버전 표시", "버전을 누르면 이 업데이트 내역 창이 열림"]],
+    ["v18", "2026-10-30", ["검토 요청 메일 작성창을 1~2초 안에 열리도록 개선 (서버 PC에서 .eml 초안으로 바로 열기)", "메일 본문 개편: 전문위원 선정 표(부문·검토자), 검토 요청 사항 한 줄, 작성 기한, 맺음말 변경", "다크 모드에서 보라색 글자를 연하게", "사번 입력 예시 변경"]],
+    ["v17", "2026-10-30", ["보완 과제 화면을 안건과 분리: 목록 / 칸반 / 안건별 보기 + 오른쪽 과제 상세 패널", "과제 진행 내용 기록, 완료 처리·완료 요청·승인·반려·완료 해제를 과제 패널에서", "다크 모드 버튼 추가", "속도 개선 (서버 메모리 캐시, 압축 전송, 목록 데이터 경량화)", "패스트트랙: Risk 를 모두 결정하고 중요도 '상' 과제를 완료하면 가능", "입력 예시 문구 변경, 관리자 모드의 검토 요청 메일 카드 삭제"]],
+    ["v16", "2026-10-29", ["제품 MS 입력 + 사업계획(엑셀 4개 시트) 업로드 → 사업계획 반영 여부 표시", "GR장비기술팀 추가, 검토 팀 매트릭스에서 부문별 팀 추가", "탭·페이지 이동 시 화면이 좌우로 흔들리던 문제 수정"]],
+    ["v15", "2026-10-28", ["장기 안건(발제일 + 3개월) 표시 — 원인 자동 표시 + 관리자 사유 메모", "화면 정리: 목표일 연장 이력·회의 칸 접기, 회원 화면 요약, 조치 목록 탭"]],
+    ["v14", "2026-10-28", ["검토 팀 매트릭스 표 정렬 + 팀별 메일 주소록", "검토 팀을 선정하면 메일 받는 사람 자동 체크 (6대 부문별 묶음)", "예전 6대 부문별 검토자 주소록 삭제"]],
+    ["v13", "2026-10-28", ["관리자 대리 검토 작성 완료", "'내 할 일' 메뉴 추가 (우리 팀 검토 작성 · 담당 과제 · 신청 안건)", "장기 표시를 세부현황·조치 목록으로", "xlsx 보고서 오류 보완"]],
+    ["v12", "2026-10-28", ["과제 담당자 진행 입력·완료 요청 / 관리자 승인", "xlsx 현황 보고서", "최종승인 알림 메일", "안건 변경 이력", "검토 의견 카드 2열 배치, 회의록을 텍스트로"]],
+    ["v11", "2026-10-28", ["2단계·4단계 회의 차수(1차·2차…)와 회의록", "장기 과제 표시", "기술 안건도 구경·PW/EPI 선택"]],
+    ["v10", "2026-10-28", ["제품 구분(구경·PW/EPI)별 검토 팀 자동 선정", "팀별 검토 의견 (이상 없음 / Risk 있음), 팀원 누구나 작성 + 이력", "검토 팀 선정 + 검토 요청 메일 패널 통합"]],
+    ["v9", "2026-10-27", ["조치 중심 대시보드 (지금 조치가 필요한 항목 · 지연 · 향후 2주 일정)", "✉️ Remind 메일"]],
+    ["v8", "2026-10-27", ["검토 의견 / Risk 결정(과제 등록·수용) / 보완 과제 분리", "중요도 '상' 과제가 남으면 최종승인 불가, 중·하만 남으면 조건부 승인"]],
+    ["v7", "2026-10-27", ["단계별 목표일 자동 지정(영업일), 목표일 연장(사유 필수), 지연 표시", "검토 요청 메일 패널은 관리자 전용"]],
+    ["v6", "2026-10-27", ["SMTP 메일 발송 단계별 진단"]],
+    ["v5", "2026-10-27", ["Outlook 관리자 권한 실행 우회", "접속 주소 안내, 화면 보완"]],
+    ["v4", "2026-10-27", ["Outlook 연결 오류(0x80080005) 처리", "로그인 회원 전용 메뉴, 가입 화면 개선"]],
+    ["v3", "2026-10-27", ["회원 가입 · 관리자 승인 · 팀 권한", "현재 접속자 표시", "양산이관 기준 단계 한 줄 안내"]],
+    ["v2", "2026-10-27", ["추가 설치 없이 실행 (Python 기본 기능만 사용)"]],
+    ["v1", "2026-10-27", ["포털 첫 버전: 대시보드 · 세부현황 · 보완 과제 · 신청 · 기준 · 관리자, 공유폴더 저장"]]
+  ];
   var STAGES = [
     { key: "step1", name: "전문소위원 검토" },
     { key: "step2", name: "양산이관 검증소위원회" },
@@ -2675,6 +2698,22 @@
     taskStatus: function (el) { state.f.task.status = el.getAttribute("data-status"); renderTasks(); },
     taskReset: function () { state.f.task = { grade: "ALL", sector: "ALL", status: "ALL", q: "", mine: false }; renderTasks(); },
     taskMine: function () { state.f.task.mine = !state.f.task.mine; renderTasks(); },
+    showChangelog: function () {
+      var m = $("#infoModal");
+      if (!m) {
+        m = document.createElement("div"); m.id = "infoModal"; m.className = "modal-backdrop";
+        m.innerHTML = '<div class="modal-window changelog-window" role="dialog" aria-modal="true"><div class="modal-header"><h3>📋 업데이트 내역</h3>' +
+          '<button class="btn btn-secondary btn-sm" data-action="closeChangelog">✕ 닫기</button></div><div class="modal-body" id="infoBody"></div></div>';
+        m.addEventListener("mousedown", function (e) { if (e.target === m) ACTIONS.closeChangelog(); });
+        document.body.appendChild(m);
+      }
+      $("#infoBody").innerHTML = '<div class="cl-now">현재 버전 <b>' + APP_VERSION + "</b></div>" + CHANGELOG.map(function (c, i) {
+        return '<div class="cl-ver' + (i === 0 ? " latest" : "") + '"><div class="cl-head"><b>' + c[0] + '</b><span class="muted">' + c[1] + "</span>" + (i === 0 ? '<span class="badge badge-new">최신</span>' : "") + "</div>" +
+          "<ul>" + c[2].map(function (x) { return "<li>" + esc(x) + "</li>"; }).join("") + "</ul></div>";
+      }).join("");
+      m.classList.add("open");
+    },
+    closeChangelog: function () { var m = $("#infoModal"); if (m) m.classList.remove("open"); },
     toggleTheme: function () {
       var dark = document.documentElement.getAttribute("data-theme") !== "dark";
       if (dark) document.documentElement.setAttribute("data-theme", "dark"); else document.documentElement.removeAttribute("data-theme");
@@ -3193,7 +3232,8 @@
       else if (t.type === "date") onField(t);
     });
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape" && state.taskPanel) closeTaskPanel(false);
+      if (e.key === "Escape" && $("#infoModal") && $("#infoModal").classList.contains("open")) ACTIONS.closeChangelog();
+      else if (e.key === "Escape" && state.taskPanel) closeTaskPanel(false);
       else if (e.key === "Escape" && state.detail) closeDetail(false);
       if (e.key === "Enter" && e.target.id === "adminPw") ACTIONS.login();
       if (e.key === "Enter" && (e.target.id === "loginEmp" || e.target.id === "loginPw")) ACTIONS.userLogin();
@@ -3231,6 +3271,7 @@
   function start() {
     bindEvents();
     updateThemeButton();
+    $("#verBtn").textContent = APP_VERSION + " · 업데이트 내역";
     state.clientId = safeSession("get", "portalClientId") || newClientId();
     safeSession("set", "portalClientId", state.clientId);
     var auth = state.token
