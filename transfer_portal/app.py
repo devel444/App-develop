@@ -11,10 +11,12 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import mimetypes
+import gzip
 import hashlib
 import html
 import json
 import os
+import pickle
 import re
 import secrets
 import shutil
@@ -983,11 +985,35 @@ class Store:
         self.forms_dir = root / "forms"
         self.backup_dir = root / "backups"
         self.lock = threading.RLock()
+        # 메모리 캐시: 공유폴더 파일을 요청마다 다시 읽지 않고, 파일이 바뀐 경우(수정 시각·크기)에만 다시 읽는다
+        self._cache: Dict[str, Tuple[Any, Any]] = {}
+        self.gen = 0  # 설정·회원이 바뀔 때마다 +1 (화면 데이터 캐시 무효화용)
         for d in (self.att_dir, self.forms_dir, self.backup_dir):
             d.mkdir(parents=True, exist_ok=True)
         self._init_files()
 
     # --- 파일 입출력 -------------------------------------------------------
+    @staticmethod
+    def _stamp(path: Path) -> Any:
+        try:
+            st = path.stat()
+            return (st.st_mtime_ns, st.st_size)
+        except OSError:
+            return None
+
+    def _cached(self, key: str, path: Path, loader: Callable[[], Any]) -> Any:
+        stamp = self._stamp(path)
+        hit = self._cache.get(key)
+        if hit is not None and stamp is not None and hit[0] == stamp:
+            return hit[1]
+        obj = loader()
+        self._cache[key] = (stamp, obj)
+        return obj
+
+    @staticmethod
+    def _copy(obj: Any) -> Any:
+        return pickle.loads(pickle.dumps(obj, pickle.HIGHEST_PROTOCOL))
+
     @staticmethod
     def _read_json(path: Path) -> Any:
         with open(path, encoding="utf-8-sig") as f:
@@ -1036,14 +1062,23 @@ class Store:
                 old.unlink()
 
     # --- 안건 데이터 -------------------------------------------------------
-    def load(self) -> Dict[str, Any]:
+    def _load_fresh(self) -> Dict[str, Any]:
+        raw = self._read_json(self.data_path)
+        if isinstance(raw, list):  # 구버전 형식
+            raw = {"version": 1, "items": raw}
+        raw["items"] = [normalize_item(x) for x in raw.get("items", [])]
+        raw["version"] = int(raw.get("version") or 1)
+        return raw
+
+    def read(self) -> Dict[str, Any]:
+        """읽기 전용(수정 금지) — 캐시된 데이터를 그대로 돌려준다."""
         with self.lock:
-            raw = self._read_json(self.data_path)
-            if isinstance(raw, list):  # 구버전 형식
-                raw = {"version": 1, "items": raw}
-            raw["items"] = [normalize_item(x) for x in raw.get("items", [])]
-            raw["version"] = int(raw.get("version") or 1)
-            return raw
+            return self._cached("data", self.data_path, self._load_fresh)
+
+    def load(self) -> Dict[str, Any]:
+        """수정해도 되는 복사본."""
+        with self.lock:
+            return self._copy(self.read())
 
     def mutate(self, fn: Callable[[Dict[str, Any]], Any]) -> Any:
         """data.json 을 읽고 fn(data) 로 수정한 뒤 원자적으로 저장."""
@@ -1054,13 +1089,14 @@ class Store:
             data["version"] += 1
             data["updatedAt"] = now_str()
             self._write_json(self.data_path, data)
+            self._cache["data"] = (self._stamp(self.data_path), self._copy(data))
             return result
 
     # --- 설정 --------------------------------------------------------------
     def settings(self) -> Dict[str, Any]:
         with self.lock:
             base = default_settings()
-            cur = self._read_json(self.settings_path)
+            cur = self._copy(self._cached("settings", self.settings_path, lambda: self._read_json(self.settings_path)))
             for k, v in cur.items():
                 if isinstance(v, dict) and isinstance(base.get(k), dict):
                     base[k].update(v)
@@ -1087,25 +1123,32 @@ class Store:
                     teams.insert(pos, {"name": name, "sector": sector, "canApply": False})
             if added and self.settings_path.exists():  # 팀 목록·적용 기록만 저장 (다른 설정은 건드리지 않음)
                 self._write_json(self.settings_path, {**cur, "teams": teams, "migrations": done})
+                self._cache.pop("settings", None)
+                self.gen += 1
             return base
 
     def save_settings(self, s: Dict[str, Any]) -> None:
         with self.lock:
             self._write_json(self.settings_path, s)
+            self._cache.pop("settings", None)
+            self.gen += 1
 
     # --- 회원 (users.json: {사번: 사용자}) ----------------------------------
     def users(self) -> Dict[str, Dict[str, Any]]:
         with self.lock:
-            if not self.users_path.exists():
-                return {}
-            data = self._read_json(self.users_path)
-            return data if isinstance(data, dict) else {}
+            def _load():
+                if not self.users_path.exists():
+                    return {}
+                data = self._read_json(self.users_path)
+                return data if isinstance(data, dict) else {}
+            return self._copy(self._cached("users", self.users_path, _load))
 
     def mutate_users(self, fn: Callable[[Dict[str, Dict[str, Any]]], Any]) -> Any:
         with self.lock:
             users = self.users()
             result = fn(users)
             self._write_json(self.users_path, users)
+            self._cache.pop("users", None)
             return result
 
     def item_dir(self, item_id: str) -> Path:
@@ -1785,7 +1828,7 @@ def mail_to_secretary(subject: str, html_body: str, text: str, settings: Dict[st
 def notify_team_done(item_id: str, team: str, user: Dict[str, Any]) -> None:
     settings = store.settings()
     try:
-        mail = build_team_done_mail(find_item(store.load(), item_id), team, user, settings)
+        mail = build_team_done_mail(find_item(store.read(), item_id), team, user, settings)
         result = mail_to_secretary(mail["subject"], mail["html"], mail["text"], settings)
     except Exception as e:  # noqa: BLE001
         result = {"status": "failed", "message": str(e)[:300]}
@@ -1807,7 +1850,7 @@ def notify_new_item(item_id: str) -> None:
     """신규 신청 알림 메일 (백그라운드). 실패해도 안건 등록에는 영향이 없다."""
     settings = store.settings()
     try:
-        item = find_item(store.load(), item_id)
+        item = find_item(store.read(), item_id)
         mail = build_new_item_mail(item, settings)
         if not mail["to"]:
             result = {"status": "skipped", "message": "관리자 설정에 알림 수신자가 없습니다."}
@@ -1952,16 +1995,48 @@ def holiday_set() -> set:
     return set(holiday_list(store.settings()))
 
 
+def _last_progress(t: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    x = next((x for x in reversed(t["log"]) if x["kind"] in ("progress", "request")), None)
+    return {"at": x["at"], "by": x["by"], "kind": x["kind"], "note": x["note"][:300]} if x else None
+
+
+def slim_item(it: Dict[str, Any]) -> Dict[str, Any]:
+    """목록용 가벼운 안건: 변경 이력·검토 이력·과제 진행 기록·회의록 본문은 빼고 개수/최근 내용만 (상세는 /api/items/{id})."""
+    x = dict(it)
+    x["auditCount"] = len(x.pop("audit", None) or [])
+    x["reviews"] = {t: {**{k: v for k, v in c.items() if k != "history"}, "historyCount": len(c.get("history") or [])}
+                    for t, c in it["reviews"].items()}
+    x["stages"] = {k: ({**st, "meetings": [{**{a: b for a, b in m.items() if a != "minutesText"}, "hasMinutes": bool(m.get("minutesText"))}
+                                         for m in st["meetings"]]} if st.get("meetings") else st)
+                   for k, st in it["stages"].items()}
+    x["tasks"] = [{**{k: v for k, v in t.items() if k != "log"}, "logCount": len(t["log"]), "lastLog": _last_progress(t)} for t in it["tasks"]]
+    x["slim"] = True
+    return x
+
+
+_BOOT_CACHE: Dict[str, Any] = {"key": None, "body": b""}
+
+
 def h_bootstrap(req: Req):
-    data = store.load()
-    return {
-        "items": data["items"], "version": data["version"], "settings": public_settings(store.settings()),
-        "storage": {"path": str(store.root), "isNetwork": store.is_network}, "today": today_str(),
-    }
+    """첫 화면 데이터. 같은 데이터 버전이면 만들어 둔 응답을 재사용한다."""
+    data = store.read()
+    key = (data["version"], store.gen, today_str())
+    if _BOOT_CACHE["key"] != key:
+        body = {
+            "items": [slim_item(it) for it in data["items"]], "version": data["version"], "settings": public_settings(store.settings()),
+            "storage": {"path": str(store.root), "isNetwork": store.is_network}, "today": today_str(),
+        }
+        _BOOT_CACHE.update(key=key, body=json.dumps(body, ensure_ascii=False).encode("utf-8"))
+    return Resp(_BOOT_CACHE["body"], "application/json; charset=utf-8")
+
+
+def h_get_item(req: Req):
+    """안건 1건 전체 (변경 이력·진행 기록·회의록 포함) — 상세 창·과제 패널용."""
+    return find_item(store.read(), req.params["id"])
 
 
 def h_version(req: Req):
-    return {"version": store.load()["version"]}
+    return {"version": store.read()["version"]}
 
 
 # --- 관리자 인증 ------------------------------------------------------------
@@ -2177,7 +2252,8 @@ def h_update_item(req: Req):
         for keep in ("attachments", "notify", "createdAt", "source", "applicantEmpId", "remindLog", "audit", "finalNotify"):
             merged[keep] = cur[keep]
         keep_meetings(merged, cur)
-        keep_task_tracking(merged, cur, "관리자")
+        old_tasks = {t["id"]: t for t in cur["tasks"]}
+        merged["tasks"] = [old_tasks.get(t["id"], t) for t in merged["tasks"]]
         # 접수 승인일은 서버가 기록 (처음 접수 처리된 날)
         merged["acceptedAt"] = cur["acceptedAt"] or (_date(incoming.get("acceptedAt")) or today_str() if merged["accepted"] else "")
         if not merged["accepted"]:
@@ -2326,7 +2402,7 @@ def h_task_progress(req: Req):
     f, files = req.form()
     note = _text(f.get("note"))[:5000]
     request = _s(f.get("request")) in ("1", "true")
-    t0 = _find_task(find_item(store.load(), item_id), task_id)
+    t0 = _find_task(find_item(store.read(), item_id), task_id)
     owner = is_task_owner(user, t0)
     if not req.is_admin and not owner:
         raise HTTPException(403, "이 과제의 담당자로 지정된 회원만 진행 상황을 입력할 수 있습니다.")
@@ -2380,6 +2456,73 @@ def h_task_decide(req: Req):
     return item
 
 
+def h_task_update(req: Req):
+    """관리자: 과제 내용·보완 방안·중요도·담당·목표일(변경은 사유 필수 → 연장 이력) 수정 — 과제 화면 전용."""
+    item_id, task_id = req.params["id"], req.params["taskId"]
+    p = req.json()
+    owner = store.users().get(_s(p.get("ownerEmpId"))) if _s(p.get("ownerEmpId")) else None
+
+    def _upd(data):
+        cur = find_item(data, item_id)
+        t = _find_task(cur, task_id)
+        before = dict(t)
+        if "title" in p:
+            t["title"] = _text(p.get("title"))[:3000] or t["title"]
+        if "plan" in p:
+            t["plan"] = _text(p.get("plan"))[:3000]
+        if p.get("importance") in IMPORTANCE:
+            t["importance"] = p["importance"]
+        if "org" in p:
+            t["org"] = _s(p.get("org"))[:60]
+        if "ownerEmpId" in p or "ownerEmail" in p:
+            if owner:
+                t.update(ownerEmpId=owner["empId"], ownerName=f"{owner.get('team', '')} {owner.get('name', '')} {owner.get('title', '')}".strip(),
+                         ownerEmail=owner.get("email", ""))
+            else:
+                email = (_emails(p.get("ownerEmail")) or [""])[0]
+                if _s(p.get("ownerEmail")) and not email:
+                    raise HTTPException(400, "담당자 이메일 형식이 올바르지 않습니다.")
+                t.update(ownerEmpId="", ownerName=_s(p.get("ownerName"))[:40], ownerEmail=email)
+        new_target = _date(p.get("target"))
+        if "target" in p and new_target != t["target"]:
+            if not new_target:
+                raise HTTPException(400, "목표일을 지울 수는 없습니다.")
+            reason = _text(p.get("reason"))[:500]
+            if t["target"]:
+                if not reason:
+                    raise HTTPException(400, "목표일을 바꾸려면 연장 사유를 입력하세요.")
+                t["targetOriginal"] = t["targetOriginal"] or t["target"]
+                t["extensions"] = t["extensions"] + [{"from": t["target"], "to": new_target, "reason": reason, "by": "관리자", "at": now_str()}]
+            t["target"] = new_target
+        changes = []
+        if before["importance"] != t["importance"]:
+            changes.append(f"중요도 {before['importance']} → {t['importance']}")
+        if (before["title"], before["plan"]) != (t["title"], t["plan"]):
+            changes.append("내용/보완 방안 수정")
+        if (before["org"], before["ownerName"], before["ownerEmail"]) != (t["org"], t["ownerName"], t["ownerEmail"]):
+            changes.append(f"담당: {t['org'] or '-'} {t['ownerName'] or t['ownerEmail']}".rstrip())
+        if before["target"] != t["target"]:
+            changes.append(f"목표일 {before['target'] or '(없음)'} → {t['target']}" + (f" (사유: {t['extensions'][-1]['reason']})" if before["target"] else ""))
+        if not changes:
+            return cur
+        add_audit(cur, "관리자", *[f"과제 {task_id} {c}" for c in changes])
+        return _touch(cur)
+    return store.mutate(_upd)
+
+
+def h_task_reopen(req: Req):
+    """관리자: 완료된 과제를 진행중으로 되돌림."""
+    def _re(data):
+        cur = find_item(data, req.params["id"])
+        t = _find_task(cur, req.params["taskId"])
+        if t["status"] != "완료":
+            raise HTTPException(400, "완료된 과제가 아닙니다.")
+        set_task_done(t, False, "관리자")
+        add_audit(cur, "관리자", f"과제 {t['id']} 완료 해제 (진행중으로 변경)")
+        return _touch(cur)
+    return store.mutate(_re)
+
+
 def h_task_file(req: Req):
     return FileResp(_attachment_path(task_files_dir(req.params["id"]), req.params["name"]))
 
@@ -2388,7 +2531,7 @@ def notify_task_event(item_id: str, task_id: str, kind: str, by: str, note: str)
     """완료 요청 → 간사 / 승인·반려 → 담당자(참조 간사)."""
     settings = store.settings()
     try:
-        item = find_item(store.load(), item_id)
+        item = find_item(store.read(), item_id)
         t = _find_task(item, task_id)
         link = f"{portal_base(settings)}#items/{quote(item['id'])}"
         sec = _emails(settings.get("secretaryEmails"))
@@ -2464,7 +2607,7 @@ def build_final_mail(item: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str
 def notify_final(item_id: str) -> None:
     settings = store.settings()
     try:
-        item = find_item(store.load(), item_id)
+        item = find_item(store.read(), item_id)
         to, cc = final_recipients(item, settings)
         if not to:
             result = {"status": "skipped", "message": "요청자 이메일과 개발팀 회원 이메일이 없어 보내지 않았습니다."}
@@ -2895,7 +3038,7 @@ def h_report_xlsx(req: Req):
         import openpyxl  # noqa: F401
     except ImportError:
         raise HTTPException(500, f"[XLSX-1] openpyxl 미설치 (서버 Python: {sys.executable})")
-    items = store.load()["items"]
+    items = store.read()["items"]
     from urllib.parse import parse_qs
     year = (parse_qs(req.query or "").get("year") or [""])[0]
     if year and year != "ALL":
@@ -3015,7 +3158,7 @@ def h_meeting_delete(req: Req):
 
 def h_minutes_upload(req: Req):
     key, item_id = _meeting_stage(req), req.params["id"]
-    _find_meeting(find_item(store.load(), item_id), key, req.params["no"])
+    _find_meeting(find_item(store.read(), item_id), key, req.params["no"])
     _, files = req.form()
     if not files:
         raise HTTPException(400, "업로드할 회의록 파일이 없습니다.")
@@ -3058,7 +3201,7 @@ def _attachment_path(folder: Path, name: str) -> Path:
 
 def h_upload_attachments(req: Req):
     item_id = req.params["id"]
-    find_item(store.load(), item_id)
+    find_item(store.read(), item_id)
     _, files = req.form()
     if not files:
         raise HTTPException(400, "업로드할 파일이 없습니다.")
@@ -3124,7 +3267,7 @@ def h_delete_form(req: Req):
 # --- 검토 요청 메일 --------------------------------------------------------
 def _review_mail(req: Req) -> Dict[str, Any]:
     payload = req.json()
-    item = find_item(store.load(), _s(payload.get("itemId")))
+    item = find_item(store.read(), _s(payload.get("itemId")))
     to = _emails(payload.get("to"))
     if not to:
         raise HTTPException(400, "받는 사람을 1명 이상 선택하세요.")
@@ -3508,7 +3651,7 @@ def h_remind(req: Req):
     """관리자: Remind 메일. dryRun 이면 받는 사람·제목만 돌려준다(확인용)."""
     p = req.json()
     kind = "task" if p.get("kind") == "task" else "review"
-    item = find_item(store.load(), _s(p.get("itemId")))
+    item = find_item(store.read(), _s(p.get("itemId")))
     settings = store.settings()
     sectors = p.get("sectors") if isinstance(p.get("sectors"), list) else []
     mail = _remind_targets(item, kind, [_s(x) for x in sectors], _s(p.get("taskId")), settings)
@@ -3544,6 +3687,7 @@ def route(method: str, pattern: str, handler: Callable[[Req], Any], admin: bool 
 
 
 route("GET", "/api/bootstrap", h_bootstrap)
+route("GET", "/api/items/{id}", h_get_item)
 route("GET", "/api/version", h_version)
 route("POST", "/api/login", h_login)
 route("POST", "/api/logout", h_logout)
@@ -3590,6 +3734,8 @@ route("DELETE", "/api/items/{id}/meetings/{stage}/{no}/minutes/{name}", h_minute
 route("GET", "/api/items/{id}/minutes/{name}", h_minutes_download)
 route("POST", "/api/items/{id}/tasks/{taskId}/progress", h_task_progress)
 route("POST", "/api/items/{id}/tasks/{taskId}/decide", h_task_decide, admin=True)
+route("PUT", "/api/items/{id}/tasks/{taskId}", h_task_update, admin=True)
+route("POST", "/api/items/{id}/tasks/{taskId}/reopen", h_task_reopen, admin=True)
 route("GET", "/api/items/{id}/taskfiles/{name}", h_task_file)
 route("GET", "/api/report.xlsx", h_report_xlsx)
 route("GET", "/api/admin/bizplan", h_bizplan_get, admin=True)
@@ -3622,6 +3768,9 @@ def dispatch(req: Req) -> Any:
     raise HTTPException(405 if path_matched else 404, "Method Not Allowed" if path_matched else "Not Found")
 
 
+STATIC_CACHE: Dict[str, Tuple[Any, bytes, bytes]] = {}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "TransferPortal/1.0"
 
@@ -3651,17 +3800,59 @@ class Handler(BaseHTTPRequestHandler):
             result = json_resp({"detail": "서버 내부 오류가 발생했습니다. 서버 콘솔 로그를 확인하세요."}, 500)
         self._send(result)
 
+    def _gzip_ok(self, ctype: str, size: int) -> bool:
+        return size > 1400 and "gzip" in (self.headers.get("Accept-Encoding") or "") and \
+            (ctype.startswith("text/") or "json" in ctype or "javascript" in ctype)
+
     def _send(self, r: Resp) -> None:
+        body, extra = r.body, {}
+        if self._gzip_ok(r.content_type, len(body)):  # 사내망 전송량 1/5~1/10
+            body, extra = gzip.compress(body, 5), {"Content-Encoding": "gzip", "Vary": "Accept-Encoding"}
         self.send_response(r.status)
         self.send_header("Content-Type", r.content_type)
-        self.send_header("Content-Length", str(len(r.body)))
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        for k, v in r.headers.items():
+        for k, v in {**r.headers, **extra}.items():
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(r.body)
+        self.wfile.write(body)
+
+    def _send_static(self, f: FileResp) -> None:
+        """화면 파일(html/js/css): 바뀌지 않았으면 304 로 다시 받지 않게 하고, 받을 때는 압축."""
+        st = f.path.stat()
+        etag = f'"{st.st_mtime_ns:x}-{st.st_size:x}"'
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            return
+        ctype = (mimetypes.guess_type(f.path.name)[0] or "application/octet-stream")
+        if ctype.startswith("text/") or ctype == "application/javascript":
+            ctype += "; charset=utf-8"
+        key = (str(f.path), etag)
+        hit = STATIC_CACHE.get(str(f.path))
+        if not hit or hit[0] != key:
+            raw = f.path.read_bytes()
+            hit = (key, raw, gzip.compress(raw, 6))
+            STATIC_CACHE[str(f.path)] = hit
+        use_gz = self._gzip_ok(ctype, len(hit[1]))
+        body = hit[2] if use_gz else hit[1]
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("ETag", etag)
+        if use_gz:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_file(self, f: FileResp) -> None:
+        if not f.attachment and f.path.parent in (STATIC_DIR, BASE_DIR / "templates"):
+            self._send_static(f)
+            return
         ctype = mimetypes.guess_type(f.path.name)[0] or "application/octet-stream"
         if ctype.startswith("text/") or ctype in ("application/javascript", "application/json"):
             ctype += "; charset=utf-8"

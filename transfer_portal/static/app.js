@@ -36,7 +36,9 @@
     matrixDraft: null,
     mtgOpen: {},            // 펼친 회의록 ("step2-1": true)
     mtgExpand: {},          // 펼친 회의 칸 ("step2": true)
-    taskOpen: {},           // 펼친 과제 진행 기록 ("TR-2026-001/T01": true)
+    taskPanel: null,        // 열린 과제 상세 패널 { itemId, taskId, item(전체), form }
+    taskView: safeLocal("get", "portalTaskView") || "list",  // 과제 화면 보기: list / kanban / group
+    taskGroupClosed: {},    // 안건별 보기에서 접은 안건
     taskForm: {},           // 진행 입력 중인 내용 (다시 그려도 유지)
     leadDays: { step1: 5, step2: 7, step3: 7, step4: 7, step5: 7 },
     route: "dashboard",
@@ -47,7 +49,6 @@
     },
     detail: null,           // { id, orig, draft }
     mail: null,             // 검토 요청 메일 패널 상태
-    adminMailItemId: "",
     apply: { category: "제품", files: [], result: null, busy: false },
     crit: { tab: "overview", editing: false, forms: null }
   };
@@ -471,6 +472,11 @@
     render(false);
     presencePing();
   }
+  function updateThemeButton() {
+    var dark = document.documentElement.getAttribute("data-theme") === "dark";
+    $("#themeIco").textContent = dark ? "☀️" : "🌙";
+    $("#themeLabel").textContent = dark ? "라이트 모드" : "다크 모드";
+  }
   function updateNav() {
     var u = state.user;
     $("#navApply").style.display = canApply() ? "" : "none";
@@ -515,11 +521,13 @@
     var route = VIEWS[parts[0]] ? parts[0] : "dashboard";
     var changed = route !== state.route;
     state.route = route;
-    if (changed && route === "admin") state.adminUsers = null;  // 들어올 때마다 최신 가입 신청을 다시 불러온다
+    if (changed && route === "admin") state.adminUsers = null;
+    if (changed && state.taskPanel) { state.taskPanel = null; renderTaskPanel(); }  // 다른 메뉴로 가면 과제 패널은 닫는다  // 들어올 때마다 최신 가입 신청을 다시 불러온다
     $all(".nav-link").forEach(function (a) { a.classList.toggle("active", a.getAttribute("data-route") === route); });
     render(true);
     if (changed) { window.scrollTo(0, 0); if (state.clientId) presencePing(); if (state.version) poll(); }  // 메뉴 이동 시 최신 데이터 확인
     if (route === "items" && parts[1] && isLoggedIn()) openDetail(decodeURIComponent(parts[1]));
+    if (route === "tasks" && parts[1] && parts[2] && isLoggedIn()) openTaskPanel(decodeURIComponent(parts[1]), decodeURIComponent(parts[2]));
   }
   function go(route) {
     if (location.hash === "#" + route) onHash(); else location.hash = route;
@@ -653,7 +661,8 @@
         return '<button class="chip-btn ' + (t === tab ? "active" : "") + '" data-action="actTab" data-tab="' + t[0] + '">' + t[1] + " " + n + "</button>";
       }).join("") + "</div>" +
       (tabList.length ? '<div class="table-wrap"><table class="action-table"><tbody>' + tabList.slice(0, state.showAllActions ? 999 : 8).map(function (a) {
-        return '<tr class="row-link sev' + a.sev + '" data-action="openDetail" data-id="' + esc(a.item.id) + '"><td style="width:120px"><span class="act-label k-' + a.kind + '">' + a.label + "</span></td>" +
+        var rowAct = a.task ? 'data-action="taskOpen" data-id="' + esc(a.item.id) + '" data-task="' + esc(a.task.id) + '"' : 'data-action="openDetail" data-id="' + esc(a.item.id) + '"';
+        return '<tr class="row-link sev' + a.sev + '" ' + rowAct + '><td style="width:120px"><span class="act-label k-' + a.kind + '">' + a.label + "</span></td>" +
           '<td style="width:260px"><b>' + esc(a.item.title) + '</b><div class="muted" style="font-size:11px">' + esc(a.item.id) + "</div></td>" +
           '<td class="pre">' + esc(a.text) + "</td>" +
           '<td style="width:90px;text-align:right">' + (a.days ? '<b class="' + (a.unit === "일 지연" ? "txt-delay" : "") + '">' + (a.unit === "일 지연" ? "+" : "") + a.days + "</b>" + '<span class="muted" style="font-size:11px">' + a.unit + "</span>" : "") + "</td>" +
@@ -763,12 +772,12 @@
     }).join("") + "</tbody></table></div>" : '<div class="empty-state" style="padding:18px">🎉 작성할 검토 의견이 없습니다.</div>';
     var tk = w.tasks.length ? '<div class="table-wrap"><table class="action-table"><tbody>' + w.tasks.map(function (x) {
       var t = x.task;
-      return '<tr class="' + (x.delay ? "sev0" : "") + '"><td style="width:90px"><b>' + esc(t.id) + '</b> <span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span>" +
+      return '<tr class="row-link' + (x.delay ? " sev0" : "") + '"' + taskOpenAttr(x) + '><td style="width:90px"><b>' + esc(t.id) + '</b> <span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span>" +
         '<div style="margin-top:3px">' + (x.mine ? '<span class="badge badge-mine">👤 내 담당</span>' : '<span class="badge badge-gray">팀 과제</span>') + "</div></td>" +
-        '<td><b class="link-text" data-action="openDetail" data-id="' + esc(x.item.id) + '">' + esc(x.item.title) + '</b><div class="pre" style="font-size:12.5px">' + esc(t.title) + "</div>" +
+        '<td><b>' + esc(t.title) + '</b><div class="muted" style="font-size:12px">📁 ' + esc(x.item.title) + "</div>" + (lastLogOf(t) ? lastProgressHtml(t) : "") +
         '<div class="muted" style="font-size:11.5px">담당: ' + esc((t.org || "-") + " " + (t.ownerName || t.ownerEmail || "")) + "</div></td>" +
         '<td style="width:230px">' + dueHtml(t.target, x.delay) + (x.long ? "<div>" + longBadge(x.long) + "</div>" : "") + "</td>" +
-        '<td style="width:170px;text-align:right">' + taskTrackBtn(x.item, t) + "</td></tr>" + taskTrackRow(x.item, t, 4);
+        '<td style="width:170px;text-align:right">' + taskStateBadge(t, x.delay) + ' <button class="btn btn-xs ' + (x.mine && !t.request ? "btn-amber" : "btn-secondary") + '">' + (x.mine && !t.request ? "✍️ 진행 입력" : "📒 보기") + "</button></td></tr>";
     }).join("") + "</tbody></table></div>" : '<div class="empty-state" style="padding:18px">진행 중인 우리 팀 보완 과제가 없습니다.</div>';
     var ap = w.applied.length ? '<div class="table-wrap"><table class="action-table"><tbody>' + w.applied.map(function (it) {
       var si = stageInfo(it), sm = reviewSummary(it);
@@ -900,15 +909,18 @@
     });
   }
 
+  var TASK_VIEWS = [["list", "📋 목록"], ["kanban", "🗂 칸반"], ["group", "📁 안건별"]];
   function renderTasks() {
-    var f = state.f.task;
-    var all = tasksOf(state.items);
-    var delayCnt = all.filter(function (t) { return t.delay; }).length;
+    var f = state.f.task, all = tasksOf(state.items), view = state.taskView || "list";
+    var n = function (fn) { return all.filter(fn).length; };
     setView(
-      '<div class="page-head"><div><h2>🛠️ 보완 과제 현황</h2><p>2단계 검증소위원회에서 확정된 보완 과제 통합 추적 · 목표일이 지난 진행중 과제는 최상단에 표시됩니다</p></div>' +
-      '<div class="page-actions"><span class="badge badge-gray">전체 ' + all.length + '건</span><span class="badge badge-delay">🚨 지연 ' + delayCnt + "건</span>" +
-      '<button class="btn btn-excel" data-action="reportXlsx">📊 현황 보고서(xlsx)</button>' +
-      '<button class="btn btn-excel" data-action="csvRisk">📥 엑셀(Risk 상세표)</button></div></div>' +
+      '<div class="page-head"><div><h2>🛠️ 보완 과제 현황</h2><p>Risk 에서 등록된 보완 과제를 안건과 따로 관리합니다 · 행(카드)을 누르면 오른쪽에 과제 상세가 열립니다</p></div>' +
+      '<div class="page-actions"><span class="badge badge-ing">진행 ' + n(function (x) { return x.task.status !== "완료"; }) + "</span>" +
+      '<span class="badge badge-req">🙋 완료 요청 ' + n(function (x) { return x.task.request; }) + "</span>" +
+      '<span class="badge badge-delay">🚨 지연 ' + n(function (x) { return x.delay; }) + "</span>" +
+      '<span class="badge badge-done">완료 ' + n(function (x) { return x.task.status === "완료"; }) + "</span>" +
+      '<span class="seg">' + TASK_VIEWS.map(function (v) { return '<button class="seg-btn' + (view === v[0] ? " on" : "") + '" data-action="taskView" data-view="' + v[0] + '">' + v[1] + "</button>"; }).join("") + "</span>" +
+      '<button class="btn btn-excel" data-action="reportXlsx">📊 현황 보고서(xlsx)</button></div></div>' +
       '<div class="card"><div class="toolbar"><div class="filter-group"><span class="filter-label">중요도</span>' +
       [["ALL", "전체"], ["상", "상 (이관 전 필수)"], ["중", "중"], ["하", "하"]].map(function (g) {
         return '<button class="chip-btn ' + (f.grade === g[0] ? "active" : "") + '" data-action="taskGrade" data-grade="' + g[0] + '">' + g[1] + "</button>";
@@ -917,42 +929,88 @@
       [["ALL", "전체"], ["DELAY", "🚨 지연과제만"], ["REQ", "🙋 완료 요청"], ["진행중", "진행중"], ["완료", "완료"]].map(function (s) {
         return '<button class="chip-btn ' + (s[0] === "DELAY" ? "danger " : "") + (f.status === s[0] ? "active" : "") + '" data-action="taskStatus" data-status="' + s[0] + '">' + s[1] + "</button>";
       }).join("") +
-      (state.user ? '<button class="chip-btn mine ' + (f.mine ? "active" : "") + '" data-action="taskMine" style="margin-left:8px">👤 내 과제 ' + all.filter(function (x) { return isTaskOwner(x.task); }).length + "</button>" : "") +
+      (state.user ? '<button class="chip-btn mine ' + (f.mine ? "active" : "") + '" data-action="taskMine" style="margin-left:8px">👤 내 과제 ' + n(function (x) { return isTaskOwner(x.task); }) + "</button>" : "") +
       '</div><div class="filter-group"><span class="filter-label">부문</span><select class="select" data-filter="task.sector">' +
       ['<option value="ALL">전체 부문</option>'].concat(SECTORS.map(function (s) {
         return '<option value="' + esc(s) + '"' + (f.sector === s ? " selected" : "") + ">" + esc(s) + "</option>";
       })).join("") + "</select>" +
-      '<input class="input" style="width:200px" placeholder="과제ID, 내용, 담당 검색" data-filter="task.q" value="' + esc(f.q) + '" />' +
+      '<input class="input" style="width:200px" placeholder="과제ID, 내용, 담당, 안건 검색" data-filter="task.q" value="' + esc(f.q) + '" />' +
       '<button class="btn btn-secondary btn-sm" data-action="taskReset">초기화</button></div></div>' +
-      '<div class="card-sub">검색 결과 <b id="tasksCount">0</b>건' + (state.isAdmin ? " · 상태 버튼을 누르면 진행중 ⇄ 완료가 즉시 저장됩니다" : " · 상태 변경은 관리자 모드에서 가능합니다") + "</div>" +
-      '<div class="table-wrap"><table><thead><tr><th style="width:52px">번호</th><th style="width:90px">구분</th><th style="width:200px">제품 / 기술명</th>' +
-      '<th style="width:90px">부문</th><th style="width:70px">중요도</th><th>과제 내용 및 보완 방안</th><th style="width:150px">담당조직 / 담당자</th>' +
-      '<th style="width:130px">목표 일정</th><th style="width:110px">과제 상태</th></tr></thead><tbody id="tasksBody"></tbody></table></div></div>'
+      '<div class="card-sub">검색 결과 <b id="tasksCount">0</b>건</div><div id="taskViewBox"></div></div>'
     );
     renderTasksTable();
   }
-
+  function taskStateBadge(t, delay) {
+    if (t.status === "완료") return '<span class="badge badge-done">✅ 완료</span>';
+    if (t.request) return '<span class="badge badge-req">🙋 완료 요청</span>';
+    return delay ? '<span class="badge badge-delay">🚨 지연 +' + delay + "일</span>" : '<span class="badge badge-ing">⏳ 진행중</span>';
+  }
+  function lastLogOf(t) {
+    return t.lastLog || (t.log || []).slice().reverse().find(function (x) { return x.kind === "progress" || x.kind === "request"; }) || null;
+  }
+  function lastProgressHtml(t) {
+    var l = lastLogOf(t);
+    return l ? '<div class="tk-last" title="' + esc(l.by + " " + l.at) + '"><span class="muted">' + esc((l.at || "").slice(5, 10)) + "</span> " + esc(l.note || "(증빙 파일)") + "</div>" : '<span class="muted">-</span>';
+  }
+  function taskOpenAttr(x) { return ' data-action="taskOpen" data-id="' + esc(x.item.id) + '" data-task="' + esc(x.task.id) + '"'; }
+  function taskSelected(x) { var tp = state.taskPanel; return !!(tp && tp.itemId === x.item.id && tp.taskId === x.task.id); }
+  function ownerText(t) { return esc((t.org || "-") + (t.ownerName || t.ownerEmail ? " · " + (t.ownerName || t.ownerEmail).replace(t.org + " ", "") : "")); }
+  function taskCard(x) {
+    var t = x.task;
+    return '<div class="tk-card' + (x.delay ? " delay" : "") + (taskSelected(x) ? " sel" : "") + '"' + taskOpenAttr(x) + ">" +
+      '<div class="tk-top"><b>' + esc(t.id) + '</b><span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span>" + taskStateBadge(t, x.delay) + "</div>" +
+      '<div class="tk-title">' + esc(t.title || "-") + "</div>" +
+      '<div class="tk-meta">📁 ' + esc(x.item.title) + "</div>" +
+      '<div class="tk-meta">👤 ' + ownerText(t) + " · 📅 " + esc(t.target ? fmtDay(t.target) : "미정") + "</div>" +
+      (lastLogOf(t) ? lastProgressHtml(t) : "") + "</div>";
+  }
   function renderTasksTable() {
-    var list = filteredTasks();
+    var box = $("#taskViewBox");
+    if (!box) return;
+    var list = filteredTasks(), view = state.taskView || "list";
     $("#tasksCount").textContent = list.length;
-    var body = $("#tasksBody");
-    if (!list.length) { body.innerHTML = '<tr><td colspan="9" class="empty-state">조건에 해당하는 보완 과제가 없습니다.</td></tr>'; return; }
-    body.innerHTML = list.map(function (x, idx) {
-      var t = x.task, isDone = t.status === "완료";
-      return '<tr class="' + (x.delay ? "row-delay" : "") + '">' +
-        '<td class="muted" style="font-weight:700">' + (list.length - idx) + "</td><td>" + catBadge(x.item) + "</td>" +
-        '<td><span class="link-text" data-action="openDetail" data-id="' + esc(x.item.id) + '">' + esc(x.item.title) + '</span><div class="muted" style="font-size:11px">' + esc(x.item.id) + " · " + esc(t.id) + "</div></td>" +
-        '<td><span class="badge badge-gray">' + esc(t.sector) + "</span></td>" +
-        '<td><span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span></td>" +
-        '<td><div class="pre" style="font-weight:700">⚠️ ' + esc(t.title || "-") + "</div>" +
-        '<div class="pre" style="font-size:12px;color:var(--text-sub);margin-top:3px">💡 보완: ' + esc(t.plan || "-") + "</div></td>" +
-        '<td><div style="font-weight:700">' + esc(t.org || "-") + "</div>" + (t.ownerName || t.ownerEmail ? '<div class="muted" style="font-size:11px">' + esc(t.ownerName || t.ownerEmail) + "</div>" : "") + "</td>" +
-        '<td style="font-weight:600">' + esc(t.target || "미정") + (t.extensions.length ? ' <span class="badge badge-ext">연장 ' + t.extensions.length + "</span>" : "") +
-        (x.delay ? '<div><span class="badge badge-delay">🚨 지연 (+' + x.delay + "일)</span></div>" : "") + (isDone && t.doneAt ? '<div class="muted" style="font-size:11px">완료 ' + esc(t.doneAt) + "</div>" : "") + "</td>" +
-        '<td><button class="btn btn-sm ' + (isDone ? "btn-teal" : "btn-secondary") + '" data-action="taskToggle" data-id="' + esc(x.item.id) + '" data-task="' + esc(t.id) + '"' +
-        (state.isAdmin ? "" : ' disabled title="관리자 모드에서 변경 가능"') + ">" + (isDone ? "✓ 완료" : "⏳ 진행중") + "</button>" +
-        '<div style="margin-top:4px">' + taskTrackBtn(x.item, t) + "</div></td></tr>" + taskTrackRow(x.item, t, 9);
-    }).join("");
+    if (!list.length) { box.innerHTML = '<div class="empty-state" style="padding:24px">조건에 해당하는 보완 과제가 없습니다.</div>'; return; }
+    if (view === "kanban") {
+      var cols = [["ing", "⏳ 진행중", function (x) { return x.task.status !== "완료" && !x.task.request; }],
+        ["req", "🙋 완료 요청 (승인 대기)", function (x) { return !!x.task.request; }],
+        ["done", "✅ 완료", function (x) { return x.task.status === "완료"; }]];
+      box.innerHTML = '<div class="kanban">' + cols.map(function (c) {
+        var cards = list.filter(c[2]);
+        return '<div class="kb-col kb-' + c[0] + '"><div class="kb-head">' + c[1] + ' <span class="badge badge-gray">' + cards.length + "</span></div>" +
+          (cards.length ? cards.map(taskCard).join("") : '<div class="muted kb-empty">없음</div>') + "</div>";
+      }).join("") + "</div>";
+      return;
+    }
+    if (view === "group") {
+      var groups = [], byId = {};
+      list.forEach(function (x) {
+        if (!byId[x.item.id]) { byId[x.item.id] = { item: x.item, list: [] }; groups.push(byId[x.item.id]); }
+        byId[x.item.id].list.push(x);
+      });
+      box.innerHTML = groups.map(function (g) {
+        var closed = !!state.taskGroupClosed[g.item.id], open = g.list.filter(function (x) { return x.task.status !== "완료"; }).length;
+        var dl = g.list.filter(function (x) { return x.delay; }).length;
+        return '<div class="tg"><div class="tg-head" data-action="taskGroupToggle" data-id="' + esc(g.item.id) + '"><span class="tg-caret">' + (closed ? "▶" : "▼") + "</span>" +
+          catBadge(g.item) + "<b>" + esc(g.item.title) + '</b><span class="muted">' + esc(g.item.id) + "</span>" + longItemBadge(g.item) +
+          '<span class="tg-cnt">과제 ' + g.list.length + " · 진행 " + open + (dl ? ' · <b class="txt-delay">🚨 지연 ' + dl + "</b>" : "") + "</span></div>" +
+          (closed ? "" : '<div class="tg-body">' + g.list.map(taskCard).join("") + "</div>") + "</div>";
+      }).join("");
+      return;
+    }
+    box.innerHTML = '<div class="table-wrap"><table class="task-list"><thead><tr><th style="width:90px">과제</th><th style="width:210px">안건</th><th>과제 내용 / 보완 방안</th>' +
+      '<th style="width:240px">최근 진행 내용</th><th style="width:150px">담당</th><th style="width:110px">목표일</th><th style="width:120px">상태</th></tr></thead><tbody>' +
+      list.map(function (x) {
+        var t = x.task;
+        return '<tr class="row-link' + (x.delay ? " row-delay" : "") + (taskSelected(x) ? " row-sel" : "") + '"' + taskOpenAttr(x) + ">" +
+          "<td><b>" + esc(t.id) + '</b> <span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span></td>" +
+          '<td><div style="font-weight:700;font-size:12.5px">' + esc(x.item.title) + '</div><div class="muted" style="font-size:11px">' + esc(x.item.id) + " · " + esc(t.team || t.sector) + "</div></td>" +
+          '<td><div class="pre" style="font-weight:700">' + esc(t.title || "-") + '</div><div class="pre muted" style="font-size:12px;margin-top:2px">💡 ' + esc(t.plan || "-") + "</div></td>" +
+          "<td>" + lastProgressHtml(t) + "</td>" +
+          '<td style="font-size:12.5px">' + ownerText(t) + "</td>" +
+          '<td style="font-weight:600">' + esc(t.target ? fmtDay(t.target) : "미정") + (t.extensions.length ? ' <span class="badge badge-ext">연장 ' + t.extensions.length + "</span>" : "") +
+          (t.status === "완료" && t.doneAt ? '<div class="muted" style="font-size:11px">완료 ' + esc(t.doneAt) + "</div>" : "") + "</td>" +
+          "<td>" + taskStateBadge(t, x.delay) + "</td></tr>";
+      }).join("") + "</tbody></table></div>";
   }
 
   // =====================================================================
@@ -999,11 +1057,11 @@
         '<div style="display:flex;gap:6px"><select id="apSize" class="select" style="flex:1"><option value="">구경 선택</option><option value="300mm">300mm</option><option value="200mm">200mm</option></select>' +
         '<select id="apType" class="select" style="flex:1"><option value="">PW / EPI</option><option value="PW">PW</option><option value="EPI">EPI</option></select></div></div>' +
       '<div class="field"><label for="apDate">발제일</label><input id="apDate" type="date" class="input" value="' + today() + '" /></div>' +
-      '<div class="field"><label for="apMs">제품 MS <span class="muted">(사업계획 반영 여부 확인용 · 여러 개는 , 로 구분)</span></label><input id="apMs" class="input" maxlength="300" placeholder="예) MS-12345" /></div>' +
-      '<div class="field full"><label for="apTitle">제품 / 기술명 <span class="req">*</span></label><input id="apTitle" class="input" maxlength="200" placeholder="예) 차세대 SiC 전력반도체 모듈 Gen-4" /></div>' +
-      '<div class="field"><label for="apReq">요청자 성명 <span class="req">*</span></label><input id="apReq" class="input" maxlength="100" placeholder="예) 홍길동 책임" value="' + esc(me.name ? me.name + (me.title ? " " + me.title : "") : "") + '" /></div>' +
+      '<div class="field"><label for="apMs">제품 MS <span class="muted">(사업계획 반영 여부 확인용 · 여러 개는 , 로 구분)</span></label><input id="apMs" class="input" maxlength="300" placeholder="예) 12Q000, 08Q000" /></div>' +
+      '<div class="field full"><label for="apTitle">제품 / 기술명 <span class="req">*</span></label><input id="apTitle" class="input" maxlength="200" placeholder="예) 0000 고객 0000제품, 0000 기술 도입 등" /></div>' +
+      '<div class="field"><label for="apReq">요청자 성명 <span class="req">*</span></label><input id="apReq" class="input" maxlength="100" placeholder="예) 홍길동 Pro" value="' + esc(me.name ? me.name + (me.title ? " " + me.title : "") : "") + '" /></div>' +
       '<div class="field"><label for="apDept">소속 부서 <span class="req">*</span></label><input id="apDept" class="input" maxlength="100" placeholder="예) 제품개발팀" value="' + esc(me.team || "") + '" /></div>' +
-      '<div class="field full"><label for="apEmail">요청자 이메일 <span class="muted">(선택 · 검토 요청 메일 참조로 자동 포함)</span></label><input id="apEmail" type="email" class="input" placeholder="name@company.com" value="' + esc(me.email || "") + '" /></div>' +
+      '<div class="field full"><label for="apEmail">요청자 이메일 <span class="muted">(선택 · 검토 요청 메일 참조로 자동 포함)</span></label><input id="apEmail" type="email" class="input" placeholder="name@sk.com" value="' + esc(me.email || "") + '" /></div>' +
       '<div class="field full"><label for="apSummary">양산이관 주요 내용 및 변경점 요약</label><textarea id="apSummary" class="textarea" style="min-height:140px" maxlength="5000" placeholder="변경 내역(4M), 개발 검증 결과, 양산 적용 계획 등을 요약해 주세요."></textarea></div>' +
       '<div class="field full"><span class="lbl">첨부파일 (검증보고서, 도면 등 · 파일당 100MB 이하)</span>' +
       '<div class="dropzone" data-action="applyPick" data-drop="apply"><b>📎 파일을 끌어다 놓거나 클릭해서 선택</b>여러 개를 한 번에 올릴 수 있습니다</div>' +
@@ -1014,7 +1072,7 @@
       '<div class="card"><div class="card-title">신청 후 진행 절차</div><ol class="steps-guide">' +
       "<li><span>1</span><span>신청 즉시 <b>접수대기</b> 상태로 등록되고, 간사·팀장에게 알림 메일이 자동 발송됩니다.</span></li>" +
       "<li><span>2</span><span>간사가 접수 후 6대 부문 <b>전문소위원(팀장) 서면검토</b>를 요청합니다.</span></li>" +
-      "<li><span>3</span><span>전 부문 특이사항이 없으면 <b>⚡ 패스트트랙</b>으로 2~4단계를 생략합니다.</span></li>" +
+      "<li><span>3</span><span>선정 팀이 모두 이상 없음이거나, Risk 를 모두 결정(과제 등록·수용)하고 중요도 <b>상</b> 과제를 완료하면 <b>⚡ 패스트트랙</b>으로 2~4단계를 생략합니다.</span></li>" +
       "<li><span>4</span><span>특이사항이 있으면 <b>검증소위원회</b>에서 보완 과제를 확정하고, 중대 안건은 전문위원·검증위원회로 상정됩니다.</span></li>" +
       "<li><span>5</span><span><b>최종승인</b> 후 양산이관이 완료됩니다. 진행 현황은 [양산이관 세부현황]에서 확인하세요.</span></li>" +
       '</ol><button class="btn btn-secondary btn-sm" data-action="nav" data-route="criteria">📖 양산이관 기준 보기</button></div></div>'
@@ -1170,7 +1228,7 @@
       '<div class="section"><div class="section-title">🔀 양산이관 검증 프로세스 (접수 → 1~5단계)</div>' +
       '<div class="pl-wrap"><div class="pl-line">' + line + "</div>" +
       '<div class="pl-skips">' +
-      skip("fast", "⚡", "패스트트랙", "1단계 완료", "5단계 최종승인", "1단계 6대 부문 모두 '특이사항 없음'", "3 / span 9") +
+      skip("fast", "⚡", "패스트트랙", "1단계 완료", "5단계 최종승인", "모두 이상 없음, 또는 Risk 결정 + '상' 과제 완료", "3 / span 9") +
       skip("sub", "📌", "소위 전결", "2단계 완료", "5단계 최종승인", "2단계에서 전결 처리 (중대 안건 없음)", "5 / span 7") +
       "</div></div>" +
       '<div class="card-sub">⚡ 패스트트랙: 2·3·4단계 생략 &nbsp;|&nbsp; 📌 소위 전결: 3·4단계 생략 &nbsp;|&nbsp; 그 외에는 1→2→3→4→5단계를 순서대로 진행합니다.</div></div>' +
@@ -1245,7 +1303,6 @@
     }
     var s = state.admin, smtp = s.smtp;
     var pending = state.items.filter(function (i) { return i.accepted === false; });
-    if (!state.adminMailItemId || !findItem(state.adminMailItemId)) state.adminMailItemId = state.items[0] ? state.items[0].id : "";
 
     setView(
       '<div class="page-head"><div><h2>🔓 관리자 모드</h2><p>메일 주소록 · 시스템 설정 · 안건 일괄 관리</p></div>' +
@@ -1305,13 +1362,6 @@
       '<button class="btn btn-primary btn-sm" data-action="saveMailCfg">💾 저장</button></div>' +
       '<div class="card-sub">테스트는 저장하지 않은 입력값으로도 바로 시험합니다. 성공하면 [💾 저장]을 누르세요.</div><div id="smtpDiag"></div></div>' +
 
-      // 메일 작성
-      '<div class="card full"><div class="card-title">✉️ 검토 요청 메일 작성</div>' +
-      '<div class="filter-group"><span class="filter-label">대상 안건</span><select class="select" style="min-width:360px" data-action-change="adminMailItem">' +
-      state.items.map(function (i) {
-        return '<option value="' + esc(i.id) + '"' + (i.id === state.adminMailItemId ? " selected" : "") + ">[" + esc(i.id) + "] " + esc(i.title) + "</option>";
-      }).join("") + '</select></div><div id="mailHost-admin"></div></div>' +
-
       // 일괄 관리
       '<div class="card full"><div class="card-title">🗂 전체 안건 일괄 관리 <span class="card-sub">저장소: ' + esc(state.storage.path) + "</span></div>" +
       '<div style="display:flex;gap:6px;flex-wrap:wrap"><button class="btn btn-teal btn-sm" data-action="backupJson">💾 data.json 백업 다운로드</button>' +
@@ -1367,10 +1417,7 @@
     if (!state.bizplan) api("GET", "/api/admin/bizplan").then(function (b) { state.bizplan = b; renderBizplan(); }).catch(function () { });
     renderTeamRows();
     if (state.adminUsers) renderUserRows();
-    else api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; renderUserRows(); renderMailPanel(); }).catch(fail);
-    var it = findItem(state.adminMailItemId);
-    if (it && (!state.mail || state.mail.host !== "admin" || state.mail.itemId !== it.id)) initMail(it, "admin");
-    renderMailPanel();
+    else api("GET", "/api/admin/users").then(function (list) { state.adminUsers = list; renderUserRows(); }).catch(fail);
   }
 
   function mailDiagHtml(d) {
@@ -1493,12 +1540,16 @@
   // 상세 모달
   // =====================================================================
   // 다른 사람이 방금 작성한 내용이 보이도록, 열기 전에 서버 버전을 확인해 필요하면 새로 불러온다.
+  // 목록 데이터는 가볍게(이력·진행 기록·회의록 본문 제외) 받고, 상세 창을 열 때 그 안건 전체를 받는다.
   function openDetail(id) {
-    api("GET", "/api/version").then(function (v) { if (v.version !== state.version) return loadAll(); })
-      .catch(function () { /* 오프라인이면 캐시로 연다 */ })
-      .then(function () { openDetailNow(id); });
+    fetchFull(id).then(function () { openDetailNow(id); });
+  }
+  function fetchFull(id) {
+    return api("GET", "/api/items/" + encodeURIComponent(id)).then(function (full) { replaceItem(full); return full; })
+      .catch(function () { return findItem(id); /* 오프라인이면 캐시로 */ });
   }
   function openDetailNow(id) {
+    if (state.taskPanel) closeTaskPanel(true);
     var item = findItem(id);
     if (!item) { toast("안건을 찾을 수 없습니다: " + id, "err"); return; }
     state.detail = { id: id, orig: clone(item), draft: clone(item), ext: null, taskExt: null, acceptFor: null };
@@ -1906,103 +1957,160 @@
     }).join("");
   }
   function renderTaskBox() {
-    var d = state.detail.draft, box = $("#taskBox"), admin = state.isAdmin, ext = state.detail.taskExt;
+    var d = state.detail.draft, box = $("#taskBox"), admin = state.isAdmin;
     if (!box) return;
-    var tasks = d.tasks || [];
+    var tasks = d.tasks || [], saved = {};
+    (state.detail.orig.tasks || []).forEach(function (t) { saved[t.id] = true; });
     var open = tasks.filter(function (t) { return t.status !== "완료"; });
     $("#taskSummary").innerHTML = tasks.length ? '<span class="badge badge-gray">과제 ' + tasks.length + "건</span> " +
       '<span class="badge badge-ing">진행 ' + open.length + "</span> " +
       (openTaskCount(d, "상") ? '<span class="badge badge-delay">상 미완료 ' + openTaskCount(d, "상") + "</span> " : "") +
       '<span class="badge badge-done">완료 ' + (tasks.length - open.length) + "</span>" : "";
     if (!tasks.length) { box.innerHTML = '<div class="empty-state" style="padding:18px">등록된 보완 과제가 없습니다.' + (admin ? " [3]의 Risk 에서 [🛠 과제 등록]을 누르면 여기에 추가됩니다." : "") + "</div>"; return; }
-    box.innerHTML = '<div class="table-wrap"><table class="task-table"><thead><tr><th style="width:62px">과제</th><th style="width:84px">중요도</th><th>과제 내용 / 보완 방안</th>' +
-      '<th style="width:220px">담당조직 / 담당자</th><th style="width:170px">목표일</th><th style="width:100px">상태</th></tr></thead><tbody>' +
-      tasks.map(function (t) {
-        var delay = taskDelay(t), a = function (f) { return ' data-task-id="' + esc(t.id) + '" data-tkf="' + f + '"'; };
-        var target = '<div class="step-dates">' + (t.target ? '<div><b>' + fmtDay(t.target) + "</b>" + (delay ? ' <span class="badge badge-delay">+' + delay + "일</span>" : "") + "</div>" : '<div class="muted">미지정</div>') +
-          (t.extensions.length ? '<div class="muted" title="' + esc(t.extensions.map(function (e) { return e.from + " → " + e.to + " : " + e.reason; }).join("\n")) + '"><s>' + fmtDay(t.targetOriginal) + '</s> <span class="badge badge-ext">연장 ' + t.extensions.length + "회</span></div>" : "") +
-          (t.status === "완료" && t.doneAt ? '<div class="muted">완료 ' + fmtDay(t.doneAt) + "</div>" : "") +
-          (longTermOf(d, t) ? "<div>" + longBadge(longTermOf(d, t)) + "</div>" : "") + "</div>";
-        if (admin && t.status !== "완료") {
-          target += ext && ext.id === t.id
-            ? '<div class="ext-form"><input type="date" class="input mini" data-task-ext="date" value="' + esc(ext.date) + '" />' +
-              '<textarea class="textarea" data-task-ext="reason" placeholder="' + (t.target ? "연장 사유 (필수)" : "사유 (선택)") + '">' + esc(ext.reason) + "</textarea>" +
-              '<div class="ext-btns"><button class="btn btn-secondary btn-sm" data-action="taskExtCancel">취소</button><button class="btn btn-primary btn-sm" data-action="taskExtApply">적용</button></div></div>'
-            : '<button class="step-btn ext" data-action="taskExtOpen" data-task-id="' + esc(t.id) + '">' + (t.target ? "⏰ 연장" : "📅 목표일 지정") + "</button>" +
-              (t.ownerEmail ? '<button class="step-btn" data-action="remind" data-kind="task" data-id="' + esc(d.id) + '" data-task="' + esc(t.id) + '">✉️ Remind</button>' + remindInfo(d, t.id) : "");
-        }
-        return '<tr class="' + (delay ? "row-delay" : "") + '"><td><b>' + esc(t.id) + '</b><div class="muted" style="font-size:11px">' + esc(t.sector) + (t.team ? "<br>" + esc(t.team) : "") + "</div></td>" +
-          "<td>" + (admin ? '<select class="select"' + a("importance") + ">" + GRADES.map(function (g) { return '<option value="' + g + '"' + (t.importance === g ? " selected" : "") + ">" + g + "</option>"; }).join("") + "</select>"
-            : '<span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span>") + "</td>" +
-          "<td>" + (admin ? '<textarea class="textarea sm"' + a("title") + ' placeholder="과제 내용">' + esc(t.title) + '</textarea><textarea class="textarea sm"' + a("plan") + ' placeholder="보완 방안">' + esc(t.plan) + "</textarea>"
-            : '<div class="pre" style="font-weight:700">' + esc(t.title) + '</div><div class="pre muted">💡 ' + esc(t.plan || "-") + "</div>") + "</td>" +
-          "<td>" + (admin ? '<input class="input"' + a("org") + ' placeholder="담당조직" value="' + esc(t.org) + '" />' +
-              '<select class="select" data-task-owner="' + esc(t.id) + '">' + memberOptions(t) + "</select>" +
-              '<input class="input"' + a("ownerEmail") + ' placeholder="담당자 이메일 (직접 입력 가능)" value="' + esc(t.ownerEmail) + '" />'
-            : '<div style="font-weight:700">' + esc(t.org || "-") + '</div><div class="muted">' + esc(t.ownerName || t.ownerEmail || "") + "</div>") + "</td>" +
-          "<td>" + target + "</td>" +
-          "<td>" + (admin ? '<select class="select"' + a("status") + '><option value="진행중"' + (t.status !== "완료" ? " selected" : "") + '>진행중</option><option value="완료"' + (t.status === "완료" ? " selected" : "") + ">완료</option></select>"
-            : (t.status === "완료" ? '<span class="badge badge-done">완료</span>' : '<span class="badge badge-ing">진행중</span>')) +
-          '<div style="margin-top:4px">' + taskTrackBtn(d, t) + "</div></td></tr>" + taskTrackRow(d, t, 6);
+    var newOnes = tasks.filter(function (t) { return !saved[t.id]; });
+    box.innerHTML = '<div class="card-sub">📋 등록된 과제의 진행 내용·완료 처리·목표일 연장은 <b>[🛠 보완 과제 현황]</b>에서 관리합니다. 행의 [관리 →]를 누르면 바로 열립니다.</div>' +
+      '<div class="table-wrap"><table class="task-table"><thead><tr><th style="width:62px">과제</th><th style="width:60px">중요도</th><th>과제 내용</th><th style="width:200px">최근 진행 내용</th>' +
+      '<th style="width:170px">담당</th><th style="width:110px">목표일</th><th style="width:150px">상태</th></tr></thead><tbody>' +
+      tasks.filter(function (t) { return saved[t.id]; }).map(function (t) {
+        var delay = taskDelay(t);
+        return '<tr class="' + (delay ? "row-delay" : "") + '"><td><b>' + esc(t.id) + "</b></td>" +
+          '<td><span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span></td>" +
+          '<td><div class="pre" style="font-weight:700">' + esc(t.title) + '</div><div class="pre muted" style="font-size:12px">💡 ' + esc(t.plan || "-") + "</div></td>" +
+          "<td>" + lastProgressHtml(t) + "</td>" +
+          '<td style="font-size:12.5px">' + ownerText(t) + "</td>" +
+          "<td>" + esc(t.target ? fmtDay(t.target) : "미정") + (longTermOf(d, t) ? "<div>" + longBadge(longTermOf(d, t)) + "</div>" : "") + "</td>" +
+          "<td>" + taskStateBadge(t, delay) + ' <button class="btn btn-secondary btn-xs" data-action="taskOpen" data-id="' + esc(d.id) + '" data-task="' + esc(t.id) + '">관리 →</button></td></tr>';
+      }).join("") +
+      newOnes.map(function (t) {
+        var a = function (f) { return ' data-task-id="' + esc(t.id) + '" data-tkf="' + f + '"'; };
+        return '<tr class="row-new"><td><b>' + esc(t.id) + '</b><div class="badge badge-wait">새 과제</div></td>' +
+          '<td><select class="select"' + a("importance") + ">" + GRADES.map(function (g) { return '<option value="' + g + '"' + (t.importance === g ? " selected" : "") + ">" + g + "</option>"; }).join("") + "</select></td>" +
+          '<td><textarea class="textarea sm"' + a("title") + ">" + esc(t.title) + '</textarea><textarea class="textarea sm"' + a("plan") + ' placeholder="보완 방안">' + esc(t.plan) + "</textarea></td>" +
+          '<td class="muted" style="font-size:12px">저장 후 과제 화면에서 진행 내용을 기록합니다</td>' +
+          '<td><input class="input"' + a("org") + ' placeholder="담당조직" value="' + esc(t.org) + '" /><select class="select" data-task-owner="' + esc(t.id) + '">' + memberOptions(t) + "</select>" +
+          '<input class="input"' + a("ownerEmail") + ' placeholder="담당자 이메일" value="' + esc(t.ownerEmail) + '" /></td>' +
+          '<td><input type="date" class="input mini"' + a("target") + ' value="' + esc(t.target) + '" /></td>' +
+          '<td class="muted" style="font-size:12px">💾 저장하면 등록됩니다</td></tr>';
       }).join("") + "</tbody></table></div>";
   }
 
-  // ---- 보완 과제 진행 기록: 담당자 진행 입력·완료 요청 / 관리자 승인·반려 ----
-  var TASK_LOG_LABEL = { progress: "📝 진행", request: "🙋 완료 요청", approve: "✅ 완료 승인", reject: "↩ 반려", reopen: "↺ 완료 해제" };
+  // ---- 보완 과제 상세 패널 (오른쪽): 과제 정보 · 진행 내용 · 완료 처리 ----
+  var TASK_LOG_LABEL = { progress: "📝 진행", request: "🙋 완료 요청", approve: "✅ 완료", reject: "↩ 반려", reopen: "↺ 완료 해제" };
   function isTaskOwner(t) {
     var u = state.user;
     if (!u) return false;
     return !!((t.ownerEmpId && t.ownerEmpId === u.empId) || (t.ownerEmail && u.email && t.ownerEmail.toLowerCase() === u.email.toLowerCase()));
   }
   function trackKey(item, t) { return item.id + "/" + t.id; }
-  // 상태 칸 아래: 완료 요청 표시 + [진행 기록] 펼치기 버튼
-  function taskTrackBtn(item, t) {
-    var k = trackKey(item, t), open = !!state.taskOpen[k], mine = isTaskOwner(t) && t.status !== "완료";
-    return (t.request ? '<div><span class="badge badge-req" title="' + esc(t.request.by + " " + t.request.at) + '">🙋 완료 요청됨</span></div>' : "") +
-      '<button class="btn btn-xs ' + (open ? "btn-primary" : mine ? "btn-amber" : "btn-secondary") + '" data-action="taskTrackToggle" data-id="' + esc(item.id) + '" data-task="' + esc(t.id) + '">' +
-      (mine ? "✍️ 진행 입력" : "📒 진행 기록") + ((t.log || []).length ? " " + t.log.length : "") + (open ? " ▲" : " ▼") + "</button>";
-  }
-  function taskTrackRow(item, t, colspan) {
-    var k = trackKey(item, t);
-    if (!state.taskOpen[k]) return "";
-    var admin = state.isAdmin, a = ' data-id="' + esc(item.id) + '" data-task="' + esc(t.id) + '"';
+  function taskLogHtml(item, t) {
     var base = "/api/items/" + encodeURIComponent(item.id) + "/taskfiles/";
-    var log = (t.log || []).length ? '<div class="tl-list">' + t.log.slice().reverse().map(function (x) {
+    var log = (t.log || []).slice().reverse();
+    return log.length ? '<div class="tl-list">' + log.map(function (x) {
       return '<div class="tl-item k-' + x.kind + '"><div class="tl-head"><span class="tl-kind">' + (TASK_LOG_LABEL[x.kind] || x.kind) + "</span><b>" + esc(x.by) + '</b><span class="muted">' + esc(x.at) + "</span></div>" +
         (x.note ? '<div class="tl-note">' + esc(x.note) + "</div>" : "") +
-        (x.files.length ? '<div class="tl-files">' + x.files.map(function (f) { return '<span class="file-chip">📎 <a href="' + base + encodeURIComponent(f.name) + '" download>' + esc(f.name) + "</a></span>"; }).join("") + "</div>" : "") + "</div>";
-    }).join("") + "</div>" : '<div class="muted" style="padding:4px 0">아직 진행 기록이 없습니다.</div>';
-    var form = "";
-    if (isTaskOwner(t) && t.status !== "완료") {
-      form = '<div class="tl-form"><div class="lbl">✍️ 진행 상황 입력 <span class="muted">(담당자: ' + esc(state.user.name) + ")</span></div>" +
-        '<textarea class="textarea" data-tp-note="' + esc(k) + '" placeholder="진행 내용 / 완료 근거를 적어 주세요. (메일 본문 붙여넣기 가능)">' + esc(state.taskForm[k] || "") + "</textarea>" +
-        '<div class="tl-btns"><input type="file" multiple data-tp-files="' + esc(k) + '" />' +
-        '<button class="btn btn-teal btn-sm" data-action="taskProgress"' + a + '>💾 진행 상황 저장</button>' +
-        (t.request ? '<span class="muted">완료 요청 승인 대기 중</span>' : '<button class="btn btn-primary btn-sm" data-action="taskProgress" data-request="1"' + a + ">🙋 완료 요청 (간사에게 메일)</button>") + "</div></div>";
+        (x.files && x.files.length ? '<div class="tl-files">' + x.files.map(function (f) { return '<span class="file-chip">📎 <a href="' + base + encodeURIComponent(f.name) + '" download>' + esc(f.name) + "</a></span>"; }).join("") + "</div>" : "") + "</div>";
+    }).join("") + "</div>" : '<div class="muted" style="padding:6px 0">아직 진행 기록이 없습니다.</div>';
+  }
+  function ensureTaskPanel() {
+    var p = $("#taskPanel");
+    if (!p) {
+      var bg = document.createElement("div"); bg.id = "taskPanelBg"; bg.className = "task-panel-bg"; bg.setAttribute("data-action", "taskClose");
+      p = document.createElement("aside"); p.id = "taskPanel"; p.className = "task-panel";
+      document.body.appendChild(bg); document.body.appendChild(p);
     }
-    if (admin && t.status !== "완료") {
-      form += '<div class="tl-form admin"><div class="lbl">🔒 관리자 ' + (t.request ? "— 완료 요청 검토" : "— 완료 처리") + "</div>" +
-        '<div class="tl-btns"><input class="input" data-tp-comment="' + esc(k) + '" placeholder="' + (t.request ? "의견 (반려 시 사유 필수)" : "의견 (선택)") + '" value="' + esc(state.taskForm[k + "#c"] || "") + '" />' +
-        '<button class="btn btn-primary btn-sm" data-action="taskDecide" data-approve="1"' + a + ">✅ 완료 승인</button>" +
-        (t.request ? '<button class="btn btn-danger btn-sm" data-action="taskDecide"' + a + ">↩ 반려</button>" : "") + "</div></div>";
+    return p;
+  }
+  function openTaskPanel(itemId, taskId) {
+    if (state.detail) closeDetail(true);
+    state.taskPanel = { itemId: itemId, taskId: taskId, item: findItem(itemId), form: null, loading: true };
+    renderTaskPanel(); if (state.route === "tasks") renderTasksTable();
+    if (state.isAdmin && !state.adminUsers) api("GET", "/api/admin/users").then(function (l) { state.adminUsers = l; renderTaskPanel(); }).catch(function () { });
+    fetchFull(itemId).then(function (full) {
+      var tp = state.taskPanel;
+      if (!tp || tp.itemId !== itemId) return;
+      tp.item = full || findItem(itemId); tp.loading = false; renderTaskPanel();
+    });
+  }
+  function tpTask() { var tp = state.taskPanel; return tp && tp.item ? (tp.item.tasks || []).find(function (t) { return t.id === tp.taskId; }) : null; }
+  function tpDirty() {
+    var tp = state.taskPanel, t = tpTask();
+    if (!tp || !tp.form || !t) return false;
+    return ["title", "plan", "importance", "org", "ownerEmpId", "ownerEmail", "target"].some(function (k) { return (tp.form[k] || "") !== (t[k] || ""); });
+  }
+  function closeTaskPanel(force) {
+    if (!force && tpDirty() && !confirm("저장하지 않은 과제 정보 변경이 있습니다. 닫을까요?")) return;
+    state.taskPanel = null; renderTaskPanel();
+    if (state.route === "tasks") renderTasksTable();
+  }
+  function renderTaskPanel() {
+    var box = ensureTaskPanel(), bg = $("#taskPanelBg"), tp = state.taskPanel;
+    box.classList.toggle("open", !!tp); bg.classList.toggle("open", !!tp);
+    if (!tp) { box.innerHTML = ""; return; }
+    var it = tp.item, t = tpTask(), admin = state.isAdmin;
+    if (!t) { box.innerHTML = '<div class="tp-head"><h3>과제를 찾을 수 없습니다</h3><button class="btn btn-secondary btn-sm" data-action="taskClose">✕</button></div>'; return; }
+    if (!tp.form) tp.form = { title: t.title, plan: t.plan, importance: t.importance, org: t.org, ownerEmpId: t.ownerEmpId, ownerEmail: t.ownerEmail, target: t.target, reason: "" };
+    var f = tp.form, delay = taskDelay(t), k = trackKey(it, t), lt = longTermOf(it, t), done = t.status === "완료";
+    var a = ' data-id="' + esc(it.id) + '" data-task="' + esc(t.id) + '"';
+    var info;
+    if (admin) {
+      var users = (state.adminUsers || []).filter(function (u) { return u.status === "approved"; });
+      var targetChanged = t.target && f.target && f.target !== t.target;
+      info = '<div class="tp-form">' +
+        '<label>과제 내용</label><textarea class="textarea sm" data-tpf="title">' + esc(f.title) + "</textarea>" +
+        '<label>보완 방안</label><textarea class="textarea sm" data-tpf="plan">' + esc(f.plan) + "</textarea>" +
+        '<div class="tp-grid"><div><label>중요도</label><select class="select" data-tpf="importance">' + GRADES.map(function (g) { return "<option" + (f.importance === g ? " selected" : "") + ">" + g + "</option>"; }).join("") + "</select></div>" +
+        '<div><label>담당조직</label><input class="input" data-tpf="org" value="' + esc(f.org) + '" /></div>' +
+        '<div><label>담당자 (회원)</label><select class="select" data-tpf="ownerEmpId"><option value="">회원 선택 안 함</option>' + users.map(function (u) {
+          return '<option value="' + esc(u.empId) + '"' + (f.ownerEmpId === u.empId ? " selected" : "") + ">" + esc(u.team + " " + u.name + " " + u.title) + "</option>";
+        }).join("") + "</select></div>" +
+        '<div><label>담당자 이메일 ' + (f.ownerEmpId ? '<span class="muted">(회원 메일 사용)</span>' : "") + '</label><input class="input" data-tpf="ownerEmail" value="' + esc(f.ownerEmpId ? (users.find(function (u) { return u.empId === f.ownerEmpId; }) || {}).email || f.ownerEmail : f.ownerEmail) + '"' + (f.ownerEmpId ? " disabled" : "") + " /></div>" +
+        '<div><label>목표일</label><input type="date" class="input" data-tpf="target" value="' + esc(f.target) + '" /></div>' +
+        (targetChanged ? '<div><label>연장 사유 <span class="req">*</span></label><input class="input" data-tpf="reason" value="' + esc(f.reason) + '" placeholder="목표일 변경 사유" /></div>' : "<div></div>") + "</div>" +
+        '<div class="tp-btns"><button class="btn btn-primary btn-sm" data-action="taskSave"' + (tpDirty() ? "" : " disabled") + ">💾 과제 정보 저장</button>" +
+        (t.ownerEmail && !done ? '<button class="btn btn-amber btn-sm" data-action="remind" data-kind="task"' + a + ">✉️ Remind</button>" + remindInfo(it, t.id) : "") + "</div></div>";
+    } else {
+      info = '<div class="tp-view"><div class="pre" style="font-weight:700">⚠️ ' + esc(t.title) + '</div><div class="pre muted">💡 ' + esc(t.plan || "-") + "</div>" +
+        '<div class="tp-kv"><span>담당</span><b>' + ownerText(t) + "</b><span>목표일</span><b>" + esc(t.target ? fmtDay(t.target) : "미정") + "</b></div></div>";
     }
-    return '<tr class="track-row"><td colspan="' + colspan + '"><div class="tl-wrap">' + log + form + "</div></td></tr>";
+    var ext = t.extensions.length ? '<div class="tp-ext"><b>⏰ 목표일 변경 이력</b>' + t.extensions.map(function (e) {
+      return "<div>" + esc(e.from) + " → <b>" + esc(e.to) + "</b> · " + esc(e.reason || "-") + ' <span class="muted">(' + esc(e.at) + ")</span></div>";
+    }).join("") + "</div>" : "";
+    var canWrite = !done && (isTaskOwner(t) || admin);
+    var prog = '<div class="tp-sec"><h4>📝 진행 내용</h4>' +
+      (canWrite ? '<textarea class="textarea" data-tp-note="' + esc(k) + '" placeholder="진행 내용을 적어 주세요. (메일 본문 붙여넣기 가능)">' + esc(state.taskForm[k] || "") + "</textarea>" +
+        '<div class="tp-btns"><input type="file" multiple data-tp-files="' + esc(k) + '" />' +
+        '<button class="btn btn-teal btn-sm" data-action="taskProgress"' + a + ">💾 진행 내용 저장</button>" +
+        (!admin && !t.request ? '<button class="btn btn-primary btn-sm" data-action="taskProgress" data-request="1"' + a + ">🙋 완료 요청</button>" : "") + "</div>" : "") +
+      (admin && !done ? '<div class="tp-btns admin"><input class="input" data-tp-comment="' + esc(k) + '" value="' + esc(state.taskForm[k + "#c"] || "") + '" placeholder="' + (t.request ? "의견 (반려 시 사유 필수)" : "완료 의견 (선택)") + '" />' +
+        '<button class="btn btn-primary btn-sm" data-action="taskDecide" data-approve="1"' + a + ">" + (t.request ? "✅ 완료 승인" : "✅ 완료 처리") + "</button>" +
+        (t.request ? '<button class="btn btn-danger btn-sm" data-action="taskDecide"' + a + ">↩ 반려</button>" : "") + "</div>" : "") +
+      (admin && done ? '<div class="tp-btns"><button class="btn btn-secondary btn-sm" data-action="taskReopen"' + a + ">↺ 완료 해제 (진행중으로)</button></div>" : "") +
+      (t.request && !admin ? '<div class="muted">🙋 완료 요청을 보냈습니다. 간사 승인 대기 중입니다.</div>' : "") +
+      (!canWrite && !admin && !done ? '<div class="muted">진행 내용은 이 과제의 담당자(회원)와 관리자가 입력할 수 있습니다.</div>' : "") +
+      (tp.loading ? '<div class="muted">기록을 불러오는 중…</div>' : taskLogHtml(it, t)) + "</div>";
+    box.innerHTML = '<div class="tp-head"><div><div class="tp-id"><b>' + esc(t.id) + '</b><span class="grade-chip ' + GRADE_CLS[t.importance] + '">' + t.importance + "</span>" + taskStateBadge(t, delay) + longBadge(lt) + "</div>" +
+      "<h3>" + esc(t.title || "-") + '</h3></div><button class="btn btn-secondary btn-sm" data-action="taskClose">✕ 닫기</button></div>' +
+      '<div class="tp-body"><div class="tp-src">📁 출처 안건: <b>' + esc(it.title) + '</b> <span class="muted">' + esc(it.id) + " · " + esc(t.team || t.sector) + (t.riskId ? " · " + esc(t.riskId) : "") + "</span>" +
+      '<button class="link-btn" data-action="openDetail" data-id="' + esc(it.id) + '">안건 보기</button></div>' +
+      '<div class="tp-sec"><h4>📌 과제 정보</h4>' + info + ext + "</div>" + prog + "</div>";
   }
   function rerenderTasks() {
+    renderTaskPanel();
     if (state.detail) renderTaskBox();
     else if (state.route === "tasks") renderTasksTable();
     else if (state.route === "dashboard") renderDashboard();
     else if (state.route === "mywork") renderMywork();
   }
-  // 서버 응답으로 과제 진행 기록·상태만 반영 (상세에서 편집 중인 다른 내용은 유지)
+  // 서버 응답(안건 전체)으로 과제 패널·상세 창을 맞춘다
   function syncTaskTracking(updated) {
     replaceItem(updated); updateNavBadges();
+    if (state.taskPanel && state.taskPanel.itemId === updated.id) { state.taskPanel.item = updated; state.taskPanel.form = null; }
     if (!state.detail || state.detail.id !== updated.id) return;
     [state.detail.draft, state.detail.orig].forEach(function (o) {
       o.rev = updated.rev; o.updatedAt = updated.updatedAt; o.audit = clone(updated.audit);
       updated.tasks.forEach(function (ut) {
-        var t = (o.tasks || []).find(function (x) { return x.id === ut.id; });
-        if (t) { t.log = clone(ut.log); t.request = clone(ut.request); t.status = ut.status; t.doneAt = ut.doneAt; }
+        var i = (o.tasks || []).findIndex(function (x) { return x.id === ut.id; });
+        if (i !== -1) o.tasks[i] = clone(ut);
       });
     });
   }
@@ -2092,6 +2200,18 @@
 
 
   // 단계 진행 규칙: 완료(또는 생략 경로) 처리 전에 확인. false 면 처리하지 않는다.
+  // 패스트트랙 조건: 선정 팀이 모두 이상 없음, 또는 Risk 가 모두 결정(과제 등록/수용)되고 중요도 '상' 과제가 모두 완료
+  //  (중·하 과제는 등록·수용 결정만으로 충분). 막히면 이유 문구, 가능하면 "".
+  function fastTrackBlock(d) {
+    var sm = reviewSummary(d);
+    if (!sm.total) return "검토 팀이 선정되지 않았습니다.";
+    if (sm.allOk) return "";
+    if (sm.pending.length) return "작성 완료되지 않은 팀이 있습니다 (" + shortTeams(sm.pending, 4) + ").";
+    if (sm.undecided) return "결정 대기 Risk " + sm.undecided + "건이 있습니다. [3]에서 [과제 등록] 또는 [수용]으로 결정하세요.";
+    var hi = openTaskCount(d, "상");
+    if (hi) return "중요도 '상' 과제 " + hi + "건이 아직 완료되지 않았습니다.";
+    return "";
+  }
   function stageGate(action, key) {
     var d = state.detail.draft, st = d.stages, sm = reviewSummary(d);
     var marking = (action === "stDone" && !st[key].done) ||
@@ -2099,7 +2219,8 @@
       (action === "stSub" && !(!st.step2.skipped && st.step3.skipped && st.step4.skipped));
     if (!marking) return true;
     if (action === "stFast") {
-      if (!sm.allOk) { toast("⚡ 패스트트랙은 선정된 모든 검토 팀이 '✅ 이상 없음'일 때만 가능합니다.", "err"); return false; }
+      var why = fastTrackBlock(d);
+      if (why) { toast("⚡ 패스트트랙 불가 — " + why, "err"); return false; }
     }
     if ((action === "stDone" && key === "step1") || action === "stFast") {
       if (!sm.total && !confirm("검토 팀이 선정되지 않았습니다. 그래도 1단계를 완료 처리할까요?")) return false;
@@ -2541,6 +2662,7 @@
           replaceItem(r.item);
           if (state.detail && state.detail.id === r.item.id) { state.detail.draft.remindLog = clone(r.item.remindLog); state.detail.orig.remindLog = clone(r.item.remindLog); state.detail.draft.rev = r.item.rev; state.detail.orig.rev = r.item.rev; renderReviews(); renderTaskBox(); }
           else render(false);
+          if (state.taskPanel && state.taskPanel.itemId === r.item.id) { state.taskPanel.item = r.item; renderTaskPanel(); }
           toast(r.message, "ok");
         });
       }).catch(function (e) { el.disabled = false; fail(e); });
@@ -2551,10 +2673,35 @@
     taskStatus: function (el) { state.f.task.status = el.getAttribute("data-status"); renderTasks(); },
     taskReset: function () { state.f.task = { grade: "ALL", sector: "ALL", status: "ALL", q: "", mine: false }; renderTasks(); },
     taskMine: function () { state.f.task.mine = !state.f.task.mine; renderTasks(); },
-    taskTrackToggle: function (el) {
-      var k = el.getAttribute("data-id") + "/" + el.getAttribute("data-task");
-      state.taskOpen[k] = !state.taskOpen[k];
-      rerenderTasks();
+    toggleTheme: function () {
+      var dark = document.documentElement.getAttribute("data-theme") !== "dark";
+      if (dark) document.documentElement.setAttribute("data-theme", "dark"); else document.documentElement.removeAttribute("data-theme");
+      safeLocal(dark ? "set" : "del", "portalTheme", "dark");
+      updateThemeButton();
+    },
+    taskView: function (el) { state.taskView = el.getAttribute("data-view"); safeLocal("set", "portalTaskView", state.taskView); renderTasks(); },
+    taskGroupToggle: function (el) { var id = el.getAttribute("data-id"); state.taskGroupClosed[id] = !state.taskGroupClosed[id]; renderTasksTable(); },
+    taskOpen: function (el, e) {
+      if (e && e.target.closest("a")) return;
+      var id = el.getAttribute("data-id"), tid = el.getAttribute("data-task");
+      if (state.detail && isDirty() && !confirm("안건 창에 저장하지 않은 변경이 있습니다. 과제 화면으로 이동할까요?")) return;
+      if (state.detail) closeDetail(true);
+      if (state.route !== "tasks" && state.route !== "mywork" && state.route !== "dashboard") { location.hash = "tasks/" + encodeURIComponent(id) + "/" + encodeURIComponent(tid); return; }
+      openTaskPanel(id, tid);
+    },
+    taskClose: function () { closeTaskPanel(false); },
+    taskSave: function () {
+      var tp = state.taskPanel, t = tpTask(), f = tp && tp.form;
+      if (!t || !f) return;
+      if (t.target && f.target && f.target !== t.target && !(f.reason || "").trim()) { toast("목표일을 바꾸려면 연장 사유를 입력하세요.", "err"); return; }
+      api("PUT", "/api/items/" + encodeURIComponent(tp.itemId) + "/tasks/" + encodeURIComponent(t.id),
+        { title: f.title, plan: f.plan, importance: f.importance, org: f.org, ownerEmpId: f.ownerEmpId, ownerEmail: f.ownerEmail, target: f.target, reason: f.reason })
+        .then(function (updated) { syncTaskTracking(updated); rerenderTasks(); toast("과제 정보를 저장했습니다.", "ok"); }).catch(fail);
+    },
+    taskReopen: function (el) {
+      if (!confirm("완료를 해제하고 진행중으로 되돌릴까요?")) return;
+      api("POST", "/api/items/" + encodeURIComponent(el.getAttribute("data-id")) + "/tasks/" + encodeURIComponent(el.getAttribute("data-task")) + "/reopen")
+        .then(function (updated) { syncTaskTracking(updated); rerenderTasks(); toast("진행중으로 되돌렸습니다.", "ok"); }).catch(fail);
     },
     taskProgress: function (el) {
       var id = el.getAttribute("data-id"), tid = el.getAttribute("data-task"), k = id + "/" + tid, req = el.getAttribute("data-request") === "1";
@@ -2978,6 +3125,14 @@
 
   function onField(el) {
     if (el.hasAttribute("data-filter")) { setFilter(el.getAttribute("data-filter"), el.value); return; }
+    if (el.hasAttribute("data-tpf")) {
+      var tpf = el.getAttribute("data-tpf"), tpp = state.taskPanel;
+      if (!tpp || !tpp.form) return;
+      tpp.form[tpf] = el.value;
+      if (tpf === "target" || tpf === "ownerEmpId" || el.tagName === "SELECT") renderTaskPanel();
+      else { var sb = document.querySelector("#taskPanel [data-action=taskSave]"); if (sb) sb.disabled = !tpDirty(); }
+      return;
+    }
     if (el.hasAttribute("data-tp-note")) { state.taskForm[el.getAttribute("data-tp-note")] = el.value; return; }
     if (el.hasAttribute("data-tp-comment")) { state.taskForm[el.getAttribute("data-tp-comment") + "#c"] = el.value; return; }
     if (!state.detail && !state.mail && !state.admin && !state.teamDraft && !state.matrixDraft) return;
@@ -3012,9 +3167,6 @@
       userAction(el.getAttribute("data-user-team"), { action: "update", team: el.value }, "팀을 변경했습니다."); return;
     }
     if (el.hasAttribute("data-te-team")) { state.teamEmailsDraft[el.getAttribute("data-te-team")] = el.value; return; }
-    if (el.getAttribute("data-action-change") === "adminMailItem") {
-      state.adminMailItemId = el.value; initMail(findItem(el.value), "admin"); renderMailPanel();
-    }
   }
 
   function bindEvents() {
@@ -3039,7 +3191,8 @@
       else if (t.type === "date") onField(t);
     });
     document.addEventListener("keydown", function (e) {
-      if (e.key === "Escape" && state.detail) closeDetail(false);
+      if (e.key === "Escape" && state.taskPanel) closeTaskPanel(false);
+      else if (e.key === "Escape" && state.detail) closeDetail(false);
       if (e.key === "Enter" && e.target.id === "adminPw") ACTIONS.login();
       if (e.key === "Enter" && (e.target.id === "loginEmp" || e.target.id === "loginPw")) ACTIONS.userLogin();
     });
@@ -3075,6 +3228,7 @@
   // =====================================================================
   function start() {
     bindEvents();
+    updateThemeButton();
     state.clientId = safeSession("get", "portalClientId") || newClientId();
     safeSession("set", "portalClientId", state.clientId);
     var auth = state.token
