@@ -1735,7 +1735,7 @@ def build_new_item_mail(item: Dict[str, Any], settings: Dict[str, Any]) -> Dict[
     return {"to": _emails(to), "cc": [], "subject": subject, "html": _mail_wrap("양산이관 검증위원회 신규 안건 알림", inner), "text": text}
 
 
-REVIEW_REQUEST_TEXT = "해당 부문 관점의 양산이관 시 예상 Risk 항목, 과제화 여부(O/X)·등급(상/중/하), 보완 방안 회신"
+REVIEW_REQUEST_TEXT = "해당 부문 관점의 양산이관 시 예상 Risk 항목, 과제화 여부(O/X)·등급(상/중/하), 보완 방안 작성"
 
 
 def build_review_mail(item: Dict[str, Any], settings: Dict[str, Any], level: str, to: List[str], cc: List[str],
