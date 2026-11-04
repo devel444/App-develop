@@ -1,0 +1,7 @@
+{
+  "language": "korean",
+  "spinnerVerbs": {
+    "mode": "replace",
+    "verbs": ["생각하는 중", "작업하는 중", "살펴보는 중", "정리하는 중", "만드는 중", "확인하는 중"]
+  }
+}
